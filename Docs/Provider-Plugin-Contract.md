@@ -30,6 +30,24 @@ D-PR1：Provider 适配器只有三条 wire family——**Anthropic Messages**�
 
 首期只做少量主力 Provider（项目书 §3.3），6–8 家即可覆盖主力模型。1.x 的教训是 27 个 product × 56 份 binding JSON，官方文档自己承认只有 9 个可跑、真实 smoke 全为 No——规模带来的是分类负担，不是能力（E-04）。
 
+**首批真实 Provider 三家**（Phase 0.1 决策第 5 条），按 wire family 归属：
+
+| Provider | wire family | 备注 |
+|---|---|---|
+| Anthropic | Anthropic Messages | 特权 `system` 顶层、`cache_control` 单断点、`max_tokens` 必填 |
+| OpenAI | OpenAI Chat Completions **与** OpenAI Responses | 三条 wire 里有两条在此一家，正好用来验证"按 family 划接口"是否成立 |
+| DeepSeek | 官方同时提供 OpenAI 兼容与 Anthropic 兼容两种格式 | 见 §2.1 的额外约束 |
+
+DeepSeek 落在哪条 family **不是实现细节而是产品判断**：同一个上游有兼容 Anthropic 格式的端点时，选错 family 会让我们白写一套 adapter。三家跑通后，family 划分若仍成立，再决定第二批。
+
+### 2.1 DeepSeek 的额外约束（官方文档核对结果）
+
+- 官方文档**未确认**单轮返回多个工具调用；
+- Chat 兼容端点**不支持**在会话中间插入 tool 调用（tool 结果必须紧跟发出调用的 assistant 消息），其 Anthropic 兼容端点则允许；
+- tool 结果使用 `role: "tool"`。
+
+因此内核必须有两个**类型化能力字段**，而不是把它塞进 quirk 字符串（§5 第 1 条禁止项）：`supportsParallelToolCalls`、`toolResultPlacement`（`immediatelyAfterCall` / `anywhereInHistory`）。内核按声明降级：声明不支持并行时，工具批次仍按 Provider 给出顺序**串行执行**；声明 `immediatelyAfterCall` 时，装配器必须保证 assistant 与 tool 消息相邻，任何插入（附件、Hook 注入、告警尾部）都不得落在两者之间。声明与实际行为不符时按 `permissionViolation` 同级的契约违规处理，不静默容忍。
+
 ## 三、事件流终态契约（最高优先级）
 
 1.x 在 `ModelGateway` 里定下的四条，是全内核最值钱的一条纪律，2.0 原样继承并写成跨进程契约：
@@ -157,6 +175,8 @@ Provider 类目下限 300s（配置更低时被抬高），idle 下限 120s。`h
 
 | ID | 事项 |
 |---|---|
-| Q-PR1 | 首批官方 Provider 具体是哪几家（建议：Anthropic、OpenAI Chat、OpenAI Responses 三条 wire 各一真实上游 + 1–2 家国内主力） |
+| ~~Q-PR1~~ | **已解决**：首批 OpenAI、Anthropic、DeepSeek（见 §2 与 §2.1） |
+| Q-PR4 | OpenAI 一家要同时覆盖 Chat 与 Responses 两条 wire：是先各做一个 Provider 能力，还是一个 Provider 内部按模型选择 family |
+| Q-PR5 | `supportsParallelToolCalls` / `toolResultPlacement` 两个新能力字段的默认值：缺省即失败（无默认值纪律），还是缺省取最保守的"不并行 + 必须紧跟" |
 | Q-PR2 | 模型目录随包分发还是内核内置最小目录（涉及"内核不含厂商信息"的边界解释） |
 | Q-PR3 | 凭据取用是拉取式（插件请求）还是推流式（内核随请求下发），影响审计粒度 |

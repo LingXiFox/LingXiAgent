@@ -3,6 +3,10 @@
 来源：LingXiAgent 1.x（`/Volumes/Development/Projects/projects/LingXiAgent`，main @ `8ca6b9f`）的代码、244 个测试文件、ContractTests、CI 机制与 200 余条历史修复提交。
 性质：**活文档**。每修一个 bug 追加一条；每废弃一条架构标注废弃原因，不直接删行。
 
+## 修订记录
+
+- **Phase 0.1（2026-10-19）**：插件运行模型由"插件即子进程、作者自实现 IPC"改为"插件是固定 C ABI 动态库 + 每插件一个独立 Plugin Host 进程"。影响范围：`IPC-*` 组的适用对象变为 **Core↔Host 内部协议**（作者不再接触）；`PLG-*` 组语义不变，新增 PLG-015~019 覆盖 ABI、签名策略、fail-closed 与进程级隔离；新增 E-13~E-15 记录握手五套不一致、library validation 取舍、无 size/version 字段的前向兼容缺陷。
+
 ## 使用方式
 
 1. 测试函数名必须带条目 ID，例如 `func LOOP_006_cancelDoesNotFabricateProviderFailure()`。
@@ -31,6 +35,9 @@
 | E-10 | 测试若绕过真实边界或依赖固定 sleep，门禁就失去意义：手工构造工具结果直塞内核，使断言验证一个永不可能成立的前提；固定 sleep 造成 CI flake 反复修 | `Docs/AA/PE-Core-ToolLoop-Audit-2026-10-04.md` §H；`27b1899`、`67604b8` | QA-001、QA-002；必须新增注入式时钟 |
 | E-11 | 端到端评估造假比没有评估更危险：1.x 的 Runner 从不启动 Agent，只跑 `oracle.sh` 后按 `success ? 2 : 0` 伪造工具数/轮次/token/成本，9 个 oracle 全是 `swift test --filter` 或 `git log --grep`，且 `exit 0` 无条件兜底使 oracle 永不误红，Evals 也未接入 CI | `Evals/Runner/main.swift`、`Evals/*/oracle.sh` | 只继承其判据设计（task.json + 非劣性四规则），L3 必须真跑 Agent（QA-003） |
 | E-12 | 双真相源必然导致撤销不干净：`discoverAndStartAll` 纯扫目录且不查 `registry.enabled`；`configureExtension` 硬编码 `enabled:true` 且不落盘；前端命令表只增不减、`unregister` 无人调用 | `CoreHost` 扩展启停路径、`ApplicationCommandRegistry.syncPluginCommands` | registry 为唯一真相源 + 固定八步禁用流程（PLG-001、002） |
+| E-13 | 握手与能力注册在 1.x 存在**五套互不一致**的实现：插件 IPC 用 `ipcVersion: Int` + 裸字符串错误；Core 侧 manifest 用 `compatibility.schemaVersion` + 版本字符串区间；browser-host 用真 JSON-RPC + `protocolVersion: "v1"`；MCP 用 `initialize → notifications/initialized → tools/list`；前端 wire 用 `protocolVersion = "2.0"` 字符串。字段名、类型、顺序、失败表达全不同，等于没有契约 | `PluginIPCProtocol.swift:5`、`ExtensionPlatform.swift:259`、`Sidecars/browser-host/index.mjs:215`、`MCPTransport.swift:113`、`FrontendWire.swift:72` | 统一为一条序列，版本语义只留 `abiMajor` 整数，错误统一 `code/domain/message`（`Plugin-System-Design.md` 第四章） |
+| E-14 | 加载第三方动态库与 macOS 系统检查存在正面冲突：Hardened Runtime 的 library validation 默认只允许同 Team ID（或 Apple 签名）的库，要放行社区插件就必须带 `com.apple.security.cs.disable-library-validation`，而 Apple 对该 entitlement 的描述即"加载任意插件或框架，**而不要求代码签名**"。不能一边关掉系统检查一边宣称安全 | Apple 文档 entitlement 条目与 Hardened Runtime 条目；1.x 已有同立场记录：`Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt` 写明"ad-hoc 签名、未公证、不得发布分发、加载被阻时不得绕过 macOS 安全控制" | 首发默认 `restricted`（仅同 Team ID），开启社区插件是带前端告警的用户显式动作；自行校验签名与 Team ID；不宣称 OS 沙箱（`Plugin-System-Design.md` 第八章） |
+| E-15 | 跨边界结构体没有尺寸与版本字段，前向兼容就只能靠"符号是否存在"；错误传递用全局静态缓冲，并发下互相覆盖 | `OpenTUIShim.c:36` 与 `include/OpenTUIShim.h`：无 version/size 字段、`static error_message[256]` | ABI 规则强制 `structSize + abiMajor` 头两字段、错误以结构返回（PLG-015） |
 
 ---
 
@@ -40,19 +47,19 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| LOOP-001 | 同一 Run 并发触发取消终态化与完成终态化 | 只有一个赢家推进后续，另一次返回"未发生迁移"；幂等 | Round 12 *Single Terminalization Winner* | 1 | L1 | 待继承 |
-| LOOP-002 | 终态事件落盘失败 | 内存回滚到写之前，已追加事件被截断，不推进任何后续 | Round 19 *Root Terminal Durability* | 1 | L1 | 待继承 |
-| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 待继承 |
-| LOOP-004 | 全流程事件序列 | `runCreated` 恰好一次；stop 后内核待答交互账本与快照均为空 | `4ec856a`、`stopClearsCorePendingInteractions` | 1 | L1 | 待继承 |
-| LOOP-005 | 一个批次内 [慢, 快, 失败] 三个工具 | 并行执行，结果按 Provider 给出顺序进入同一条 tool 消息，事件保序；批次内出现重复 callID 时**整批拒绝** | `AgentToolLoopTests.multiToolBatchExecutesInParallelAndSettlesInProviderOrder` | 1 | L1 | 待继承 |
-| LOOP-006 | Provider 已投递失败的同时用户按 Esc | 终态保留真实故障原因，不改判为 cancelled；取消路径静默结束流，**严禁伪造失败事件** | `f118d15`、`CancellationRaceTests` 场景 4（钉 cause 不只钉 status） | 1 | L1 | 待继承 |
-| LOOP-007 | Esc 发生在工具已结算、下一次模型请求未发出时 | Run 进 `cancelled`，已执行的工具不重跑 | `toolContinuationEscToolNotReplayed` | 1 | L1 | 待继承 |
+| LOOP-001 | 同一 Run 并发触发取消终态化与完成终态化 | 只有一个赢家推进后续，另一次返回"未发生迁移"；幂等 | Round 12 *Single Terminalization Winner* | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-002 | 终态事件落盘失败 | 内存回滚到写之前，已追加事件被截断，不推进任何后续 | Round 19 *Root Terminal Durability* | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-004 | 全流程事件序列 | `runCreated` 恰好一次；stop 后内核待答交互账本与快照均为空 | `4ec856a`、`stopClearsCorePendingInteractions` | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-005 | 一个批次内 [慢, 快, 失败] 三个工具 | 并行执行，结果按 Provider 给出顺序进入同一条 tool 消息，事件保序；批次内出现重复 callID 时**整批拒绝** | `AgentToolLoopTests.multiToolBatchExecutesInParallelAndSettlesInProviderOrder` | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-006 | Provider 已投递失败的同时用户按 Esc | 终态保留真实故障原因，不改判为 cancelled；取消路径静默结束流，**严禁伪造失败事件** | `f118d15`、`CancellationRaceTests` 场景 4（钉 cause 不只钉 status） | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-007 | Esc 发生在工具已结算、下一次模型请求未发出时 | Run 进 `cancelled`，已执行的工具不重跑 | `toolContinuationEscToolNotReplayed` | 1 | L1 | 已覆盖（阶段 1） |
 | LOOP-008 | 崩溃时留有未消费批次（含只读与可变混合） | 重启后只读项执行补齐；可变项记 `executionStateUnknown` + `verificationRequired`；恰好发一次模型请求 | `restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown` | 1 | L1 | 待继承 |
 | LOOP-009 | 等待人工应答期间跨过 Run 与工具超时 | 超时必须不能吞掉人工等待，Run 继续存活 | `permissionWaitKeepsRunDurablePastAgentAndToolDeadlines` | 1 | L1 | 待继承 |
 | LOOP-010 | Stop 时队列非空 | 排队项一并进终态且不提升为新 root Run | `stopCancelsTheQueuedTurn` | — | — | **不适用**：内核取消排队（D1），该场景在 2.0 内核层不可构造；若将来在产品层引入队列，此条连同 LOOP-001/002/003 的交叉证明一起重新启用 |
 | LOOP-011 | 取消一个不存在的 Run / 只取消排队项 | 在产生任何副作用前抛命名错误；取消范围不得越界伤及 active Run | Round 11 *Cancel Scope*、*P0-D Validation Before Destruction*、`3ca4d37` | 1 | L1 | 待继承 |
-| LOOP-012 | 触达显式步数上限 | 错误信息含步数、最后一个工具调用、最后一次观察，可供用户判断 | `maxStepsReachedProvidesDetailedExplanation…` | 1 | L1 | 待继承 |
-| LOOP-013 | 35 批真实变更 / 10 批空结果 / 10 批相同失败 | 全部执行到底，不得因"看起来没进展"硬停；空 stdout 不构成终止理由 | `usefulWorkBeyond32StepsCompletes`、`emptyResultsDoNotStop`、`identicalCommandsReachReport`、`8ca6b9f` | 1 | L1 | 待继承 |
+| LOOP-012 | 触达显式步数上限 | 错误信息含步数、最后一个工具调用、最后一次观察，可供用户判断 | `maxStepsReachedProvidesDetailedExplanation…` | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-013 | 35 批真实变更 / 10 批空结果 / 10 批相同失败 | 全部执行到底，不得因"看起来没进展"硬停；空 stdout 不构成终止理由 | `usefulWorkBeyond32StepsCompletes`、`emptyResultsDoNotStop`、`identicalCommandsReachReport`、`8ca6b9f` | 1 | L1 | 已覆盖（阶段 1） |
 | LOOP-014 | Turn 期间会话修订号发生变化 | 陈旧 Run 的终态以 `StaleRunError` 丢弃且**不落盘** | `completeTurn` lease 校验 | 1 | L1 | 待继承 |
 | LOOP-015 | 同批次 `read a → write a → read a`；以及目录列表 + 该目录内写入 | 第三次读必须真执行并返回新字节；目录列表不可被复用；**数真实执行次数**作为断言手段 | `ReadConsistencyTests`（11 门）、`13b9c39` | 1 | L1 | 待继承 |
 | LOOP-016 | 本轮带附件（含图片） | 附件必须进入实际发给模型的条目集合，而不是仅记账的集合；解析失败即让 Turn 失败，不静默降级 | `da3f14f`、`AgentLoopEndToEndTests`（附件三条） | 1 | L1 | 待继承 |
@@ -65,20 +72,20 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| CTX-001 | 检索/召回/插件 Hook 注入的文本 | 三家 wire 都必须走**非特权数据通道**；只有 `immutableInstructions` 能进指令位置 | `967b1ea`、`ProviderPrivilegeTests` | 1 | L1 | 待继承 |
-| CTX-002 | 动态工具上线 / schema 变更 | 同一 epoch 内只单调追加、不改序不移位；schema 变更必须显式推进 epoch，否则请求被拒 | `dynamicMCPAppendOnlyMaintainsPriorPositions` | 1 | L1 | 待继承 |
+| CTX-001 | 检索/召回/插件 Hook 注入的文本 | 三家 wire 都必须走**非特权数据通道**；只有 `immutableInstructions` 能进指令位置 | `967b1ea`、`ProviderPrivilegeTests` | 1 | L1 | 已覆盖（阶段 1） |
+| CTX-002 | 动态工具上线 / schema 变更 | 同一 epoch 内只单调追加、不改序不移位；schema 变更必须显式推进 epoch，否则请求被拒 | `dynamicMCPAppendOnlyMaintainsPriorPositions` | 1 | L1 | 已覆盖（阶段 1） |
 | CTX-003 | 批次内出现陈旧读 | 陈旧读既不写会话存储，也不进入下一次模型请求 | `13b9c39` | 1 | L1 | 待继承 |
 | CTX-004 | 工具失败（含 exitCode、异常名）后经压缩再投影 | 失败诊断证据必须存活，且重复投影幂等（从 evidence 字段读回） | `FailureDiagnosticEvidence`、T011 fixture | 1 | L1 | 待继承 |
 | CTX-005 | 同一工具输出的多个身份 | 载荷只有**一个**权威身份，预览不等于全文；纯前缀截断不得丢掉关键诊断 | `2f774c6`、`ToolArtifactTruthTests` | 1 | L1 | 待继承 |
 | CTX-006 | 请求 8KB 字节切片回读 | 不得被通用输出策略二次截断；头部声明的字节区间与送达内容逐字节相等；切片与整块回读是两种语义，不得隐式升级也不得假性拒绝预算超限 | `89cb8de`（probe08/10）、`RecallSemanticsTests` | 1 | L1 | 待继承 |
 | CTX-007 | 一个批次多个 artifact，各自带 range | 已提交的 range 必须按**条目自身** artifact 选引用，不得串到兄弟条目（曾贴假 `bytes=` 标签） | `73fd9de`、Phase 8 §4 | 1 | L1 | 待继承 |
-| CTX-008 | 上下文超预算 | 水位 `preferred×1.15 / ×0.8`；从低分逐个移出、降到 lowWater 立即停止；mandatory（system / 当前 user / 未消费因果批次）不可淘汰，mandatory 之和超 hard 直接报 `budgetExceeded` | `ContextBudgetPlanner.plan`、`ContextCompactor.compact:570-660` | 1 | L1 | 待继承 |
-| CTX-009 | 压缩遇到未消费批次 | 以因果批次为不可分单位，不得拆出半截工具调用 | `CTX-009` 对应 `ToolExchangeBatch` mandatory 判定 | 1 | L1 | 待继承 |
+| CTX-008 | 上下文超预算 | 水位 `preferred×1.15 / ×0.8`；从低分逐个移出、降到 lowWater 立即停止；mandatory（system / 当前 user / 未消费因果批次）不可淘汰，mandatory 之和超 hard 直接报 `budgetExceeded` | `ContextBudgetPlanner.plan`、`ContextCompactor.compact:570-660` | 1 | L1 | 已覆盖（阶段 1） |
+| CTX-009 | 压缩遇到未消费批次 | 以因果批次为不可分单位，不得拆出半截工具调用 | `CTX-009` 对应 `ToolExchangeBatch` mandatory 判定 | 1 | L1 | 已覆盖（阶段 1） |
 | CTX-010 | 历史被移出活跃上下文 | 留一条能精确指回原文的稳定引用行；仅显式请求才回到活跃上下文，且**跨重启仍成立** | `residencySurvivesRestart…` | 1 | L1 | 待继承 |
 | CTX-011 | 索引类投影随查询词变化 | 不得计入"持久历史"签名，否则被误报为历史被改写 | `historySignatureTexts` / `countsAsDurableHistory` | 1 | L1 | 待继承 |
 | CTX-012 | 分支或工作目录变动 | 易变环境事实排在指令块之后，不得击穿前缀 | `AgentInstructions.AgentEnvironmentFacts.render` | 1 | L1 | 待继承 |
 | CTX-013 | 单个超大条目装不进窗口 | 投影为带标注的**有界范围** + `continuation_offset`，不得整块拒绝；重启后重投影同一 range；range 用真实 token 估算器，禁用 bytes/token 常数 | `881841f`、`BoundedOccurrenceProjectionTests` | 1 | L1 | 待继承 |
-| CTX-014 | 装配前协议校验 | 孤儿工具调用、乱序、重复必须显式抛错，不发往模型 | `ModelRequestProtocolValidator.validate` | 1 | L1 | 待继承 |
+| CTX-014 | 装配前协议校验 | 孤儿工具调用、乱序、重复必须显式抛错，不发往模型 | `ModelRequestProtocolValidator.validate` | 1 | L1 | 已覆盖（阶段 1） |
 | CTX-015 | 同一条目连续 8 轮参与装配 | 只做一次移出 + 一条引用行，不得反复投影 | `residencyPreventsRepeatedCanonicalPageOut` | 1 | L1 | 待继承 |
 | CTX-016 | 读文件类工具的大输出 | 该类工具豁免通用投影阈值（1.x 为 8 次全文 / 64KB），阈值判定在**被调用方一侧**完成 | 1.x 输出策略实现 | 2 | L2 | 待继承 |
 
@@ -97,7 +104,7 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| PROV-001 | 任意流 | 恰好一个终态；终态后无事件；无终态信号必须报错；`(toolCall 完成 > 0) == (终态 == .toolCalls)` | `ModelGateway.swift:393 ModelBus` | 2 | L2 | 待继承 |
+| PROV-001 | 任意流 | 恰好一个终态；终态后无事件；无终态信号必须报错；`(toolCall 完成 > 0) == (终态 == .toolCalls)` | `ModelGateway.swift:393 ModelBus` | 2 | L2 | 已覆盖（阶段 1） |
 | PROV-002 | 工具增量跨 delta 分裂、id/name 迟到 | started 只发一次；arguments 每字符恰好一次；最终非 JSON object 必须失败 | `ToolCallBuffer`、`OpenAICompatibleProvider.swift:880` | 2 | L2 | 待继承 |
 | PROV-003 | 跨轮回传工具结果 | 领域 id 由内核合成；厂商原生 id 仅作 provenance，绝不当领域 id | `ProviderProvenance.swift` | 2 | L2 | 待继承 |
 | PROV-004 | 限流 / 5xx / 超时可重试，401/402/403/404/409/413/415/422/423 与 content 类不可重试；**语义先于状态码** | 可重试集合封闭；body 嗅探覆盖 `rpm/tpm exhausted`、`429001`、额度不足、`context_length_exceeded`、合规、模型不存在 | `ProviderErrorClassifier.swift:51` | 2 | L2 | 待继承 |
@@ -149,12 +156,17 @@
 | PLG-012 | 并发请求 + 流式事件共用一根管 | 响应按 id 路由，通知无 id，事件流按 streamId 多路；**不得退回串行一问一答** | `VNextStdioTransport`（正面样板） | 2 | L2 | 待继承 |
 | PLG-013 | 插件实际行为越出 manifest 声明 | 记为权限违规，终止进程并标 `failed`，前端告警 | 1.x 无此机制（缺口） | 3 | L2 | 新增 |
 | PLG-014 | 插件在工具批次中间崩溃 | 走内核恢复矩阵：只读可重跑，可变记状态未知，副作用不重复 | LOOP-008 | 3 | L2 | 待继承 |
+| PLG-015 | 新版 Host 加载只认识旧 `abiMajor` 的插件；或结构体尾部新增字段 | 主版本不符**硬失败不静默兼容**；同主版本下按 `structSize` 判定字段可用性，旧插件读不到新字段也必须正常工作 | E-15（OpenTUIShim 无 size/version 字段） | 2 | L2 | 新增 |
+| PLG-016 | `security` 类 Hook 超时、崩溃或返回非法值 | **一律判拒绝并要求人工确认**，不得默认放行；插件不能通过声明 `observe` 逃避 fail-closed，类别由内核判定 | Phase 0.1 决策第 4 条 | 3 | L1/L2 | 新增 |
+| PLG-017 | 签名策略 | `restricted` 下拒绝非本 Team ID 插件；`permissive` 需用户显式开启并显示告警；ad-hoc 签名不得进入发布通道，开发模式加载必须标注不受信；`codesign --verify --strict` 通过不等于 Developer ID 或公证 | `Docs/browser check/` 两份 PoC；`Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt` | 2 | L2 | 新增 |
+| PLG-018 | 插件 dylib 在其 Host 内段错误 | 只有该 Host 进程死亡；Core、前端、其他插件的 Host 全部存活，受影响 Run 收到 `crashed` 结构化故障 | 项目书 §七第 5 条 | 3 | L2 | 新增 |
+| PLG-019 | 插件与 Host 的 Swift 运行时 | 插件不得静态嵌入 stdlib；同一 Host 地址空间内只能有一份 Swift 运行时 | 1.x 全仓 `@_cdecl` 零命中，此为首例 | 2 | L2 | 新增 |
 
 ### STORE 组 — 持久化、配置、凭据
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| STORE-001 | 终态写入与内存变更顺序 | 先落盘成功再改内存；写失败回滚内存并截断事件 | Round 19 | 1 | L1 | 待继承 |
+| STORE-001 | 终态写入与内存变更顺序 | 先落盘成功再改内存；写失败回滚内存并截断事件 | Round 19 | 1 | L1 | 已覆盖（阶段 1） |
 | STORE-002 | 账号引用 `{env:NAME}` 在 Dock 启动进程里不可解析 | 不发注定失败的请求，报出变量名；`LINGXI_<ID>_API_KEY` 覆盖优先 | `4ec856a` | 4 | L1 | 待继承 |
 | STORE-003 | 存储迁移时机 | `start()` 内禁止迁移（源码级门禁），避免隐式写库 | `4ec856a` | 1 | L0 | 待继承 |
 | STORE-004 | 历史时间戳格式 / 排序精度 | 读取端容忍历史格式；需要排 page-out 与 cache bust 先后处必须毫秒精度 | `c5d00b5`、`0d9761d` | 1 | L1 | 待继承 |
@@ -208,7 +220,7 @@
 以下是 1.x **未找到**对应资产、2.0 必须从零建立的项，登记以免被误认为"已覆盖"：
 
 1. 注入式虚拟时钟（超时、冷却、退避、水位触发全部需要确定性）。
-2. 假插件子进程与六种异常注入（崩溃、超时、坏 JSON、无应答、泄漏凭据、继承 env）。
+2. 真 Plugin Host + 故障插件 dylib 的进程级注入：段错误退出、挂死沉默、非法帧/非法结构体尺寸、无应答、越权访问、读到宿主凭据（PLG-015~019）。
 3. 插件权限声明与运行期实际行为的可核对性机制（PLG-013）。
 4. TUI 端到端测试层（假 PTY 驱动）。
 5. 真实 Provider 金标准 cassette 库（当前近乎为空）。

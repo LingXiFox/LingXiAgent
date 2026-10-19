@@ -3,12 +3,14 @@
 适用范围：本仓库 2.0 工作树（分支 `rewrite/2.0`）内的全部代码、插件、文档与脚本。
 优先级：当前对话的显式指令 > 本文 > 全局约定。1.x 仓库（`/Volumes/Development/Projects/projects/LingXiAgent`）为只读参考，其规范不自动适用。
 
-## 一、平台与范围
+## 一、平台与工具链
 
-- 唯一目标平台：**macOS / Apple Silicon**。
+- 唯一目标平台：**macOS 26.2 及以上 / Apple Silicon**（Phase 0.1 决策第 1 条）。
+- 开发工具链 **Swift 6.4**；SwiftPM `swift-tools-version` 暂定 **6.2**，`Package.swift` 的平台声明与 `.swift-version` 必须与此一致（当前 `.swift-version` 记的是 1.x 遗留值 6.0.3，Phase 1 建包时一并更新）。
+- **暂不迁移旧版 OpenTUI 动态库**（Phase 0.1 决策第 3 条）。TUI 的依赖与渲染方案在后续阶段独立验证；在此之前，任何 target 都不得链接 `Vendor/OpenTUI/`，也不得为它预留 shim。
 - 禁止为 Windows、Linux 预先铺设兼容层、条件编译分支、平台抽象替身或 CI job。需要 OS 相关能力时直接写 Darwin 实现，抽象点只到"这一层是平台层"为止，不做第二个实现。
 - 禁止在 2.0 阶段继续原生 GUI 开发。前端只保证协议面存在（`Testing-and-Acceptance.md` 的前端契约层），实现按 TUI 优先。
-- 1.x 的模块、接口、命名不默认继承。继承任何 1.x 资产时，必须在 `Regression-Cases.md` 或代码注释里指向其证据 ID，说明"为什么这是被验证过的"。
+- 1.x 的模块、接口、命名不默认继承。继承任何 1.x 资产时，必须在 `Regression-Cases.md` 或代码注释里指向其证据 ID，说明"为什么这是被验证过的"。1.x 自身在 deployment target 上已经不一致（根包 `.macOS(.v14)`、两个 SDK 与 PoC `.macOS(.v13)`、OpenTUI 声明 13），这个不一致不带过来。
 
 ## 二、目录约定
 
@@ -75,10 +77,13 @@ Scripts/            构建、打包、CI 脚本
 
 ## 八、许可与版权登记
 
-- 三份 LICENSE 与 `LICENSE-MATRIX.md` 沿用 1.x 的法律文本，**矩阵内容对 2.0 已过期**：表中列出的 target 路径在 2.0 工作树中不存在。首个 SwiftPM target 建立时必须重写矩阵，只保留实际存在的 target。
-- 轨道选择：内核/宿主/协议/平台层 → LCSAL-1.1；前端与插件（含官方插件）→ PolyForm Noncommercial 1.0.0。其他轨道需与主人讨论后再合并。
+- 三份 LICENSE 的**法律文本不动**（Phase 0.1 决策第 2 条）。要改条款必须主人明确批准。
+- `LICENSE-MATRIX.md` 按 2.0 实际 target 重建，只登记真实存在的路径；1.x 遗留的 target 行全部清除。
+- 轨道：内核 / Plugin Host / 协议 / 平台层 → LCSAL-1.1；前端与**官方插件** → PolyForm Noncommercial 1.0.0。
+- **官方插件与第三方插件的授权要分开表述**：官方插件源码走 PolyForm；第三方插件是作者自己的作品，仓库内只放开发用的接口头文件与示例，不替第三方决定授权。接口头文件的许可轨道需主人定夺（见下方待决），因为它直接决定第三方能否自由地基于 2.0 开发。
 - 新增 target 未登记矩阵视为构建失败，不是评审意见。
 - `Docs/` 为 CC-BY-4.0；`Evals/Tasks`、`Evals/Baselines` 尽量 CC0。
+- 待决：插件 C ABI 头文件与示例工程用什么许可发布。PolyForm 非商业会劝退商业第三方作者；MIT 则要把它作为矩阵里的新轨道登记，属于"更改授权范围"，需主人批准。本狐的建议是头文件用 MIT——接口不放开，"开放"这个产品特质就是空的。
 
 ## 九、安全红线
 
@@ -86,7 +91,8 @@ Scripts/            构建、打包、CI 脚本
 2. **子进程环境默认白名单**：任何被拉起的进程（插件、sidecar、工具）的环境变量必须是严格 allow-list，而不是"从继承环境里过滤掉敏感项"。必须有一条 sentinel 值探针测试证明 passphrase 与 `*_API_KEY` 进不了子进程，同时 `PATH`/`HOME` 仍存活。1.x 的 `CredentialNonLeakageTripwireTests` 与 `EnvironmentSanitizer` 是被验证过的做法，缺陷在于 MCP 侧当时"这次先不动"，成了遗留泄漏点（`Regression-Cases.md` PLG-008）。
 3. **破坏先备份**：删除、覆盖、迁移前先备份，主人验收通过才删备份。禁止对变量拼接路径执行 `rm -rf`。可再生成目录（`.build/`、`dist/`、`node_modules/`、`.tmp/` 等）除外。
 4. **线上先许可**：任何可能重启、停止、降级或影响线上服务的操作，执行前必须取得明确许可。
-5. **不承诺做不到的隔离**：1.x 插件 SDK 的 README 已诚实说明**无内核级沙箱**。2.0 在未真正把 macOS sandbox 机制接到插件进程之前，文档与插件 manifest 不得出现"沙箱隔离"表述，只能说进程隔离与权限声明。
+5. **不承诺做不到的隔离**：区分三层——**权限声明**（无强制力）、**权限强制执行**（内核在每个调用点判定，是唯一真实边界）、**操作系统沙箱**（当前没有）。在真正把 macOS 沙箱接到 Plugin Host 之前，文档与 manifest 不得出现"沙箱隔离"表述。另需如实记录：为加载第三方签名插件而使用的 `com.apple.security.cs.disable-library-validation`，按 Apple 定义即"加载任意插件或框架而不要求代码签名"，它关闭了一层系统检查；因此首发默认只加载同 Team ID 插件，开启社区插件是用户带告警的显式动作。详见 `Plugin-System-Design.md` 第八、九章。
+6. **安全授权不得因 Hook 故障默认放行**：`security` 类 Hook 超时、崩溃或返回非法值一律判为拒绝并要求人工确认，不提供覆盖开关。
 
 ## 十、阶段推进门禁
 
@@ -94,13 +100,16 @@ Scripts/            构建、打包、CI 脚本
 
 | 进入 | 前置 |
 |---|---|
-| 阶段 1 | 本文与 `Kernel-Design.md` 定稿；待决项 1、3（macOS 最低版本、LICENSE 矩阵）已解决 |
-| 阶段 2 | 阶段 1 验收通过：空内核可启动、单上下文连续、取消与恢复的回归用例全绿 |
+| 阶段 0.1 | 已完成：架构决策落地；插件运行模型改为固定 C ABI + 独立 Plugin Host；许可矩阵按实际 target 重建 |
+| 阶段 1 | 本文与 `Kernel-Design.md` 定稿；平台与工具链基线已定（macOS 26.2+ / Swift 6.4 / tools 6.2） |
+| 阶段 2 | 阶段 1 验收通过：空内核可启动、单上下文连续、取消与**可靠恢复**的回归用例全绿（D3 的前提在此证明） |
 | 阶段 3 | 首个 Provider 插件与首个基础任务插件跑通，且未修改内核代码 |
 | 阶段 4 | 插件异常隔离与启停撤销的验收（项目书 §七 三条）通过 |
 | 阶段 5 | TUI 达到"可长期使用"判定；缓存统计能出自真实请求的数据 |
 
 各阶段的判定方式在 `Testing-and-Acceptance.md`。
+
+**阶段 1 的范围纪律**：只做最小可运行 Swift Core、单上下文管理、Agent Loop 与基本测试。不得提前实现大量 Provider、TUI 或插件市场。范围之外的想法登记进 `Regression-Cases.md` 第四部分或新开 ADR，不在阶段 1 动手。
 
 ## 十一、文档维护
 

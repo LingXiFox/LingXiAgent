@@ -1,228 +1,257 @@
 # LingXiAgent 2.0 插件系统设计与 `.lxap` 契约
 
-依据：项目书 §3.2（插件系统）、§3.3（官方插件生态）、§五.3–4、§七第 2–5 条。
-运行载体已由主人拍板：**子进程 / IPC 隔离**。本文不讨论 dlopen 与编译期注册方案。
+依据：项目书 §3.2、§3.3、§五.3–4、§七第 2–5 条；Phase 0.1 架构决策（2026-10-19）。
+本文取代阶段 0 初稿中的"插件即子进程、作者自行实现 IPC"方案。产品形态仍是**最简内核 + 插件加载器**。
 
-## 一、插件是什么
-
-插件是运行在独立子进程、通过 `.lxap` 包分发、向内核注册能力的组件。官方插件与社区插件遵循完全相同的契约（项目书 §3.2）。
-
-一个插件可以注册四类能力，缺省为零：
-
-| 类别 | 含义 | 内核如何使用 |
-|---|---|---|
-| `provider` | 模型提供商与模型清单 | Agent Loop 的模型请求端口路由到它 |
-| `tool` | 工具及其 JSON Schema | 进入工具清单，模型可调用 |
-| `service` | 供其他插件或前端调用的服务 | 内核只做寻址与权限校验，不解释语义 |
-| `hook` / `event` | 参与生命周期节点、发布事件 | 内核在指定节点调用，接受其类型化返回 |
-
-内核侧**不允许**存在任何只有官方插件能用的注册面。1.x 的缺口正好在这里：插件注册面只有 tool/command/hook，provider 与 service 完全没有注册通道，且 `executePluginTool` 无调用方导致插件工具永不被模型调用（PLG-007）。2.0 阶段 2 的验收要求"不修改、不重编内核即可安装并切换 Provider"，因此 provider 注册面必须是第一批实现的内容。
-
-## 二、`.lxap` 包格式
-
-`.lxap` 是一个可校验归档，固定布局：
+## 一、三层运行模型
 
 ```
-LingXiProviderAnthropic-1.2.0.lxap
-├── plugin.json            必需，manifest（唯一身份与声明来源）
-├── LICENSE                必需
-├── README.md              必需，含安装后使用说明
-├── bin/
-│   └── arm64-apple-macos/<executable>   入口可执行文件
-├── share/                 可选，静态资源、schema、图标
-└── METADATA/
-    ├── checksum           包内文件摘要清单
-    └── signature           detached 签名
+Core 进程 ──(内部 IPC：JSON-RPC)── Plugin Host 进程 ×N ──(固定 C ABI)── 插件动态库（`.lxap` 内）
+```
+
+| 层 | 职责 | 谁负责 |
+|---|---|---|
+| 插件动态库 | 实现能力接口（provider / tool / service / hook / event） | **插件作者**（官方与社区完全相同） |
+| Plugin Host | `dlopen` 与签名校验、ABI 协商、把 IPC 请求翻译成 ABI 调用、把 ABI 回调翻译成 IPC 事件、取消、生命周期、崩溃边界 | LingXi 官方发布的一个通用可执行文件，**不含任何插件代码** |
+| Core | 能力路由、上下文与 Agent Loop、权限决策、故障归因、registry | 内核 |
+
+关键取舍：**插件作者只写函数实现，不写 IPC、不管理进程、不做序列化**（Phase 0.1 决策第 4、5 条）；同时隔离边界仍是进程——插件段错误只打死它自己的 Host，插件死循环只让该 Host 沉默。`dlopen` 在独立 Host 内做，是同时满足"作者契约简单"与"故障不带崩 Core"的唯一干净解。
+
+推论（必须写下来，否则会被悄悄违反）：
+
+- 插件与 Host 处于同一地址空间，**不存在语言级隔离**。第 3 章的权限强制执行是唯一的真实边界。
+- 一个插件一个 Host 实例。Host 生命周期由 Core 监管者管理，不由用户手工启动。
+- Host 与 Core 同版本发布；插件独立发布。三者版本兼容性由 ABI 版本与能力协商决定（第 4 章）。
+- 官方插件不享有任何特权通道：与社区插件走同一个 Host、同一套 ABI、同一套注册契约、同一套权限判定。
+
+## 二、`.lxap` 包格式：macOS 原生 bundle
+
+`.lxap` 是 macOS 原生 bundle 形态的目录包（可 `.lxap` 直接分发，也可 zip 或 dmg 承载），采用标准 bundle 布局与标准代码签名，不自造签名体系（Phase 0.1 决策第 1、4 条；解决阶段 0 待决 Q-P1）。
+
+```
+AnthropicProvider.lxap/
+├── Contents/
+│   ├── Info.plist                    Manifest（身份、版本、作者、入口、能力、权限）
+│   ├── MacOS/
+│   │   └── LingXiAnthropicProvider   导出固定 C ABI 的动态库（.dylib 角色，放在 MacOS/ 下）
+│   ├── Resources/                    schema、图标、文档、静态资源
+│   └── _CodeSignature/CodeResources  标准签名资源，由 codesign 生成
 ```
 
 约束：
 
-- 现阶段只接受 `arm64-apple-macos` 一个入口目录；出现其他平台目录视为打包错误（项目书 §四不做跨平台）。
-- 入口必须是自包含可执行文件或带完整依赖的 bundle，不假设插件运行环境里有解释器。**官方插件统一用 Swift 编写**（与内核同工具链，无额外运行时）；社区插件按契约实现，语言不限——这是选择 JSON-RPC over stdio 的直接回报。
-- 禁止在包内放置安装脚本或让包触发任何网络安装动作。
+- `CFBundleIdentifier` 即插件 `id`（反向域名，全局唯一，注册面命名空间前缀）；`CFBundleShortVersionString` / `CFBundleVersion` 即插件版本；作者身份由**代码签名的 Team Identifier** 决定，不由 manifest 自称。发布策略见第 8 章。
+- `LSMinimumSystemVersion` 声明系统下限；首发基线 macOS 26.2。
+- 现阶段只接受 `arm64-apple-macos` 一个架构切片；出现其他架构视为打包错误。
+- 入口只有一个动态库；禁止包内安装脚本、禁止包触发网络安装动作。
+- LingXi 专有字段放进 `Info.plist` 的顶层 `LingXiPlugin` 字典，不与系统键混写：
 
-### 2.1 manifest 字段
-
-```jsonc
-{
-  "id": "site.lingxi.provider.anthropic",     // 反向域名，全局唯一，注册面命名空间前缀
-  "name": "Anthropic Provider",
-  "author": "LingXiFox",
-  "version": "1.2.0",
-  "homepage": "...",
-  "description": "...",
-  "ipc": { "major": 1, "minor": 0 },          // 插件实现的协议版本
-  "minimumCoreVersion": "2.0.0",              // 仅人类提示，不参与判定
-  "entrypoint": "bin/arm64-apple-macos/anthropic-provider",
-  "capabilities": {                           // 必须显式声明，无默认值（PLG-009）
-    "providers": [{ "id": "anthropic", "models": ["...", "..."] }],
-    "tools":     [{ "id": "read_file", "schema": "share/read_file.json" }],
-    "services":  [],
-    "hooks":     [{ "point": "beforeModelRequest", "mode": "observe" }]
-  },
-  "permissions": {                            // 见第八章
-    "network": ["api.anthropic.com"],
-    "filesystem": [{ "scope": "workspace", "access": "read" }],
-    "credentials": ["anthropic-api-key"],
-    "subprocess": false
-  },
-  "depends":   [{ "id": "site.lingxi.core", "ipc": ">=1.0 <2.0" }],
-  "conflicts": [{ "id": "site.lingxi.provider.anthropic-beta", "reason": "重复注册 anthropic" }]
-}
+```xml
+<key>LingXiPlugin</key>
+<dict>
+  <key>ABIMajor</key><integer>1</integer>          <!-- 与插件导出符号协商，唯一生效的版本语义 -->
+  <key>MinimumCoreVersion</key><string>2.0.0</string>  <!-- 仅人类提示，不参与判定 -->
+  <key>EntryPoint</key><string>LingXiPlugin_Init</string>
+  <key>Capabilities</key>                           <!-- 必须显式声明，无默认值；见 §2.1 -->
+  <key>Permissions</key>                            <!-- 见第 8 章 -->
+  <key>Depends</key><array/>                        <!-- 其他插件 id + 版本区间 -->
+  <key>Conflicts</key><array/>
+</dict>
 ```
 
-- `id` 一旦发布不可更改；变更等于发布新插件。所有注册到内核的能力 id 一律带插件 `id` 前缀，防碰撞。
-- **能力必须挣得**：`capabilities` 与 `permissions` 都无默认值，声明结构缺少字段时解码失败而不是补默认。1.x 的 `RuntimeCapabilities`  initializer 去掉默认参数使"不显式声明就不编译"，这条纪律要在插件 manifest 上用等价手段（严格解码 + 契约测试）复现（PLG-009）。
-- 声明与实际行为的可核对性：内核在运行期记录插件实际发起的网络目的地、文件访问与凭据读取，与声明比对；越界即按权限违规处理。没有这一条，manifest 就退化成 1.x 的 quirk 字符串表——35 种 quirk 里运行时只读 1 条，其余只是文档（E-06）。
+### 2.1 能力与权限声明
 
-## 三、生命周期状态机
+能力和权限都**必须显式声明**，解码器不提供默认值，缺字段即加载失败。这条纪律来自 1.x 被验证过的教训：能力广告必须"挣得"，`RuntimeCapabilities` 去掉默认参数使"不显式声明就不编译"（PLG-009）；以及 35 种 quirk 名里运行时只读 1 条、其余只是文档的死重（E-06）。
+
+## 三、插件 ABI：固定 C ABI
+
+Phase 0.1 决策第 2 条：插件二进制采用固定 C ABI，导出 `LingXiPlugin_Init()`。
+
+1.x 的事实基线：全仓 `@_cdecl` 零命中，唯一的运行时动态加载先例是 `Sources/OpenTUIShim/OpenTUIShim.c:36 opentui_load()`（`dlopen(RTLD_NOW|RTLD_LOCAL)` + `dlsym` 预检 15 个必需符号），它**没有 version/size 字段**、前向兼容完全依赖符号存在性，错误传递用 `static error_message[256]`——在并发多请求下不安全。2.0 的 ABI 必须避开这两点。
+
+### 3.1 导出面
+
+```c
+// 插件必须且只需导出这一个符号；符号名可被 manifest 的 EntryPoint 覆盖以支持多实例
+LX_EXPORT LingXiStatus LingXiPlugin_Init(
+    const LingXiHostAPI* hostAPI,      // Host 提供的回调表（日志、发事件、请求权限、注册能力）
+    uint32_t             hostABIMajor, // Host 实现的 ABI 主版本
+    const LingXiPluginAPI** outAPI,    // 插件提供的函数表
+    uint32_t*            outABIMajor); // 插件声明的 ABI 主版本
+```
+
+Host 只用这一个符号找到插件；插件生命周期其余入口都在 `LingXiPluginAPI` 函数表里。
+
+### 3.2 ABI 规则（不可协商）
+
+1. **每个跨边界结构体首两字段固定为 `structSize` 与 `abiMajor`**。Host 按 `structSize` 判断字段可用性，新增字段一律追加在尾部。这是 1.x OpenTUIShim 缺失的那块，也是 2.0 前向兼容的唯一手段。
+2. 边界上只允许：定宽整数、指针、`const uint8_t* + uint32_t length`（UTF-8，**不假定 NUL 结尾**）、函数指针表。禁止 Swift / C++ 类型、异常、标准库容器跨边界。
+3. **所有权显式**：入参字符串只在调用期间有效，被调方若需留存必须复制；返回的缓冲区由分配方导出 `LingXiFree`，谁分配谁释放，规则写进头文件而非口头约定。
+4. 错误经 `LingXiStatus{code, domain, message}` **结构返回**，不使用全局缓冲、`errno` 或 thread-local；`code` 是封闭枚举，与第 6 章故障分类表一致。
+5. 插件回调 Core 只能通过 `LingXiHostAPI` 表；插件不得自行 spawn 线程直接触碰 Core 状态，异步工作一律经 Host 提供的执行入口。
+6. 调用顺序上有硬约束：`Init → Start → (运行) → Stop → Dispose`。`dlclose` 只在无在途调用时执行。
+7. Swift 插件用 `@_cdecl("LingXiPlugin_Init")` 导出；**插件必须只依赖 macOS 自带的 Swift 运行时，不得静态嵌入 stdlib**，否则同一 Host 内出现两份运行时。Host 与 Core 同版本发布，插件可独立发布，正是靠这条约束才成立。
+8. ABI 主版本不匹配 = 拒绝加载并报明确错误，**绝不静默降级或尝试兼容**。1.x 的 `resolveDriver` 遇未知协议静默 fallback 到 openaiChat，把配置错误推迟到上游才炸（E-06），此类行为在 2.0 属禁止项。
+
+### 3.3 函数表形状
+
+`LingXiPluginAPI` 至少含：`describe`（返回身份与声明）、`start`（接受授予的权限集）、`stop`、`dispose`、`invoke`（按能力种类分派：provider 请求、tool 调用、service 调用、hook 执行）、`cancel`、`capabilitiesChanged`（插件主动增量声明/撤回时经 `hostAPI` 上报）。
+
+具体结构体字段在阶段 2 实现时定稿并冻结为 `ABI-MANIFEST`，同时钉 SHA-256——沿用 1.x `Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt` 的那份做法，它写清了"ad-hoc 签名、未公证、不得发布分发、加载被阻时不得绕过 macOS 安全控制"，这个立场 2.0 继续持有。
+
+## 四、握手与能力注册：定义一次
+
+阶段 0 初稿要求"统一握手与能力注册流程"，原因是 1.x 存在**五套互不一致**的实现：插件 IPC 用 `ipcVersion: Int` + 裸字符串错误、Core 侧 manifest 用 `compatibility.schemaVersion` + 版本字符串区间、browser-host 用真 JSON-RPC + `protocolVersion: "v1"`、MCP 用 `initialize → notifications/initialized → tools/list`、前端 wire 用 `protocolVersion = "2.0"` 字符串。字段名、类型、顺序、失败表达各不相同。
+
+2.0 只有一条序列：
+
+```
+1  Core → Host   : 拉起 Host，指定插件包路径
+2  Host          : dlopen → 签名与策略校验 → dlsym(EntryPoint) → ABI 主版本协商 → 取回函数表
+3  Host → Core   : initialize.result { bundleId, version, teamId, abiMajor, capabilities[], permissions[], depends[], conflicts[] }
+4  Core          : registry 检查（enabled / 依赖 / 冲突）→ 权限策略判定 → 计算本次授予集
+5  Core → Host   : capability.activate(granted) → Host 转调插件 start(granted)
+6  运行期        : 请求-响应带 id；通知无 id；事件流按 streamId 多路；插件可发 capabilities.changed 增量声明或撤回
+7  Core → Host   : capability.deactivate → 插件 stop → 排空在途 → dispose → dlclose → Host 退出
+```
+
+规则：
+
+- **第 5 步之前，插件的任何能力都不可被调用**；任何在第 5 步前抵达的请求判为协议违规。握手只交换身份与声明，不产生生效能力。
+- 版本语义只有一个：`abiMajor` 整数。`MinimumCoreVersion` 与一切版本字符串仅用于给人看的提示，不参与任何判定。
+- 错误表达统一为 `code`（封闭枚举）+ `domain` + `message`，不再有裸字符串错误。
+- 前向兼容：未知枚举值降级为 `unknown` 而不抛异常；未知可选字段忽略；未知必选方法报 `methodNotImplemented` 并计入协议违规（IPC-011）。
+- 握手失败必须**命名到底哪一步失败**（签名不符 / ABI 主版本不符 / 缺符号 / 权限被拒 / 依赖缺失），不得只报裸 transport 错误（IPC-009）。
+
+## 五、生命周期状态机与撤销
 
 ```
 uninstalled → installed → enabling → running(ready)
-                                   ↘ degraded(部分能力不可用)
+                                   ↘ degraded(部分能力被拒授予)
                                    ↘ failed(熔断打开)
-        running → disabling → disabled → uninstalled
+      running → disabling → disabled → uninstalled
 ```
 
-- **registry 是唯一真相源**（PLG-001、E-12）。启停、故障、版本、授权决定全部落在 registry；插件目录扫描只用于发现未注册包。1.x 的 `discoverAndStartAll` 纯扫目录可执行文件且完全不查 `registry.enabled`，`configureExtension` 是硬编码 `enabled:true` 的假接口，前端命令表只增不减——三处各管一半，结果是禁用后命令残留、进程照拉起。这条必须在设计期闭环。
-- `disabled` 必须是零残留状态：进程被杀、路由表被清、租约被撤、前端注册被通知撤销（第五章流程）。
-- `failed` 与 `disabled` 严格区分：前者由内核因故障判定并保留恢复可能，后者由用户判定。
-
-## 四、进程模型
-
-每个插件一个常驻子进程实例（D-P1），由宿主监管者拉起与回收。
-
-- **启动前**：构造严格 allow-list 的环境（第八章），准备 stdout/stdin 管道，stderr 接有界环形缓冲。
-- **握手**：`initialize` 必须返回身份、实现的协议版本、能力清单。握手有独立超时（短）。**握手失败必须命名到底哪个能力不可用**，不得只报裸 transport 错误（IPC-009）。
-- **就绪**：能力进入路由表，前端可见。
-- **运行**：请求-响应与事件流复用同一对管道（不新开第二条管）。
-- **退出**：`shutdown` 通知 → 宽限期 → 终止进程树。
-
-必须内建的工程纪律（全部来自 1.x 实修记录，实现期再补代价极高）：
-
-| 项 | 要求 | 证据 |
-|---|---|---|
-| 管道读取 | 专用线程/专用调度，不占协作线程池 worker；非阻塞逐行读 | IPC-008 |
-| EOF 判定 | 关闭父端写柄使 EOF 成立；且**只有进程确实退出后才算 EOF**，否则子进程写完即退会丢最后一行 stdout | IPC-001、010 |
-| stderr | 必须持续排空进有界环形缓冲（默认 256KB，丢最旧），不排空会死锁子进程 | IPC-002 |
-| 帧大小 | 上行帧有硬上限（32MB），超限拒收并计入故障 | IPC-006 |
-| 事件采集 | 单条长驻 pump 做路由，取值处轮询采集；禁止对流的 `next()` 逐次 cancel 轮询（会吞事件） | IPC-005 |
-| 进程回收 | 统一进程树级联杀，父进程退出时不得遗留插件进程 | IPC-007 |
-| 挂起请求 | 看门狗断开时 `deinit` 必须 resume 全部 pending | IPC-004 |
-
-1.x 的 `PluginProcessHost` 是**同步串行一问一答**（非 JSON-RPC，无并发路由、无流式、无心跳、无重启退避，崩溃检测靠下次调用 `isRunning`），已判定应废弃重设计，只保留其握手语义。底座改用 1.x `LingXiPlatform/IPC` 那套分层实现（`ManagedProcess` + `StdioTransport` + `StderrRingBuffer` + `LineDelimitedJSONFramer` + `JSONRPCPeer`），它是 1.x 唯一真做过 JSON-RPC 2.0 的栈；`Sidecars/browser-host` 的长连接 sidecar 是最合适的模板（协议版本与模式强校验、per-method 超时、stderr 尾部诊断、环境白名单）。
-
-## 五、能力注册、增量变更与撤销
-
-- 握手只回身份与版本；能力通过独立方法 `capability.list` 获取，并允许运行期通过 `capability.changed` 通知**增量声明或撤回**（PLG-002）。1.x 只在握手一次性上报，导致插件无法动态失效——这条是设计期就要定的差异。
-- 内核维护三张路由表：provider 路由、tool 路由、service 路由，加一张 hook 表。
-- schema 变更等价于一次"撤回 + 重新声明"，且必须与内核的 epoch 规则联动（`Kernel-Design.md` 第八章第 2 条）：同一 epoch 内工具清单只单调追加，因此插件的 schema 变更要显式推进 epoch，否则请求被拒。
-- **撤销用租约模型**：每个已声明的能力持有租约，状态 `armed / used / expired / revoked`。这是 1.x 唯一做对的撤销样板（MCP 侧），照抄语义。
-- 禁用流程（顺序固定，一步失败都要继续走完并记录）：
-
-```
-1. registry 标记 disabling（前端立即可见"正在关闭"）
-2. 撤下三张路由表中的该插件条目 → 新的模型请求不再看到其工具/Provider
-3. 等待在途请求收敛（宽限期），未收敛者按取消处理
-4. 撤销租约为 revoked
-5. 关闭其持有的事件流与 Hook 挂载
-6. 终止进程树，回收归属它的后台子进程
-7. 通知前端 unregister（前端命令表必须可减）
-8. registry 标记 disabled，落盘
-```
-
-判定标准即项目书 §七第 3 条后半句："禁用后对应能力正确消失"，可验证为：禁用后模型请求的工具清单不含该工具、调用该工具的请求返回明确未注册错误、`ps` 无残留进程、前端命令面板无残留项。
+- **registry 是唯一真相源**（PLG-001、E-12）。目录扫描只用于发现未注册包，不决定是否拉起。1.x 三处各管一半，结果是禁用后命令残留、进程照拉起。
+- `failed`（内核因故障判定、可恢复）与 `disabled`（用户判定）严格区分。
+- `degraded` 是新状态：声明的能力中有一部分未被授予权限时进入，且必须在 TUI 可见——这是权限强制执行与声明分离后的必然产物（第 8 章）。
+- 禁用序列固定八步，一步失败也要继续走完并记录：标记 disabling → 摘路由表（provider/tool/service/hook 四张）→ 等在途收敛（超时按取消处理）→ 租约置 `revoked` → 关事件流与 Hook 挂载 → `stop/dispose/dlclose` → 杀 Host 进程树并回收其派生子进程 → 通知前端 unregister → 落盘 `disabled`。
+- 撤销用租约模型，状态 `armed / used / expired / revoked`（1.x MCP 侧唯一做对的样板，PLG-003）。
+- 判定"禁用零残留"的可执行标准：模型请求的工具清单不含该工具、调用它返回未注册错误、`ps` 无残留进程、前端命令面板无残留项。对应项目书 §七第 3 条后半句。
 
 ## 六、故障分类与隔离
 
-插件侧错误必须落进封闭分类，内核据此决定恢复动作。**"慢"与"死"必须可区分**（IPC-004、PLG-004）：
+"慢"与"死"必须可区分（IPC-004、PLG-004）：
 
 | 分类 | 判定 | 恢复动作 |
 |---|---|---|
-| `unresponsive` | 空闲沉默超阈值，但进程存活 | 发取消 → 仍沉默则升级 |
-| `crashed` | `terminationHandler` 触发，携带退出码/信号/stderr 尾部 | 结构化故障上报 + 熔断计数 |
-| `protocolViolation` | 帧超限、JSON 非法、未知方法、能力越界、声明外访问 | 立即隔离并标 `failed`，不重启重试 |
-| `capabilityFailed` | 单次调用返回业务失败 | 原样回传给该 Run，Turn 按内核规则终止 |
-| `timeout` | 单次调用超其声明的 per-method 超时 | 取消 + 记故障 |
-| `permissionViolation` | 越出 manifest 声明的权限 | 终止进程 + 标 `failed` + 前端告警 |
+| `unresponsive` | Host 空闲沉默超阈值但进程存活 | 发取消 → 仍沉默则升级为 `crashed` |
+| `crashed` | Host 进程异常退出（含插件在其中段错误），携带退出码/信号/stderr 尾部 | 结构化上报 + 熔断计数 |
+| `abiViolation` | ABI 主版本不符、缺符号、结构体尺寸异常、非法返回布局 | 拒绝加载，不重试 |
+| `protocolViolation` | 帧超限、非法 JSON、未知方法、第 5 步前调用 | 立即隔离并标 `failed`，不重启 |
+| `capabilityFailed` | 单次能力调用的业务失败 | 原样回传给该 Run，Turn 按内核规则终止 |
+| `timeout` | 超出该能力声明的 per-method 超时 | 取消 + 记故障 |
+| `permissionViolation` | 越出授予集的实际访问 | 终止 Host + 标 `failed` + 前端告警 |
 
-隔离要求：
-
-- 崩溃检测必须靠 `terminationHandler`，不是"下次调用时看 `isRunning`"。1.x 无 `terminationHandler`、无重启退避、无熔断计数，一次超时即 `terminate()` 判死整个 host，且此后静默失能（PLG-005）。
-- 熔断 + 指数退避重启：连续故障累计超阈值即标 `failed` 并从 registry 撤销路由，重启退避有上限；恢复由用户显式触发或下一次能力清单变更触发。
-- 单插件故障**不得**导致内核、前端或其他插件崩溃：故障在宿主侧合成后，以明确的 `capabilityFailed`/`crashed` 错误回传给受影响的那个 Run，让任务收到可预期错误并走恢复流程（项目书 §3.2、§七第 5 条）。
-- 崩溃发生在批次中间 → 走内核恢复矩阵（`Kernel-Design.md` 第六章）：只读项可重跑，可变项记 `executionStateUnknown`，绝不自动重放写操作。
-- L2 契约层必须有"假插件子进程"的六种异常注入：崩溃、超时、坏 JSON、无应答、泄漏凭据、继承 env——这一层是项目书"插件异常"验收的家（QA-005 关联）。1.x 已有 643 行的 `FaultInjectingTransport`，做插件版时以其为蓝本。
+- 崩溃检测必须靠 `terminationHandler`，不是"下次调用时看 `isRunning`"。
+- 熔断 + 指数退避重启；连续故障超阈值标 `failed` 并撤销路由；**禁止静默永久失能**（PLG-005，1.x 一次超时即判死全 host）。
+- 单插件故障不得波及 Core、前端或其他插件；受影响的那个 Run 收到明确错误并走内核恢复矩阵（`Kernel-Design.md` 第六章）。
+- 崩溃发生在工具批次中间 → 只读项可重跑，可变项记 `executionStateUnknown`，**副作用不重复**。
+- L2 契约层必须有针对真实 Host + 故障插件的六种异常注入：段错误退出、挂死沉默、非法帧、无应答、越权访问、读到宿主凭据。1.x 有 643 行 `FaultInjectingTransport` 可作蓝本，但那是 transport 级；2.0 需要**进程级**故障注入（用一个会自杀的测试插件 dylib）。
 
 ## 七、Hook 与生命周期扩展点
 
-这是项目书 §七第 4 条"Hook 真正有效"的落点，也是 1.x 的完整死路（E-09）：`PluginHookEvent`、`ExtensionHookEvent`、SDK 的 `PluginContext.on`、握手 `supportedHooks`、`executeHooks` 全套类型都在，但 `broadcastHook` 与 `ExtensionPlatform.emit` 在生产代码**零调用方**，且 `emit` 只回收诊断结构、handler 无返回值，因此即便接线也只能监听、不能改写执行流（PLG-006）。
+1.x 的 hook 是完整死路（E-09）：类型、SDK 注册、握手协商全都在，但 `broadcastHook` 在生产代码零调用点（连测试都没调），`ExtensionPlatform.emit` 只在测试里被调用，且 handler 无返回值、只回收诊断结构——即便接线也只能监听。
 
-2.0 的设计约束：
+2.0 的约束：
 
-1. **每个 Hook 点必须有类型化返回**，且返回能改变执行：可注入内容、可改写请求或结果、可否决（veto）并给出原因、可要求人工确认。只有诊断返回值的 Hook 不算扩展点。
-2. 节点清单（首发只开这五个，宁少勿多）：
+1. 每个 Hook 点必须**类型化返回且能改变执行**：注入内容、改写允许字段、否决并给原因、要求人工确认。只有诊断返回值的 Hook 不算扩展点。
+2. 首发节点五个，宁少勿多：`onContextPrepare`、`beforeModelRequest`、`afterModelEvent`、`beforeToolExecute`、`afterToolExecute`。
+3. **失败策略按类别固定，不由挂载方自由选择**（Phase 0.1 决策：安全授权不得因 Hook 故障默认放行）：
 
-| 节点 | 时机 | 可做的动作 |
+| 类别 | 涵盖 | 故障时行为 |
 |---|---|---|
-| `onContextPrepare` | 上下文装配完成、发请求前 | 追加数据通道内容（禁改指令通道）、否决请求 |
-| `beforeModelRequest` | 单次模型请求发出前 | 改写允许字段（采样参数等）、注入标签、否决 |
-| `afterModelEvent` | 流事件转发给内核状态机前 | 观察、标注；不得吞掉终态事件 |
-| `beforeToolExecute` | 工具批次内单调用执行前 | 批准/否决/改写参数/要求人工确认 |
-| `afterToolExecute` | 结果定型并落盘前 | 补充证据字段、标注失败上下文；不得替换载荷真值 |
+| `security` | 权限批准/否决、危险操作确认、凭据访问授权 | **一律 fail-closed**：超时、崩溃、非法返回一律判**拒绝**并要求人工确认。不提供任何覆盖开关 |
+| `transform` | 改写参数、追加上下文 | 默认 fail-open：跳过该 Hook、保留原值，并记录成前端可见的诊断 |
+| `observe` | 纯监听 | fire-and-forget，永不阻塞、永不影响执行 |
 
-3. `mode` 区分 `observe` 与 `intercept`；只有声明 `intercept` 的 Hook 才被等待返回。
-4. 每个 Hook 有独立超时与失败策略（`failOpen` / `failClosed`，由挂载方在声明时选定，缺省 `failOpen`）；Hook 插件超时或崩溃时降级为跳过 + 诊断，**永不带崩 Run**，也不得让取消被挂住。
-5. 顺序与优先级显式声明，同优先级按插件 id 稳定排序，禁止依赖注册先后这类不可复现顺序。
-6. Hook 注入的一切文本走数据通道，进不了指令位置（`Kernel-Design.md` 第八章第 1 条）。
-7. 事件（`event`）是单向广播，与 Hook 分开；事件不参与终止判定，不能改写执行。
+   一个 Hook 的类别由**内核**判定（依据它挂载的节点与返回类型），不由插件声明决定——插件不能把自己伪装成 `observe` 来逃避 fail-closed，也不能把 `transform` 升格为 `security` 去获得否决权。
+4. `afterModelEvent` 不得吞掉终态事件；任何 Hook 都不得参与 Run 的终止判定（内核终止权威只来自硬边界，`Kernel-Design.md` D2）。
+5. Hook 注入的文本一律走非特权数据通道，进不了指令位置（CTX-001）。
+6. 顺序与优先级显式声明，同优先级按 bundle id 稳定排序；禁止依赖注册先后这种不可复现顺序。
+7. L0 孤儿类型门禁必须同时守住 hook 相关类型——这条是防止 2.0 重演"类型全在、无人调用"的唯一有效手段（QA-006、PLG-006）。
 
-## 八、权限模型与凭据
+## 八、权限：声明、强制执行、OS 沙箱是三件事
 
-- **凭据由内核保管**。Provider 插件不持有 API key 本体：插件在需要时以内核授予的受限引用取用，内核记录取用行为并与 manifest 声明比对（PLG-008）。
-- 子进程环境是**严格 allow-list**，不是"从继承环境里剔除敏感项"。必须有 sentinel 探针测试证明 passphrase 与 `*_API_KEY` 进不了子进程，同时 `PATH`/`HOME` 仍存活。1.x 的做法正确但收口不完整——MCP 侧当时明确留手未收，成为遗留泄漏点（E-07）。
-- 权限声明在包内（manifest）、授权在运行期（用户确认 + 内核 `PermissionEngine` 预审）、审计在事后（实际行为比对）。
-- **不承诺"沙箱"**。在真正把 macOS 沙箱机制接到插件进程之前，只说"进程隔离 + 权限声明 + 行为审计"。1.x 插件 SDK 的 README 已就此诚实说明，2.0 继承这句实话。
-- 敏感操作确认与执行边界由内核保留，不因插件开放而稀释（项目书 §3.2 末段）。
+Phase 0.1 决策第 3、4 条要求把这三层彻底分开写清楚。
 
-## 九、协议契约（IPC）
+**第 1 层 — 声明**：`Info.plist` 的 `Permissions`（网络目的地、文件范围、凭据引用、子进程、UI 通知）。这一层**没有任何强制力**，只是给用户看和给第 2 层做输入。
 
-- 传输：stdio，换行分隔 JSON（`LineDelimitedJSONFramer`），UTF-8，帧上限 32MB。
-- 语义：JSON-RPC 2.0 子集 + 约定扩展。带 `id` 为请求、无 `id` 为通知；响应按 `id` 路由回挂起请求，因此**必须支持并发多路**，不得退回串行。
-- 流式：一次长任务的事件流用 `streamId` 多路复用，靠通知推送，`$/streamEnd` 或终态事件收尾；背压由内核侧消费速率决定，插件侧缓冲区有界，溢出报 `unresponsive` 而不是无限增长。
-- 取消：内核发 `$/cancel(streamId|requestId)`，插件必须在宽限期内停手并结束流；未停则升级 kill 进程树。**取消不得被伪装成业务失败**（`Kernel-Design.md` 第七章）。
-- 心跳：内核可发 `$/ping`；心跳只刷空闲看门狗，不进入模型与前端可见事件。
-- 超时：握手超时（短、固定）、per-method 调用超时（插件声明能力时可带默认值，内核可收紧）、空闲沉默超时。全部 silence-bound。
-- 前向兼容：上游/插件送回内核**不认识**的枚举值必须降级为 `.unknown` 而不抛异常；不认识的可选字段忽略；不认识的必选方法报 `methodNotFound` 并计入协议违规（PLG-010）。1.x 的 `EnumDecoderRobustnessTests` 是现成门禁。
-- 版本协商：`initialize` 交换整数 `major` + `minor`（1.x `PluginIPC.supportedVersions` 的思路可保留）。major 不匹配直接拒绝加载并报明确错误；minor 按能力位取交集。**未知协议一律硬失败，绝不静默 fallback**（E-06）。`minimumCoreVersion` 字符串永远只做人类提示。
-- 契约完整性：协议公开类型若无生产者或消费者，CI 失败（QA-006）。这条是防 2.0 重演"hook 全套类型都在但无人调用"的唯一有效手段。
+**第 2 层 — 强制执行（唯一的真实边界）**：内核在每个调用点判定——工具能力网关、凭据发放、模型请求的网络出口、文件与命令执行范围、Hook 授予集。越界即 `permissionViolation`。实现要点：
 
-## 十、发现、安装与更新
+- 凭据由内核保管。Provider 插件不持有 key 本体；需要时以内核授予的受限引用取用，取用行为被记录并与声明比对。1.x 的 `EnvironmentSanitizer` + 严格 allow-list + sentinel 探针（PLG-008）继续有效。
+- Host 进程环境是严格 allow-list；**MCP 一类的外部进程不得豁免**（E-07 的教训就是"这次先不动"留下泄漏点）。
+- `degraded` 状态与"部分声明被拒"必须在前端可见；用户能看到自己实际授予了什么。
 
-- 安装：校验签名与 checksum → 解析 manifest → 冲突检测（同 `id` 不同版本、同 provider id 重复注册）→ 写入 registry（默认 `installed` 且未启用）→ 首次启用时才展示权限确认。
-- 更新：新进程新实例，旧实例按第五章禁用流程彻底下线后再拉起新版；不允许同一 `id` 两个版本同时持有路由。
-- 卸载：先禁用流程，再删包与 registry 条目；插件产生的持久化数据归属内核存储域，卸载不自动清除，需显式操作。
-- 启停、故障、权限、版本信息必须在前端可见可管理（项目书 §3.5、§3.2），协议面阶段 2 就准备好，不等阶段 4。
+**第 3 层 — OS 沙箱：当前没有，不宣称有**（Phase 0.1 决策第 4 条）。诚实记录两条约束：
+
+1. 插件在 Host 内运行，与 Host 同地址空间；权限判定是语言层/逻辑层的，不是内核级强制。
+2. 要让社区插件（不同 Team ID）被加载，Host 必须带 `com.apple.security.cs.disable-library-validation`；按 Apple 的定义，该 entitlement 表示"App 加载任意插件或框架，而不要求代码签名"。也就是说，**开启社区插件支持本身就会关掉一层 macOS 安全检查**，此后唯一防线是第 2 层加上我们自行做的签名校验。
+
+因此签名策略分两档，且这是用户可见的选择而不是内部实现细节：
+
+| 档位 | 内容 | 默认 |
+|---|---|---|
+| `restricted` | Host 保持 library validation 开启，只加载与 Host 同 Team ID 签名的插件 → 仅官方插件可用 | **首发默认** |
+| `permissive` | Host 使用带 `disable-library-validation` 的构建/配置，允许第三方签名插件；启用是用户的显式动作，前端必须告警 | 需用户主动开启 |
+
+两档都必须由 Host 自行校验：`codesign --verify --strict` 通过、Team ID 落入策略、拒绝 ad-hoc 签名进入发布通道（开发模式可加载未发布插件，但必须显示为不受信）。参照 1.x 已有的明确立场：`codesign --verify --deep --strict` 通过 **不等于** Developer ID 或公证（`Docs/browser check/` 两份 PoC 记录），且"加载被阻时不得绕过 macOS 安全控制"（`Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt`）。
+
+未来若真要把 macOS 沙箱接到 Host 上，单独开 ADR，届时才允许出现"沙箱"字样。
+
+## 九、Core ↔ Host 协议（D-P2 的职责重定位）
+
+阶段 0 初稿把 JSON-RPC over stdio 定为**插件作者契约**，这是本次修订的主要偏差。新定位：
+
+> **JSON-RPC/IPC 是 Core 与 Plugin Host 之间的内部实现协议，插件作者不需要知道它存在。**
+
+保留的技术决定（都仍成立）：换行分隔 JSON、单管双工、请求-响应按 id 路由与无 id 通知共存、事件按 `streamId` 多路复用（禁止再开第二条管）、帧上限 32MB、silence-bound deadline、心跳只刷空闲看门狗不外传、专用读取线程不占协作线程池、stderr 有界排空 256KB、关父端写柄使 EOF 成立且只在进程真退出后判 EOF、进程树级联回收、看门狗 `deinit` 必须 resume 全部挂起请求。
+
+理由：作者契约若要求实现 IPC，等于把 E-08 那类坑（串行同步无法后补流式、pump 写法、EOF 判定、背压）转嫁给每一位社区作者，与"最简内核 + 插件加载器"的初衷相反。改由官方维护一个通用 Host 后，这些坑只需在一处修好。
+
+代价与承诺：Host 成为需要长期维护的官方组件，其 ABI 头文件与 manifest schema 是公开契约，变更要提 ABI 主版本；内部 IPC 协议不对外承诺兼容，随 Core/Host 同版本发布，但仍需版本字段以给出可读的错配诊断。
+
+## 十、发现、安装、更新
+
+- 安装：验包结构 → 验签名与 Team ID 策略 → 解析并校验 manifest（无默认值兜底）→ 依赖与冲突检测（同 `id` 不同版本、同一 provider id 重复注册）→ 写入 registry（`installed`，未启用）→ 首次启用时才展示权限确认。
+- 更新：新版 Host 实例在旧实例走完禁用序列后才拉起；不允许同一 `id` 两个版本同时持有路由。
+- 卸载：先禁用序列，再删包与 registry 条目；插件产生的数据归内核存储域，不随卸载自动清除。
+- 启停、版本、作者（Team ID）、权限授予、故障状态必须在 TUI 可见可管理；协议面阶段 2 就绪，不等阶段 4。
 
 ## 十一、官方插件质量标准
 
-社区按同一规则开发，因此标准要写成可核对清单（详细 Provider 侧清单见 `Provider-Plugin-Contract.md` 第六章）：
+官方与社区同契约，所以这份清单同时是官方插件的发布门禁：
 
-1. manifest 完整、无默认值兜底、能力与实际行为一致。
-2. 所有 IPC 异常路径自己先测过：崩溃、挂死、坏帧、越权、泄漏 env。
-3. 禁用后零残留（第五章判定四条件全过）。
-4. 不参与终止判定、不写指令通道、不伪造终态。
-5. 有 README（安装、权限说明、故障排查）与 LICENSE。
-6. 版本语义遵守兼容规则；破坏性变更改 `id` 或提 major。
+1. manifest 完整、无默认值兜底、声明与实际行为可比对。
+2. 只导出约定的 ABI 符号，不泄漏 Swift 类型到边界；只用系统 Swift 运行时。
+3. 六类异常路径自测通过（第 6 章）。
+4. 禁用后零残留（第 5 章四条判定）。
+5. 不参与终止判定、不写指令通道、不伪造终态、`security` 类 Hook 不试图逃避 fail-closed。
+6. 带 README（安装、权限说明、故障排查）与 LICENSE。
+7. 破坏性变更提 ABI 主版本或改 `id`。
 
 ## 十二、决策与待决
 
 | ID | 决定 | 理由 | 可逆性 |
 |---|---|---|---|
-| D-P1 | 每插件单常驻进程 | 撤销语义可证；避免多实例路由与租约爆炸 | 中 |
-| D-P2 | JSON-RPC 2.0 over 换行分隔 JSON，单管双工多路复用 | 并发与流式无法后补，必须设计期定（E-08） | 低 |
-| D-P3 | 官方插件用 Swift，契约语言不限 | 同工具链零额外运行时；JSON-RPC 保证第三方自由 | 高 |
-| D-P4 | 凭据由内核保管，插件取受限引用 | 消除"sidecar 继承全部 key"这类泄漏面 | 中 |
-| Q-P1 | 签名机制用什么（自签 + 本机信任链，还是接入系统签名） | 涉及发布流程，需主人定 | — |
-| Q-P2 | 是否首发就把 macOS 沙箱接到插件进程 | 若承诺隔离则需要；工作量与风险都要单独评估 | — |
-| Q-P3 | `service` 注册面的首批具体服务（除 provider/tool/hook 外是否真有需要） | 避免造无消费者的通道（QA-006） | — |
+| D-P1 | 每插件一个 Host 进程实例 | 撤销与故障归因可证；避免多实例路由与租约爆炸 | 中 |
+| D-P2（**已修订**） | JSON-RPC over stdio 降级为 **Core↔Host 内部协议**；插件作者契约改为固定 C ABI + 单一导出符号 | 决策第 3、4 条；把 pump/EOF/背压/串行陷阱集中到官方一处（E-08） | 低（作者可见契约） |
+| D-P3 | 官方插件用 Swift，经 `@_cdecl` 导出 C ABI；社区插件语言不限，只要满足 C ABI | 同工具链零额外运行时；C ABI 是跨语言唯一稳定选择 | 中 |
+| D-P4 | 凭据由内核保管，插件取受限引用 | 消除 sidecar/插件继承全部 key 的泄漏面 | 中 |
+| D-P5 | `.lxap` 用 macOS 原生 bundle + 标准代码签名，不自造签名体系 | 决策第 1 条；签名即作者身份，Team ID 可作策略输入 | 低 |
+| D-P6 | 首发默认 `restricted`（同 Team ID 才加载），第三方插件需用户显式开启 `permissive` | 不隐瞒"开启社区插件会关掉一层 macOS 安全检查"这一事实 | 中 |
+| D-P7 | `security` 类 Hook 强制 fail-closed，类别由内核判定 | 决策第 4 条：安全授权不得因 Hook 故障默认放行 | 高 |
+| ~~Q-P1~~ | 已解决：标准 macOS 签名（`codesign` + Team ID 策略），开发模式例外且显示为不受信 | — | — |
+| Q-P2 | 插件是否需要公证（notarization）作为 `permissive` 档的额外门槛 | 影响第三方作者门槛，需在阶段 2 结束前定 | — |
+| Q-P4 | 单个通用 Host 承载多种语言插件时的内存上界与回收策略 | 长任务不泄漏是项目书 §七"可长期使用"的一部分 | — |
+| Q-P5 | `service` 注册面在阶段 2 是否真有首批消费者 | 无消费者的通道一律不建（QA-006） | — |
