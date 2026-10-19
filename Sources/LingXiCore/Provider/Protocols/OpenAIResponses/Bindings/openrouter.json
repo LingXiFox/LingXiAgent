@@ -1,9 +1,0 @@
-{
-  "productID": "openrouter",
-  "protocol": "openaiResponses",
-  "baseURL": "https://openrouter.ai/api/v1",
-  "path": "/responses",
-  "quirks": [
-    "gatewayRoutingSuffix"
-  ]
-}

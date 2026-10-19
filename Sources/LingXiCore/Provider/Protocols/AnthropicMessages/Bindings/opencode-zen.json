@@ -1,9 +1,0 @@
-{
-  "productID": "opencode-zen",
-  "protocol": "anthropicMessages",
-  "baseURL": "https://opencode.ai/zen/v1",
-  "path": "/messages",
-  "quirks": [
-    "modelLevelProtocolRouting"
-  ]
-}

@@ -1,7 +1,0 @@
-{
-  "productID": "mimo-api",
-  "protocol": "anthropicMessages",
-  "baseURL": "https://api.xiaomimimo.com/anthropic",
-  "path": "/v1/messages",
-  "quirks": []
-}

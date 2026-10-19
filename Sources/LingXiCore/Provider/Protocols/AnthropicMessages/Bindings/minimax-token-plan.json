@@ -1,9 +1,0 @@
-{
-  "productID": "minimax-token-plan",
-  "protocol": "anthropicMessages",
-  "baseURL": "https://api.minimaxi.com/anthropic",
-  "path": "/v1/messages",
-  "quirks": [
-    "subscriptionKeyOnly"
-  ]
-}

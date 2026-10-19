@@ -1,9 +1,0 @@
-{
-  "productID": "mimo-api",
-  "protocol": "openaiChat",
-  "baseURL": "https://api.xiaomimimo.com/v1",
-  "path": "/chat/completions",
-  "quirks": [
-    "reasoningContentPassthrough"
-  ]
-}

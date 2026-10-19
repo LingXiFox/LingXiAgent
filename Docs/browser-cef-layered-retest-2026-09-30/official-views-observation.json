@@ -1,7 +1,0 @@
-{
-  "mainVisible": true,
-  "popupVisible": true,
-  "popupSubmission": "Views popup verified",
-  "cmdQ": "No close callback observed",
-  "cmdW": "Both OnBeforeClose callbacks observed; process remained alive; no CefShutdown log"
-}

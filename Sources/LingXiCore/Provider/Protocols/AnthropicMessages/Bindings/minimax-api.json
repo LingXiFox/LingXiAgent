@@ -1,9 +1,0 @@
-{
-  "productID": "minimax-api",
-  "protocol": "anthropicMessages",
-  "baseURL": "https://api.minimaxi.com/anthropic",
-  "path": "/v1/messages",
-  "quirks": [
-    "apiKeyHeaderAuthorization"
-  ]
-}
