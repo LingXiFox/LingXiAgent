@@ -42,6 +42,8 @@ enum Key: Equatable {
     case pageUp, pageDown, home, end
     case escape, interrupt, endOfInput, clearLine
     case unknown, pasteStart, pasteEnd, commandPalette, newline, toggleThinking
+    case lineStart, lineEnd, wordLeft, wordRight, deleteWordBack, killToEnd, redraw
+    case scrollUp, scrollDown
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -69,40 +71,34 @@ final class KeyParser {
                         return keys
                     }
                     let suffix = String(decoding: pending[(index + 2)...end], as: UTF8.self)
-                    switch suffix {
-                    case "200~": keys.append(.pasteStart)
-                    case "201~": keys.append(.pasteEnd)
-                    case "A": keys.append(.up)
-                    case "B": keys.append(.down)
-                    case "C": keys.append(.right)
-                    case "D": keys.append(.left)
-                    case "H": keys.append(.home)
-                    case "F": keys.append(.end)
-                    case "3~": keys.append(.delete)
-                    case "5~": keys.append(.pageUp)
-                    case "6~": keys.append(.pageDown)
-                    case "13;2u", "13;3u", "27;2;13~": keys.append(.newline)
-                    default: keys.append(.unknown)
-                    }
+                    keys.append(Self.csi(suffix))
                     index = end + 1
+                } else if pending[index + 1] == UInt8(ascii: "O") {
+                    // SS3: application-mode cursor keys, sent by some terminals for arrows and Home/End.
+                    guard index + 2 < pending.count else {
+                        pending = Array(pending[index...])
+                        return keys
+                    }
+                    keys.append(Self.csi(String(UnicodeScalar(pending[index + 2]))))
+                    index += 3
                 } else if pending[index + 1] == 0x0D {
                     keys.append(.newline)
+                    index += 2
+                } else if pending[index + 1] == 0x7F || pending[index + 1] == 0x08 {
+                    keys.append(.deleteWordBack)
+                    index += 2
+                } else if pending[index + 1] == UInt8(ascii: "b") {
+                    keys.append(.wordLeft)
+                    index += 2
+                } else if pending[index + 1] == UInt8(ascii: "f") {
+                    keys.append(.wordRight)
                     index += 2
                 } else {
                     keys.append(.escape)
                     index += 1
                 }
-            case 0x03: keys.append(.interrupt); index += 1
-            case 0x04: keys.append(.endOfInput); index += 1
-            case 0x10: keys.append(.commandPalette); index += 1
-            case 0x14: keys.append(.toggleThinking); index += 1
-            case 0x15: keys.append(.clearLine); index += 1
-            case 0x0D: keys.append(.enter); index += 1
-            case 0x0A: keys.append(.newline); index += 1
-            case 0x7F, 0x08: keys.append(.backspace); index += 1
-            case 0x09: keys.append(.tab); index += 1
-            case 0x00...0x1F:
-                keys.append(.unknown); index += 1
+            case 0x00...0x1F, 0x7F:
+                keys.append(Self.control(byte)); index += 1
             default:
                 let length: Int
                 switch byte {
@@ -127,6 +123,80 @@ final class KeyParser {
         }
         pending.removeAll(keepingCapacity: true)
         return keys
+    }
+
+    private static func control(_ byte: UInt8) -> Key {
+        switch byte {
+        case 0x01: .lineStart
+        case 0x03: .interrupt
+        case 0x04: .endOfInput
+        case 0x05: .lineEnd
+        case 0x09: .tab
+        case 0x0A: .newline
+        case 0x0B: .killToEnd
+        case 0x0C: .redraw
+        case 0x0D: .enter
+        case 0x10: .commandPalette
+        case 0x14: .toggleThinking
+        case 0x15: .clearLine
+        case 0x17: .deleteWordBack
+        case 0x7F, 0x08: .backspace
+        default: .unknown
+        }
+    }
+
+    /// Kitty keyboard protocol, "disambiguate" level: `CSI code[:alt];mods[:event] u`. Modifier bits
+    /// after subtracting one: 1 shift, 2 alt, 4 ctrl. Ctrl-letters map back to their legacy bytes.
+    private static func csiU(_ body: Substring) -> Key {
+        let fields = body.split(separator: ";", omittingEmptySubsequences: false)
+        guard let code = fields.first?.split(separator: ":").first.flatMap({ Int($0) }) else { return .unknown }
+        let mods = (fields.count > 1 ? fields[1].split(separator: ":").first.flatMap { Int($0) } : nil).map { $0 - 1 } ?? 0
+        let shift = mods & 1 != 0, alt = mods & 2 != 0, ctrl = mods & 4 != 0
+        switch code {
+        case 13: return shift || alt || ctrl ? .newline : .enter
+        case 27: return .escape
+        case 9: return .tab
+        case 127, 8: return alt || ctrl ? .deleteWordBack : .backspace
+        default:
+            guard let scalar = Unicode.Scalar(code) else { return .unknown }
+            if ctrl, !alt, (0x61...0x7A).contains(code) || (0x41...0x5A).contains(code) {
+                return control(UInt8(code & 0x1F))
+            }
+            if alt, !ctrl, code == 0x62 { return .wordLeft }
+            if alt, !ctrl, code == 0x66 { return .wordRight }
+            if !ctrl, !alt, !(0xE000...0xF8FF).contains(code) { return .character(Character(scalar)) }
+            return .unknown
+        }
+    }
+
+    private static func csi(_ suffix: String) -> Key {
+        if suffix.hasSuffix("u"), let first = suffix.first, first.isNumber {
+            return csiU(suffix.dropLast())
+        }
+        switch suffix {
+        case "200~": return .pasteStart
+        case "201~": return .pasteEnd
+        case "A": return .up
+        case "B": return .down
+        case "C": return .right
+        case "D": return .left
+        case "H", "1~", "7~": return .home
+        case "F", "4~", "8~": return .end
+        case "3~": return .delete
+        case "5~": return .pageUp
+        case "6~": return .pageDown
+        case "1;3C", "1;5C", "1;9C": return .wordRight
+        case "1;3D", "1;5D", "1;9D": return .wordLeft
+        case "27;2;13~", "27;3;13~", "27;5;13~": return .newline
+        default:
+            // SGR mouse report: only the wheel is used, and only while /mouse is on.
+            if suffix.hasPrefix("<"), suffix.hasSuffix("M") {
+                let button = suffix.dropFirst().split(separator: ";").first.flatMap { Int($0) }
+                if button == 64 { return .scrollUp }
+                if button == 65 { return .scrollDown }
+            }
+            return .unknown
+        }
     }
 }
 

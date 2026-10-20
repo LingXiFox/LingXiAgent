@@ -37,6 +37,8 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `run.state` | `runID`, `sessionID`, `status` | `running` 等运行态 |
 | `delta` | `runID`, `delta` | 助手文本增量（真流式，逐事件到达） |
 | `reasoning` | `runID`, `reasoning` | 推理增量（可选渲染） |
+| `tool` | `runID`, `tool`, `status`, `detail?` | 模型发起工具调用：`started` 只有名称，`requested` 带截断到 240 字符的参数 JSON |
+| `usage` | `runID`, `usage` | 单次 Provider 调用的 token 计数（input/output/reasoning/cacheRead，缺失不等于 0）；一个 Run 可有多条 |
 | `run.terminal` | `runID`, `status`, `cause`, `detail`, `sessions` | 终态；`status != completed` 时 TUI 明确提示 cause/detail |
 | `plugins.changed` | `plugins` | 启停、崩溃或外部变化后的快照 |
 | `models.changed` | `models` | 路由变化后的可用模型 |
@@ -81,24 +83,48 @@ SwiftPM ad-hoc Core 使用文件型 Keychain默认 ACL，仅信任创建项的 C
 
 ## TUI 导航与屏幕绘制
 
-首页采用居中输入区；对话时输入区固定在底部。`/` 前缀显示命令候选，↑↓ 选择、Tab 补全、Enter 执行；
-Ctrl-P 打开可搜索命令面板。`/models`、`/sessions`、`/plugins` 与不带参数的 `/auth` 使用同一键盘选择方式。
-选择器内 Esc 返回，再输入新的斜杠命令。已有 `/auth <provider> [update|remove|status]` 用法保持可用。
+布局：顶栏（品牌、会话标题、工作目录）、消息区、输入区、状态栏。首页输入区居中，下方是常用命令提示；
+对话时输入区固定在底部。输入区底行是模型区，只显示当前模型与草稿行数（插件状态在 `/plugins`）。
+状态栏左侧是运行态（就绪 / 生成中 + 已用秒数 / 已向上滚动），右侧只放一个当前最相关的按键（空闲时 `Ctrl-P 命令`）。
+生成中只有秒数计数器每秒刷新一次，没有动画。
 
-输入区随内容增长（最多显示 6 行，再随光标滚动），中文、组合字符与 emoji 按字形计宽。
-Enter 发送，Ctrl-J 换行；支持能发送独立序列的 Shift-Enter / Alt-Enter。
+消息：用户消息是带狐橙竖条的凸起块；回复以 `◆ 泠溪` 开头，结束后在末尾显示模型、耗时与 `↑输入 ↓输出` token。
+推理默认折叠，只显示字数；Ctrl-T 或 `/thinking` 展开/收起，不改变发给模型的内容。
+`tool` 事件显示为 `◇ 工具名  参数`，历史中的工具结果最多显示 4 行。运行未完成时原因以内联错误留在对话里。
+
+Markdown：标题、有序/无序/任务列表、引用、分隔线、带语言标签与轻量高亮的代码块（流式中未闭合的代码块照常渲染）、
+表格（按 CJK 宽度对齐，超宽时截断最宽列）、行内代码、加粗、斜体、删除线、链接（显示为文字加灰色 URL）。
+英文按词换行，过长的词与 CJK 按字断行；行内样式跨行保持。
+
+`/` 前缀在输入区旁弹出命令候选（对话时在上方，首页在下方），↑↓ 选择、Tab 补全、Enter 执行；
+Ctrl-P 打开可搜索命令面板。`/models`、`/sessions`、`/plugins` 与不带参数的 `/auth` 使用同一居中面板，
+显示选中位置（如 `2/8`）；选择器内 Esc 返回。`/plugins` 是勾选列表：Space 切换启用/禁用（只暂存），
+Enter 保存并关闭（只对与当前状态不同的插件发送 `plugin.enable` / `plugin.disable`），Esc 放弃修改。已有 `/auth <provider> [update|remove|status]` 用法保持可用。
+`/copy` 用 `pbcopy` 复制最后一条回复。`/mouse` 开关鼠标捕获（默认关）：开启后滚轮滚动消息，
+但终端原生拖选需按住 fn（Terminal.app）或 ⌥（iTerm2）；默认关闭是为了不破坏直接拖选复制。
+
+编辑：输入区随内容增长（最多 8 行，再随光标滚动），中文、组合字符与 emoji 按字形计宽。
+真实终端光标停在输入位置并显示，输入法候选框跟随输入点；面板打开时隐藏光标。
+Enter 发送，Shift-Enter 换行。TUI 启动时开启 kitty 键盘协议的 disambiguate 级别（`CSI >1u`，退出时 `CSI <u` 恢复），
+支持该协议的终端（如 kitty、Ghostty、WezTerm、iTerm2 3.5+）会把 Shift-Enter 报告为 `CSI 13;2u`，Esc、Ctrl 组合键
+也以 `CSI code;mods u` 到达并映射回原有按键。不支持的终端（如 Terminal.app）里 Shift-Enter 与 Enter 无法区分，
+可用行尾 `\` 再按 Enter、Alt-Enter（需开启 Option 作 Meta）或 Ctrl-J 换行。
+Ctrl-A/Ctrl-E 行首/行尾，Ctrl-W 或 ⌥⌫ 删除前一个词，Ctrl-K 删除到行尾，Ctrl-U 清空，
+⌥←/⌥→（或 ESC b/f、Ctrl-←/→）按词移动，Ctrl-D 在非空时删除后一个字符，Ctrl-L 重绘。
+Home/End 接受 CSI `H/F/1~/4~/7~/8~` 与 SS3（`ESC O x`）变体。非空输入时 Ctrl-C 先清空，再按一次退出。
 带括号粘贴保留换行并留在草稿，不会因粘贴中的回车、命令或控制键触发操作。
 ↑↓ 在逻辑行间移动；抵达首尾后回看本进程最多 100 条聊天输入，向下返回原草稿。
 命令和专用隐藏输入不进入这份历史，也不另建历史文件。生成中按 Enter 保留草稿，Esc 取消生成。
 
 TUI 接收 `chat.send` 回复的 `sessionID` / `runID`，后续发送复用同一会话。
 生成期间禁止 `/new`、`/switch`、`/clear`，避免把在途回复写到另一会话；其他选择器仍可打开。
-推理事件与回答依序呈现，默认折叠；Ctrl-T 或 `/thinking` 展开/收起，不改变发给模型的内容。
 会话历史接口当前不保存推理，重启恢复的仍是正式聊天和工具条目，不虚构丢失的推理内容。
-PgUp/PgDn 滚动聊天，End 回到底部。标题、选择器等单行区域中的换行转换为空格，不能扰乱绝对行绘制。
+PgUp/PgDn 按一屏翻页，End 回到底部；向上滚动后新内容到达时视图保持原位，右侧滚动条指示位置。
+提示消息约 6 秒后消失，错误保留到被替换。
 
-隐藏输入是独立认证面板，只把 label 和字符数传给 Renderer；Renderer 不接触 secret。
-每帧按终端实际列/行数裁剪，以绝对坐标逐行清除再绘制，使用固定背景，避免缩短输入后残留旧文本。
-TUI 会恢复退出时的自动换行、光标和背景状态。布局参考 OpenCode 的
+渲染：Renderer 在 cell 帧缓冲上绘制（宽字符占两格，覆盖半个宽字符时补空格），每帧按终端实际列/行数裁剪，
+以绝对坐标逐行清除再绘制，使用固定背景，避免缩短输入后残留旧文本；单行区域中的换行一律转为空格。
+已排版的消息按内容与宽度缓存，只有变化的消息重新排版。隐藏输入是独立认证面板，只把 label 和字符数传给 Renderer；
+Renderer 不接触 secret。TUI 会恢复退出时的自动换行、光标、鼠标与背景状态。布局参考 OpenCode 的
 [home](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/home.tsx) 与
 [prompt](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/component/prompt/index.tsx)，实现沿用本项目 Swift 渲染器。

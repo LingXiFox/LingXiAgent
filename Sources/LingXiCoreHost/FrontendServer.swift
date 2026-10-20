@@ -195,6 +195,23 @@ final class FrontendServer: @unchecked Sendable {
                     self.emit(FrontendEvent(event: "delta", runID: runID, sessionID: sessionID, delta: delta))
                 case .reasoningDelta(let delta):
                     self.emit(FrontendEvent(event: "reasoning", runID: runID, sessionID: sessionID, reasoning: delta))
+                case .toolCallStarted(let start):
+                    var tool = FrontendEvent(event: "tool", runID: runID, sessionID: sessionID, status: "started")
+                    tool.tool = start.toolName
+                    self.emit(tool)
+                case .toolCallCompleted(let call):
+                    var tool = FrontendEvent(event: "tool", runID: runID, sessionID: sessionID, status: "requested")
+                    tool.tool = call.toolName
+                    // Arguments are model output the user may see; bound them so one call cannot flood the UI.
+                    tool.detail = call.argumentsJSON.count > 240 ? String(call.argumentsJSON.prefix(240)) + "…" : call.argumentsJSON
+                    self.emit(tool)
+                case .usage(let usage):
+                    var event = FrontendEvent(event: "usage", runID: runID, sessionID: sessionID)
+                    event.usage = TokenUsage(
+                        inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+                        reasoningTokens: usage.reasoningTokens, cacheReadTokens: usage.cacheReadTokens
+                    )
+                    self.emit(event)
                 default:
                     break
                 }

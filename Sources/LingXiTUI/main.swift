@@ -148,6 +148,8 @@ private struct App {
     var cancelling = false
     var pending: [Int: Pending] = [:]
     var feedback: Message?
+    /// Notices fade after a few seconds; errors stay until something replaces them.
+    var feedbackExpiry: Date?
     var picker: Picker?
     var completionIndex = 0
     var coreGone = false
@@ -158,10 +160,17 @@ private struct App {
     var discardPaste = false
     var discardInputBatch = false
     var showThinking = false
+    var mouse = false
     // Chat prompts only, bounded to this process. Commands and hidden input never enter recall.
     var promptHistory: [String] = []
     var historyIndex: Int?
     var historyDraft: [Character] = []
+    // Per-run accounting for the footer under each reply.
+    var runStarted: Date?
+    var runFirstMessage = 0
+    var runInputTokens: Int?
+    var runOutputTokens: Int?
+    var lastFrame = FrameInfo()
 
     mutating func insert(_ text: String) {
         let prefix = String(input.prefix(cursor)) + text
@@ -182,34 +191,60 @@ private struct App {
         historyIndex = next == promptHistory.count ? nil : next
     }
 
+    /// Word boundaries are whitespace-delimited; CJK text without spaces moves one run at a time.
+    func wordBoundary(_ direction: Int) -> Int {
+        var index = cursor
+        if direction < 0 {
+            while index > 0, input[index - 1].isWhitespace { index -= 1 }
+            while index > 0, !input[index - 1].isWhitespace { index -= 1 }
+        } else {
+            while index < input.count, input[index].isWhitespace { index += 1 }
+            while index < input.count, !input[index].isWhitespace { index += 1 }
+        }
+        return index
+    }
+
     var sessionTitle: String {
-        guard let activeSession else { return "新会话" }
-        return sessions.first { $0.id == activeSession }?.title ?? "会话"
+        if let activeSession, let title = sessions.first(where: { $0.id == activeSession })?.title { return title }
+        // A brand-new session is not in the list until its first run ends.
+        if let first = messages.first(where: { $0.role == .user })?.text {
+            return first.count > 60 ? String(first.prefix(60)) + "…" : first
+        }
+        return "新会话"
     }
 
-    var header: String {
-        let modelName = model ?? "无模型"
-        let pluginCount = plugins.filter(\.running).count
-        return "\(modelName)  ·  插件 \(pluginCount)"
+    var status: StatusLine {
+        if coreGone { return StatusLine(left: [Span("● Core 已退出", .color(Theme.error))], right: "Ctrl-C 退出") }
+        if let secretInput {
+            return StatusLine(left: [Span("● ", .color(Theme.fox)), Span("\(secretInput.label)：隐藏输入中", .color(Theme.dim))],
+                              right: "Enter 保存 · Esc 取消")
+        }
+        if authBusy { return StatusLine(left: [Span("● 正在处理凭据…", .color(Theme.fox))], right: "") }
+        if cancelling { return StatusLine(left: [Span("● 正在取消…", .color(Theme.fox))], right: "") }
+        if running {
+            let seconds = Int(Date().timeIntervalSince(runStarted ?? Date()))
+            return StatusLine(left: [Span("● ", .color(Theme.fox)), Span("生成中", .color(Theme.cream)),
+                                     Span("  \(seconds)s", .color(Theme.dim))], right: "Esc 取消")
+        }
+        if scroll > 0 {
+            return StatusLine(left: [Span("↑ 已向上滚动 \(scroll) 行", .color(Theme.fox))], right: "End 回到底部")
+        }
+        return StatusLine(left: [Span("● ", .color(Theme.success)), Span("就绪", .color(Theme.dim))], right: "Ctrl-P 命令")
     }
 
-    var status: String {
-        if coreGone { return "Core 已退出；按 Ctrl-C 退出" }
-        if let secretInput { return "\(secretInput.label)：隐藏输入中 · Enter 保存 · Esc 取消" }
-        if authBusy { return "正在处理凭据…" }
-        if cancelling { return "正在取消…" }
-        if running { return "生成中…  Esc 取消" }
-        if scroll > 0 { return "已向上滚动    PgUp/PgDn 翻页    End 回到底部    Ctrl-T 展开/收起思考" }
-        return "Enter 发送    Ctrl-J 换行    ↑↓ 历史    Ctrl-P 命令    Ctrl-T 思考    PgUp 滚动"
-    }
-
-    mutating func notice(_ text: String) {
+    mutating func notice(_ text: String, sticky: Bool = false) {
         feedback = Message(role: .system, text: text)
+        feedbackExpiry = sticky ? nil : Date().addingTimeInterval(6)
     }
 
     mutating func error(_ text: String) {
         feedback = Message(role: .error, text: text)
+        feedbackExpiry = nil
     }
+}
+
+private func formatTokens(_ count: Int) -> String {
+    count >= 1000 ? String(format: "%.1fk", Double(count) / 1000) : "\(count)"
 }
 
 // MARK: - entry
@@ -249,12 +284,15 @@ InputReader { bytes in
 }.start()
 
 private let output = FileHandle.standardOutput
-output.write(Data("\u{1B}[?2004h\u{1B}[?1049h\u{1B}[?25l\u{1B}[?7l\u{1B}[2J\u{1B}[H".utf8))
+output.write(Data("\u{1B}[>1u\u{1B}[?2004h\u{1B}[?1049h\u{1B}[?25l\u{1B}[?7l\u{1B}[2J\u{1B}[H".utf8))
 output.write(Data(Theme.charcoal.bg.utf8))
 output.write(Data(Theme.cream.fg.utf8))
 
 private var app = App()
 private var needsRender = true
+private let lineCache = LineCache()
+private var windowTitle = ""
+private var renderedSecond = -1
 private let helloID = client.send(.hello)
 app.pending[helloID] = .hello
 
@@ -262,17 +300,40 @@ app.pending[helloID] = .hello
 func draw() {
     let size = Terminal.size()
     let renderer = Renderer(columns: size.columns, rows: size.rows)
-    let frame = renderer.frame(
-        messages: app.messages, scrollFromBottom: app.scroll,
-        input: app.secretInput == nil ? app.input : [], cursor: app.secretInput == nil ? app.cursor : 0,
-        header: app.header, status: app.status,
-        workspace: FileManager.default.currentDirectoryPath,
-        sessionTitle: app.sessionTitle,
-        feedback: app.feedback, picker: app.picker ?? slashPicker(),
-        auth: app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) },
-        showThinking: app.showThinking
-    )
-    output.write(Data(frame.utf8))
+    var view = ViewState()
+    view.messages = app.messages
+    view.scroll = app.scroll
+    view.input = app.secretInput == nil ? app.input : []
+    view.cursor = app.secretInput == nil ? app.cursor : 0
+    view.model = app.model
+    view.sessionTitle = app.sessionTitle
+    view.workspace = FileManager.default.currentDirectoryPath
+    view.status = app.status
+    view.feedback = app.feedback
+    view.picker = app.picker
+    view.completion = app.picker == nil ? slashPicker() : nil
+    view.auth = app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
+    view.showThinking = app.showThinking
+    view.running = app.running
+    var frame = renderer.frame(view, cache: lineCache)
+    // Scrolled-back readers keep their place while new lines arrive below.
+    let grown = frame.info.bodyLines - app.lastFrame.bodyLines
+    let limit = max(0, frame.info.bodyLines - frame.info.bodyHeight)
+    if app.scroll > 0, grown > 0 {
+        app.scroll = min(limit, app.scroll + grown)
+        view.scroll = app.scroll
+        frame = renderer.frame(view, cache: lineCache)
+    } else if app.scroll > limit {
+        app.scroll = limit
+    }
+    app.lastFrame = frame.info
+    let title = "泠溪 · " + (app.messages.isEmpty ? "lingxi" : app.sessionTitle)
+    if title != windowTitle {
+        windowTitle = title
+        let safe = title.unicodeScalars.filter { $0.properties.generalCategory != .control }
+        output.write(Data(("\u{1B}]0;" + String(String.UnicodeScalarView(safe)) + "\u{07}").utf8))
+    }
+    output.write(Data(frame.text.utf8))
     needsRender = false
 }
 
@@ -281,7 +342,7 @@ func shutdown() {
     app.secretInput = nil
     _ = client.send(.shutdown)
     client.stop()
-    output.write(Data(("\u{1B}[0m\u{1B}[?7h\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1049l").utf8))
+    output.write(Data(("\u{1B}[<u\u{1B}[0m\u{1B}[?1000l\u{1B}[?1006l\u{1B}[?7h\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1049l").utf8))
     Terminal.restore(original)
 }
 
@@ -296,20 +357,21 @@ func handleReply(_ reply: FrontendReply) {
     case .hello:
         if app.model == nil || !(app.models.contains(app.model!)) { app.model = app.models.first }
         if app.models.isEmpty {
-            app.notice("没有可用模型。请安装并启用 Provider 插件；本地构建的插件需要显式设置 LINGXI_PLUGIN_POLICY=development。用 /plugins 查看状态。")
+            app.notice("没有可用模型。请安装并启用 Provider 插件；本地构建的插件需要显式设置 LINGXI_PLUGIN_POLICY=development。用 /plugins 查看状态。", sticky: true)
         } else if !app.sessions.isEmpty {
-            app.notice("欢迎回来。已有 \(app.sessions.count) 个会话，用 /sessions 查看、/switch <序号> 切换，或直接输入开始新对话。")
+            app.notice("欢迎回来。已有 \(app.sessions.count) 个会话，用 /sessions 继续，或直接输入开始新对话。", sticky: true)
         } else {
-            app.notice("首次使用：/auth 连接模型。已有 Key 只需配置一次。")
+            app.notice("首次使用：/auth 连接模型。已有 Key 只需配置一次。", sticky: true)
         }
     case .plugins:
         app.picker = Picker(title: "插件", items: app.plugins.map {
-            MenuItem(title: $0.bundleID, detail: ($0.running ? "运行中 · Enter 禁用" : "已禁用 · Enter 启用")
-                + " · " + $0.capabilities.joined(separator: ", "), command: ($0.running ? "/disable " : "/enable ") + $0.bundleID)
+            MenuItem(title: $0.bundleID, detail: ($0.running ? "运行中" : "已停止") + " · " + $0.capabilities.joined(separator: ", "),
+                     command: $0.bundleID, checked: $0.enabled)
         })
     case .sessions:
         app.picker = Picker(title: "切换会话", items: app.sessions.enumerated().map { index, session in
-            MenuItem(title: session.title, detail: "\(session.turns) 轮 · \(session.id)", command: "/switch \(index + 1)")
+            MenuItem(title: session.title, detail: (session.id == app.activeSession ? "当前 · " : "") + "\(session.turns) 轮",
+                     command: "/switch \(index + 1)")
         })
     case .chat(let text):
         if reply.ok {
@@ -327,7 +389,7 @@ func handleReply(_ reply: FrontendReply) {
         if let history = reply.history {
             app.messages = history.map { entry in
                 switch entry.kind {
-                case "tool": Message(role: .tool, text: entry.text)
+                case "tool": Message(role: .toolResult, text: entry.text)
                 case "toolCall": Message(role: .tool, text: entry.text)
                 default: Message(role: entry.role == "user" ? .user : .assistant, text: entry.text)
                 }
@@ -384,6 +446,21 @@ func handleEvent(_ event: FrontendEvent) {
             if let last = app.messages.indices.last { app.messages[last].streaming = false }
             app.messages.append(Message(role: role, text: delta, streaming: true))
         }
+    case "tool":
+        guard app.running, event.runID == app.runID, let name = event.tool else { break }
+        let text = name + (event.detail.map { "  " + $0 } ?? "")
+        if event.status == "requested",
+           let index = app.messages.indices.last(where: { app.messages[$0].role == .tool && app.messages[$0].streaming }) {
+            app.messages[index].text = text
+            app.messages[index].streaming = false
+        } else {
+            if let last = app.messages.indices.last { app.messages[last].streaming = false }
+            app.messages.append(Message(role: .tool, text: text, streaming: event.status == "started"))
+        }
+    case "usage":
+        guard event.runID == app.runID, let usage = event.usage else { break }
+        if let input = usage.inputTokens { app.runInputTokens = (app.runInputTokens ?? 0) + input }
+        if let output = usage.outputTokens { app.runOutputTokens = (app.runOutputTokens ?? 0) + output }
     case "run.state":
         if let status = event.status, status == "running" {
             app.running = true
@@ -399,11 +476,21 @@ func handleEvent(_ event: FrontendEvent) {
         for index in app.messages.indices { app.messages[index].streaming = false }
         if let sessions = event.sessions { app.sessions = sessions }
         app.feedback = nil
+        var meta: [String] = []
+        if let model = app.model { meta.append(model) }
+        if let started = app.runStarted { meta.append(String(format: "%.1fs", Date().timeIntervalSince(started))) }
+        if let input = app.runInputTokens { meta.append("↑" + formatTokens(input)) }
+        if let output = app.runOutputTokens { meta.append("↓" + formatTokens(output)) }
         if event.status != "completed" {
             let cause = event.cause ?? "unknown"
             let detail = event.detail.map { " — \($0)" } ?? ""
-            app.error("运行结束：\(event.status ?? "failed") / \(cause)\(detail)")
+            meta.append(event.status == "cancelled" ? "已取消" : "未完成")
+            app.messages.append(Message(role: .error, text: "运行结束：\(event.status ?? "failed") / \(cause)\(detail)"))
         }
+        if let index = app.messages.indices.last(where: { $0 >= app.runFirstMessage && app.messages[$0].role == .assistant }) {
+            app.messages[index].meta = meta.joined(separator: "  ·  ")
+        }
+        app.runStarted = nil
     case "plugins.changed":
         if let plugins = event.plugins {
             app.plugins = plugins
@@ -449,8 +536,59 @@ func submit(_ text: String) {
     app.feedback = nil
     app.scroll = 0
     app.running = true
+    app.runStarted = Date()
+    app.runFirstMessage = app.messages.count
+    app.runInputTokens = nil
+    app.runOutputTokens = nil
     let id = client.send(.chatSend, sessionID: app.activeSession, model: model, text: trimmed)
     app.pending[id] = .chat(trimmed)
+}
+
+/// Applies a saved plugin list: only entries whose checkbox differs from the registry are sent.
+@MainActor
+func savePlugins(_ items: [MenuItem]) {
+    var enabled: [String] = []
+    var disabled: [String] = []
+    for item in items {
+        guard let checked = item.checked, let plugin = app.plugins.first(where: { $0.bundleID == item.command }),
+              checked != plugin.enabled else { continue }
+        let id = checked ? client.send(.pluginEnable, bundleID: item.command) : client.send(.pluginDisable, bundleID: item.command)
+        app.pending[id] = checked ? .enable(item.command) : .disable(item.command)
+        if checked { enabled.append(item.command) } else { disabled.append(item.command) }
+    }
+    if enabled.isEmpty && disabled.isEmpty {
+        app.notice("插件未修改。")
+    } else {
+        app.notice("正在保存：" + (enabled.isEmpty ? "" : "启用 " + enabled.joined(separator: ", ") + "  ")
+            + (disabled.isEmpty ? "" : "禁用 " + disabled.joined(separator: ", ")))
+    }
+}
+
+@MainActor
+func setMouse(_ enabled: Bool) {
+    app.mouse = enabled
+    output.write(Data((enabled ? "\u{1B}[?1000h\u{1B}[?1006h" : "\u{1B}[?1000l\u{1B}[?1006l").utf8))
+}
+
+@MainActor
+func copyLastReply() {
+    guard let reply = app.messages.last(where: { $0.role == .assistant && !$0.text.isEmpty }) else {
+        app.error("还没有可复制的回复。")
+        return
+    }
+    let process = Process()
+    let pipe = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/pbcopy")
+    process.standardInput = pipe
+    do {
+        try process.run()
+        pipe.fileHandleForWriting.write(Data(reply.text.utf8))
+        pipe.fileHandleForWriting.closeFile()
+        process.waitUntilExit()
+        app.notice("已复制最后一条回复（\(reply.text.count) 字）。")
+    } catch {
+        app.error("复制失败：\(error.localizedDescription)")
+    }
 }
 
 @MainActor
@@ -483,8 +621,8 @@ func runCommand(_ raw: String) {
         app.notice("新会话。输入消息开始。")
     case "/models":
         app.picker = Picker(title: "切换模型", items: app.models.map {
-            MenuItem(title: $0, detail: $0 == app.model ? "当前模型" : "Enter 使用此模型", command: "/model " + $0)
-        })
+            MenuItem(title: $0, detail: $0 == app.model ? "当前模型" : "", command: "/model " + $0)
+        }, selected: app.models.firstIndex { $0 == app.model } ?? 0)
     case "/model":
         guard app.models.contains(argument) else { app.error("用法：/model <id>，可选：\(app.models.joined(separator: ", "))"); return }
         app.model = argument
@@ -503,7 +641,7 @@ func runCommand(_ raw: String) {
         if fields.isEmpty {
             let providers = Set(app.plugins.flatMap(\.capabilities).filter { $0.hasPrefix("provider.") }.map { String($0.dropFirst(9)) }).sorted()
             app.picker = Picker(title: "连接模型", items: providers.map {
-                MenuItem(title: $0, detail: "配置 API Key · macOS Keychain", command: "/auth " + $0)
+                MenuItem(title: $0, detail: "API Key · Keychain", command: "/auth " + $0)
             })
             return
         }
@@ -523,6 +661,12 @@ func runCommand(_ raw: String) {
         app.notice("已清屏。会话历史仍保留；/new 开新会话。")
     case "/thinking":
         app.showThinking.toggle()
+    case "/copy":
+        copyLastReply()
+    case "/mouse":
+        setMouse(!app.mouse)
+        app.notice(app.mouse ? "已开启鼠标滚轮滚动。终端原生选择需按住 fn（Terminal）或 ⌥（iTerm2）拖动；/mouse 关闭。"
+                             : "已关闭鼠标捕获，可直接拖选复制。")
     case "/quit", "/exit":
         shutdown()
         exit(0)
@@ -532,14 +676,16 @@ func runCommand(_ raw: String) {
 }
 
 private let commandItems: [MenuItem] = [
-    .init(title: "连接模型", detail: "/auth · 安全设置 API Key", command: "/auth"),
-    .init(title: "切换模型", detail: "/models · 选择已启用的模型", command: "/models"),
-    .init(title: "切换会话", detail: "/sessions · 继续之前的对话", command: "/sessions"),
-    .init(title: "插件", detail: "/plugins · 启用或禁用插件", command: "/plugins"),
-    .init(title: "新建会话", detail: "/new · 开始新的对话", command: "/new"),
-    .init(title: "清屏", detail: "/clear · 保留会话历史", command: "/clear"),
+    .init(title: "连接模型", detail: "/auth", command: "/auth"),
+    .init(title: "切换模型", detail: "/models", command: "/models"),
+    .init(title: "切换会话", detail: "/sessions", command: "/sessions"),
+    .init(title: "新建会话", detail: "/new", command: "/new"),
+    .init(title: "复制最后一条回复", detail: "/copy", command: "/copy"),
     .init(title: "展开 / 收起思考", detail: "/thinking · Ctrl-T", command: "/thinking"),
-    .init(title: "退出", detail: "/quit · 关闭 TUI", command: "/quit"),
+    .init(title: "插件", detail: "/plugins", command: "/plugins"),
+    .init(title: "鼠标滚轮滚动", detail: "/mouse", command: "/mouse"),
+    .init(title: "清屏", detail: "/clear", command: "/clear"),
+    .init(title: "退出", detail: "/quit", command: "/quit"),
 ]
 
 @MainActor
@@ -570,6 +716,11 @@ func handleKey(_ key: Key) {
         return
     }
     if app.discardInputBatch || app.discardPaste { return }
+    if key == .redraw {
+        output.write(Data("\u{1B}[2J".utf8))
+        needsRender = true
+        return
+    }
     if app.authBusy {
         if key == .interrupt { shutdown(); exit(0) }
         return
@@ -581,7 +732,7 @@ func handleKey(_ key: Key) {
                 app.secretInput?.invalidPaste = true
             } else { app.secretInput?.characters.append(character) }
         case .backspace: _ = app.secretInput?.characters.popLast()
-        case .clearLine:
+        case .clearLine, .deleteWordBack:
             app.secretInput?.characters = []
             app.secretInput?.invalidPaste = false
         case .newline:
@@ -622,11 +773,24 @@ func handleKey(_ key: Key) {
     }
     if var picker = app.picker {
         switch key {
+        case .character(" ") where picker.isToggleList:
+            let items = picker.filtered
+            if items.indices.contains(picker.selected),
+               let index = picker.items.firstIndex(where: { $0.command == items[picker.selected].command }) {
+                picker.items[index].checked?.toggle()
+            }
+        case .enter where picker.isToggleList:
+            app.picker = nil
+            savePlugins(picker.items)
+            needsRender = true
+            return
         case .character(let character): picker.query.append(character); picker.selected = 0
         case .backspace: _ = picker.query.popLast(); picker.selected = 0
-        case .clearLine: picker.query = ""; picker.selected = 0
-        case .up: picker.selected = max(0, picker.selected - 1)
-        case .down: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 1)
+        case .clearLine, .deleteWordBack: picker.query = ""; picker.selected = 0
+        case .up, .scrollUp: picker.selected = max(0, picker.selected - 1)
+        case .down, .scrollDown: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 1)
+        case .pageUp: picker.selected = max(0, picker.selected - 8)
+        case .pageDown: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 8)
         case .enter:
             app.picker = nil
             if app.input.first == "/" { app.input = []; app.cursor = 0; app.completionIndex = 0 }
@@ -657,6 +821,10 @@ func handleKey(_ key: Key) {
             runCommand(completion.items[completion.selected].command)
             break
         }
+        if app.cursor > 0, app.input[app.cursor - 1] == "\\" {
+            app.input[app.cursor - 1] = "\n"
+            break
+        }
         let text = String(app.input)
         app.input = []
         app.cursor = 0
@@ -665,15 +833,26 @@ func handleKey(_ key: Key) {
         guard app.cursor > 0 else { break }
         app.input.remove(at: app.cursor - 1)
         app.cursor -= 1
+        app.completionIndex = 0
     case .delete:
         guard app.cursor < app.input.count else { break }
         app.input.remove(at: app.cursor)
+    case .deleteWordBack:
+        let start = app.wordBoundary(-1)
+        app.input.removeSubrange(start..<app.cursor)
+        app.cursor = start
+        app.completionIndex = 0
+    case .killToEnd:
+        let end = app.input[app.cursor...].firstIndex(of: "\n") ?? app.input.count
+        app.input.removeSubrange(app.cursor..<(end == app.cursor && end < app.input.count ? end + 1 : end))
     case .left: app.cursor = max(0, app.cursor - 1)
     case .right: app.cursor = min(app.input.count, app.cursor + 1)
-    case .home:
+    case .wordLeft: app.cursor = app.wordBoundary(-1)
+    case .wordRight: app.cursor = app.wordBoundary(1)
+    case .home, .lineStart:
         app.cursor = (app.input[..<app.cursor].lastIndex(of: "\n").map { $0 + 1 }) ?? 0
-    case .end:
-        if app.scroll > 0 { app.scroll = 0 }
+    case .end, .lineEnd:
+        if key == .end, app.scroll > 0 { app.scroll = 0 }
         else { app.cursor = app.input[app.cursor...].firstIndex(of: "\n") ?? app.input.count }
     case .clearLine: app.input = []; app.cursor = 0; app.historyIndex = nil
     case .up:
@@ -682,8 +861,10 @@ func handleKey(_ key: Key) {
     case .down:
         if let completion { app.completionIndex = min(completion.items.count - 1, app.completionIndex + 1) }
         else { moveInputVertically(1) }
-    case .pageUp: app.scroll += 8
-    case .pageDown: app.scroll = max(0, app.scroll - 8)
+    case .pageUp: scrollBy(max(1, app.lastFrame.bodyHeight - 2))
+    case .pageDown: scrollBy(-max(1, app.lastFrame.bodyHeight - 2))
+    case .scrollUp: scrollBy(3)
+    case .scrollDown: scrollBy(-3)
     case .escape:
         if app.running, let runID = app.runID {
             _ = client.send(.runCancel, runID: runID)
@@ -695,12 +876,16 @@ func handleKey(_ key: Key) {
         if app.running, let runID = app.runID {
             _ = client.send(.runCancel, runID: runID)
             app.cancelling = true
+        } else if !app.input.isEmpty {
+            app.input = []; app.cursor = 0; app.historyIndex = nil
+            app.notice("已清空输入。再按 Ctrl-C 退出。")
         } else {
             shutdown()
             exit(0)
         }
     case .endOfInput:
         if app.input.isEmpty { shutdown(); exit(0) }
+        if app.cursor < app.input.count { app.input.remove(at: app.cursor) }
     case .commandPalette:
         app.picker = Picker(title: "命令", items: commandItems)
     case .toggleThinking: app.showThinking.toggle()
@@ -710,10 +895,16 @@ func handleKey(_ key: Key) {
             break
         }
         for _ in 0..<2 { app.input.insert(" ", at: app.cursor); app.cursor += 1 }
-    case .unknown, .pasteStart, .pasteEnd:
+    case .unknown, .pasteStart, .pasteEnd, .redraw:
         break
     }
     needsRender = true
+}
+
+@MainActor
+func scrollBy(_ lines: Int) {
+    let limit = max(0, app.lastFrame.bodyLines - app.lastFrame.bodyHeight)
+    app.scroll = min(limit, max(0, app.scroll + lines))
 }
 
 @MainActor
@@ -759,6 +950,16 @@ while true {
         app.coreGone = true
         app.running = false
         app.error("Core 进程已退出。按 Ctrl-C 退出。")
+    }
+    if let expiry = app.feedbackExpiry, Date() >= expiry {
+        app.feedback = nil
+        app.feedbackExpiry = nil
+        needsRender = true
+    }
+    // The elapsed-time counter in the status bar advances once per second while a run is live.
+    if app.running, let started = app.runStarted {
+        let second = Int(Date().timeIntervalSince(started))
+        if second != renderedSecond { renderedSecond = second; needsRender = true }
     }
     if needsRender { draw() }
 }

@@ -1,40 +1,89 @@
 import Foundation
 
-struct RGB {
+struct RGB: Equatable, Hashable {
     let r: Int, g: Int, b: Int
+    init(_ r: Int, _ g: Int, _ b: Int) { self.r = r; self.g = g; self.b = b }
     var fg: String { "\u{1B}[38;2;\(r);\(g);\(b)m" }
     var bg: String { "\u{1B}[48;2;\(r);\(g);\(b)m" }
 }
 
 enum Theme {
-    static let charcoal = RGB(r: 22, g: 24, b: 28)
-    static let charcoalRaised = RGB(r: 34, g: 38, b: 44)
-    static let cream = RGB(r: 230, g: 232, b: 237)
-    static let fox = RGB(r: 239, g: 177, b: 123)
-    static let dim = RGB(r: 160, g: 167, b: 178)
-    static let error = RGB(r: 255, g: 139, b: 149)
+    static let charcoal = RGB(22, 24, 28)
+    static let charcoalRaised = RGB(32, 35, 41)
+    static let overlay = RGB(40, 44, 52)
+    static let selection = RGB(58, 52, 48)
+    static let cream = RGB(230, 232, 237)
+    static let fox = RGB(239, 177, 123)
+    static let dim = RGB(150, 157, 168)
+    static let muted = RGB(88, 95, 106)
+    static let error = RGB(255, 139, 149)
+    static let success = RGB(152, 199, 140)
+    static let link = RGB(130, 178, 232)
+    static let string = RGB(166, 207, 140)
+    static let number = RGB(214, 160, 220)
+    static let type = RGB(126, 200, 212)
     // Reset text attributes without falling back to the terminal profile's background.
     static let reset = "\u{1B}[0m" + charcoal.bg + cream.fg
 }
 
-enum Role: Equatable { case user, assistant, reasoning, tool, system, error }
+struct Style: Equatable {
+    var fg: RGB = Theme.cream
+    /// nil keeps whatever background the cell already has (row fills, panels).
+    var bg: RGB? = nil
+    var bold = false
+    var italic = false
+    var underline = false
+    var strike = false
+
+    static let plain = Style()
+    static func color(_ fg: RGB, bold: Bool = false) -> Style { Style(fg: fg, bold: bold) }
+
+    func sgr(background: RGB) -> String {
+        var codes = "\u{1B}[0m"
+        if bold { codes += "\u{1B}[1m" }
+        if italic { codes += "\u{1B}[3m" }
+        if underline { codes += "\u{1B}[4m" }
+        if strike { codes += "\u{1B}[9m" }
+        return codes + fg.fg + background.bg
+    }
+}
+
+struct Span {
+    var text: String
+    var style: Style
+    init(_ text: String, _ style: Style = .plain) { self.text = text; self.style = style }
+}
+
+/// One laid-out row of content. `fill` paints the whole content width (code blocks, user turns).
+struct Line {
+    var spans: [Span]
+    var fill: RGB? = nil
+    static let blank = Line(spans: [])
+}
+
+enum Role: Equatable { case user, assistant, reasoning, tool, toolResult, system, error }
 struct Message {
     var role: Role
     var text: String
     var streaming: Bool = false
+    /// Dim footer under an assistant reply: duration, token usage.
+    var meta: String? = nil
 }
 
 struct MenuItem {
     let title: String
     let detail: String
     let command: String
+    /// Set for toggle lists (plugins): Space flips it, Enter saves the whole list.
+    var checked: Bool? = nil
 }
 
 struct Picker {
     let title: String
-    let items: [MenuItem]
+    var items: [MenuItem]
     var query = ""
     var selected = 0
+    var isToggleList: Bool { items.contains { $0.checked != nil } }
     var filtered: [MenuItem] {
         guard !query.isEmpty else { return items }
         return items.filter { ($0.title + " " + $0.detail + " " + $0.command).localizedCaseInsensitiveContains(query) }
@@ -46,277 +95,920 @@ struct AuthPrompt {
     let characterCount: Int
 }
 
-/// Cell-bounded full frames. Each row has its own cursor address and erase operation, so shorter
-/// input and a hidden credential prompt cannot leave text from the previous frame on screen.
+struct StatusLine {
+    var left: [Span]
+    var right: String
+}
+
+/// Everything one frame needs. The renderer never sees a secret: the auth panel gets a count only.
+struct ViewState {
+    var messages: [Message] = []
+    var scroll = 0
+    var input: [Character] = []
+    var cursor = 0
+    var model: String?
+    var sessionTitle = ""
+    var workspace = ""
+    var status = StatusLine(left: [], right: "")
+    var feedback: Message?
+    var picker: Picker?
+    var completion: Picker?
+    var auth: AuthPrompt?
+    var showThinking = false
+    var running = false
+}
+
+struct FrameInfo {
+    var bodyLines = 0
+    var bodyHeight = 0
+}
+
+/// Lays out messages once per (content, width) and reuses the result while other parts redraw.
+final class LineCache {
+    private var store: [Int: (key: Int, lines: [Line])] = [:]
+
+    func lines(index: Int, message: Message, width: Int, showThinking: Bool, build: () -> [Line]) -> [Line] {
+        var hasher = Hasher()
+        hasher.combine(message.text)
+        hasher.combine(message.streaming)
+        hasher.combine(message.meta)
+        hasher.combine(width)
+        hasher.combine(showThinking)
+        hasher.combine("\(message.role)")
+        let key = hasher.finalize()
+        if let hit = store[index], hit.key == key { return hit.lines }
+        let lines = build()
+        store[index] = (key, lines)
+        return lines
+    }
+
+    func trim(to count: Int) {
+        store = store.filter { $0.key < count }
+    }
+}
+
+// MARK: - canvas
+
+private struct Cell {
+    var text: String = " "
+    var style: Style = .plain
+    var bg: RGB = Theme.charcoal
+    /// Right half of a wide grapheme; never emitted.
+    var continuation = false
+}
+
+/// A cell frame buffer. Every row is emitted with its own cursor address and erase, so a shorter
+/// input or a closed panel cannot leave text from the previous frame on screen.
+private struct Canvas {
+    let width: Int
+    let height: Int
+    var cells: [[Cell]]
+
+    init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+        cells = Array(repeating: Array(repeating: Cell(), count: width), count: height)
+    }
+
+    mutating func fill(row: Int, col: Int, count: Int, bg: RGB) {
+        guard (0..<height).contains(row) else { return }
+        for x in max(0, col)..<min(width, col + count) {
+            cells[row][x] = Cell(bg: bg)
+        }
+        repair(row: row, col: col)
+    }
+
+    /// Draws spans left to right, clipped at `limit` cells. Returns the number of cells used.
+    @discardableResult
+    mutating func draw(_ spans: [Span], row: Int, col: Int, limit: Int) -> Int {
+        guard (0..<height).contains(row), col < width else { return 0 }
+        let end = min(width, col + max(0, limit))
+        var x = max(0, col)
+        repair(row: row, col: x)
+        for span in spans {
+            for raw in Renderer.clean(span.text) {
+                // A raw LF inside a cell-addressed row would scroll the screen.
+                let character: Character = raw.isNewline ? " " : raw
+                let cells = TextWidth.width(String(character))
+                if cells == 0 {
+                    if x > col, x - 1 < width { self.cells[row][x - 1].text.append(character) }
+                    continue
+                }
+                guard x + cells <= end else { return x - col }
+                let bg = span.style.bg ?? self.cells[row][x].bg
+                self.cells[row][x] = Cell(text: String(character), style: span.style, bg: bg)
+                if cells == 2 {
+                    self.cells[row][x + 1] = Cell(text: "", style: span.style, bg: bg, continuation: true)
+                }
+                x += cells
+            }
+        }
+        if x < width, cells[row][x].continuation { cells[row][x].text = " "; cells[row][x].continuation = false }
+        return x - col
+    }
+
+    /// Writing over half of a wide grapheme must blank the other half.
+    private mutating func repair(row: Int, col: Int) {
+        guard col > 0, col < width, cells[row][col].continuation else { return }
+        cells[row][col - 1].text = " "
+        cells[row][col].continuation = false
+    }
+
+    func emit() -> String {
+        var frame = ""
+        for (index, row) in cells.enumerated() {
+            frame += "\u{1B}[\(index + 1);1H" + Theme.reset + "\u{1B}[2K"
+            var last = ""
+            for cell in row where !cell.continuation {
+                let sgr = cell.style.sgr(background: cell.bg)
+                if sgr != last { frame += sgr; last = sgr }
+                frame += cell.text
+            }
+        }
+        return frame
+    }
+}
+
+// MARK: - renderer
+
 struct Renderer {
     let columns: Int
     let rows: Int
     private var width: Int { max(1, columns) }
     private var height: Int { max(1, rows) }
-    private var contentWidth: Int { max(1, min(96, width - 8)) }
+    private var contentWidth: Int { max(1, min(100, width - 6)) }
 
-    func frame(messages: [Message], scrollFromBottom: Int, input: [Character], cursor: Int,
-               header: String, status: String, workspace: String, sessionTitle: String, feedback: Message?,
-               picker: Picker?, auth: AuthPrompt?, showThinking: Bool) -> String {
-        var screen = [String](repeating: "", count: height)
-        let home = messages.isEmpty
+    func frame(_ view: ViewState, cache: LineCache) -> (text: String, info: FrameInfo) {
+        var canvas = Canvas(width: width, height: height)
+        var info = FrameInfo()
+        var cursor: (row: Int, col: Int)?
+        let home = view.messages.isEmpty
         let left = max(0, (width - contentWidth) / 2)
-        let location = URL(fileURLWithPath: workspace).lastPathComponent
-        screen[0] = "  " + Theme.fox.fg + "lingxi" + Theme.reset + "  "
-            + (home ? "" : clean(sessionTitle) + "  ·  ") + Theme.dim.fg + clean(location)
-        if height > 2 {
-            screen[height - 1] = "  " + Theme.dim.fg + fit("\(status)", limit: width - 4)
-        }
 
-        if let auth {
-            let panelWidth = max(1, min(64, width - 6))
-            let mask = auth.characterCount == 0 ? "▏" : "••••••••  已输入 \(auth.characterCount) 个字符"
-            var panel = [
-                Theme.fox.fg + "连接模型" + Theme.reset + "  /  " + clean(auth.label),
-                "",
-                Theme.dim.fg + "密钥加密保存在此 Mac 的 Keychain。",
-                Theme.dim.fg + "不会进入对话或命令历史。",
-                "",
-                Theme.cream.fg + "│  " + mask,
-                "",
-                Theme.fox.fg + "Enter 保存" + Theme.dim.fg + "    Esc 取消  ·  隐藏输入中",
-            ]
-            if let feedback, feedback.role == .error {
-                panel += ["", Theme.error.fg + fit(clean(feedback.text), limit: panelWidth)]
+        drawTopBar(view, home: home, into: &canvas)
+        if height > 2 { drawStatus(view.status, into: &canvas) }
+
+        let panelWidth = home ? min(76, contentWidth) : contentWidth
+        let composerLeft = max(0, (width - panelWidth) / 2)
+        let editor = layoutInput(view.input, cursor: view.cursor, limit: max(1, panelWidth - 4))
+        let maxLines = max(1, min(8, (height - 8) / 2))
+        let firstLine = max(0, min(editor.cursorRow - maxLines + 1, editor.lines.count - maxLines))
+        let visibleLines = view.input.isEmpty ? 1 : min(maxLines, editor.lines.count)
+        let composerHeight = visibleLines + 3
+        let composerRow = home
+            ? max(1, min(height - composerHeight - 4, height / 2 - 1))
+            : max(1, height - 2 - composerHeight)
+
+        if home {
+            if height >= 16, composerRow >= 6 {
+                let logoRow = max(2, composerRow - 4)
+                center([Span("L I N G X I", .color(Theme.fox, bold: true))], row: logoRow, into: &canvas)
+                center([Span("泠溪 · 2.0", .color(Theme.dim))], row: logoRow + 2, into: &canvas)
             }
-            placePanel(panel, width: panelWidth, into: &screen)
+            var below = composerRow + composerHeight + 1
+            if below < height - 2, view.completion == nil {
+                let tips: [Span] = [
+                    Span("/auth", .color(Theme.fox)), Span(" 连接模型    ", .color(Theme.dim)),
+                    Span("/models", .color(Theme.fox)), Span(" 切换模型    ", .color(Theme.dim)),
+                    Span("Ctrl-P", .color(Theme.fox)), Span(" 全部命令", .color(Theme.dim)),
+                ]
+                if spanWidth(tips) <= panelWidth { center(tips, row: below, into: &canvas); below += 2 }
+            }
+            if let feedback = view.feedback {
+                let color = feedback.role == .error ? Theme.error : Theme.dim
+                let lines = TextWidth.wrap(Renderer.clean(feedback.text), width: panelWidth)
+                for (offset, line) in lines.prefix(max(0, height - 1 - below)).enumerated() {
+                    canvas.draw([Span(line, .color(color))], row: below + offset, col: composerLeft, limit: panelWidth)
+                }
+            }
         } else {
-            let panelWidth = home ? min(76, contentWidth) : contentWidth
-            let editor = renderInput(input, cursor: cursor, limit: max(1, panelWidth - 5))
-            let maxLines = max(1, min(6, height - 10))
-            let startLine = max(0, min(editor.cursorRow - maxLines + 1, editor.lines.count - maxLines))
-            let entries = input.isEmpty ? [Theme.dim.fg + "输入消息，或按 / 选择命令"]
-                : Array(editor.lines.dropFirst(startLine).prefix(maxLines))
-            let composerHeight = entries.count + 3
-            let composerRow = home ? max(1, min(height - composerHeight - 3, height / 2))
-                : max(1, height - composerHeight - 3)
-            if home, height >= 16, composerRow >= 7 {
-                let logoRow = max(2, composerRow - 5)
-                screen[logoRow] = centered(Theme.cream.fg + "L I N G X I", cells: 11)
-                screen[logoRow + 2] = centered(Theme.dim.fg + "灵犀 · 2.0", cells: 11)
-            } else if !home {
-                var body: [String] = []
-                for message in messages {
-                    if !body.isEmpty { body.append("") }
-                    body += render(message, showThinking: showThinking)
-                }
-                let available = max(0, composerRow - 3)
-                let end = max(0, body.count - min(max(0, scrollFromBottom), max(0, body.count - available)))
-                let start = max(0, end - available)
-                for (offset, line) in body[start..<end].enumerated() {
-                    screen[2 + offset] = String(repeating: " ", count: left) + line
+            var feedbackLines: [String] = []
+            if let feedback = view.feedback {
+                feedbackLines = Array(TextWidth.wrap(Renderer.clean(feedback.text), width: contentWidth - 2).prefix(3))
+            }
+            let bodyTop = 2
+            let bodyBottom = composerRow - 1 - (feedbackLines.isEmpty ? 0 : feedbackLines.count + 1)
+            let available = max(0, bodyBottom - bodyTop)
+            var body: [Line] = []
+            for (index, message) in view.messages.enumerated() {
+                if !body.isEmpty { body.append(.blank) }
+                body += cache.lines(index: index, message: message, width: contentWidth, showThinking: view.showThinking) {
+                    messageLines(message, width: contentWidth, showThinking: view.showThinking)
                 }
             }
-            let composerLeft = max(0, (width - panelWidth) / 2)
-            let rail = Theme.fox.fg + "┃" + Theme.charcoalRaised.bg + Theme.cream.fg
-            let lineCount = editor.lines.count > 1 ? "  ·  \(editor.lines.count) 行" : ""
-            let panel = [rail] + entries.map { rail + "  " + fit($0, limit: panelWidth - 4) }
-                + [rail, rail + "  " + Theme.dim.fg + fit(clean(header) + lineCount, limit: panelWidth - 4)]
-            for (offset, line) in panel.enumerated() where composerRow + offset < height - 1 {
-                screen[composerRow + offset] = String(repeating: " ", count: composerLeft) + paddedPanel(line, cells: panelWidth)
+            cache.trim(to: view.messages.count)
+            info = FrameInfo(bodyLines: body.count, bodyHeight: available)
+            let scroll = min(max(0, view.scroll), max(0, body.count - available))
+            let end = body.count - scroll
+            let start = max(0, end - available)
+            for (offset, line) in body[start..<end].enumerated() {
+                let row = bodyTop + offset
+                if let fill = line.fill { canvas.fill(row: row, col: left, count: contentWidth, bg: fill) }
+                canvas.draw(line.spans, row: row, col: left, limit: contentWidth)
             }
-            if let feedback {
-                let available = max(0, height - composerRow - composerHeight - 2)
-                for (offset, line) in TextWidth.wrap(clean(feedback.text), width: panelWidth).prefix(available).enumerated() {
-                    screen[composerRow + composerHeight + 1 + offset] = String(repeating: " ", count: composerLeft)
-                        + (feedback.role == .error ? Theme.error.fg : Theme.dim.fg) + line
-                }
+            if body.count > available, available > 2, left + contentWidth + 1 < width {
+                drawScrollbar(total: body.count, visible: available, scroll: scroll, top: bodyTop,
+                              col: left + contentWidth + 1, into: &canvas)
             }
-            if let picker { drawPicker(picker, into: &screen) }
+            for (offset, line) in feedbackLines.enumerated() {
+                let error = view.feedback?.role == .error
+                canvas.draw([Span(error ? "✕ " : "› ", .color(error ? Theme.error : Theme.fox)),
+                             Span(line, .color(error ? Theme.error : Theme.dim))],
+                            row: bodyBottom + 1 + offset, col: left, limit: contentWidth)
+            }
         }
 
-        var frame = "\u{1B}[?2026h"
-        for (row, line) in screen.enumerated() {
-            frame += "\u{1B}[\(row + 1);1H" + Theme.reset + "\u{1B}[2K" + fit(line, limit: width)
+        // Composer: a raised panel with a focus rail. The footer carries model and editor state.
+        if view.auth == nil {
+            let rail = Span("▌", .color(view.running ? Theme.muted : Theme.fox))
+            for offset in 0..<composerHeight {
+                canvas.fill(row: composerRow + offset, col: composerLeft, count: panelWidth, bg: Theme.charcoalRaised)
+                canvas.draw([rail], row: composerRow + offset, col: composerLeft, limit: 1)
+            }
+            if view.input.isEmpty {
+                let placeholder = view.running ? "生成中…可以继续写下一条草稿" : "输入消息，或按 / 选择命令"
+                canvas.draw([Span(placeholder, .color(Theme.muted))], row: composerRow + 1, col: composerLeft + 3, limit: panelWidth - 4)
+                cursor = (composerRow + 1, composerLeft + 3)
+            } else {
+                for (offset, line) in editor.lines.dropFirst(firstLine).prefix(maxLines).enumerated() {
+                    canvas.draw([Span(line)], row: composerRow + 1 + offset, col: composerLeft + 3, limit: panelWidth - 4)
+                }
+                cursor = (composerRow + 1 + editor.cursorRow - firstLine, composerLeft + 3 + editor.cursorCol)
+            }
+            // The footer is the model area: which model answers, plus editor state.
+            var footer: [Span] = [Span(view.model ?? "无模型", .color(view.model == nil ? Theme.error : Theme.fox))]
+            if editor.lines.count > 1 { footer.append(Span("  ·  \(editor.lines.count) 行", .color(Theme.dim))) }
+            let footerRow = composerRow + composerHeight - 1
+            canvas.draw(footer, row: footerRow, col: composerLeft + 3, limit: panelWidth - 4)
+            let hint = [Span("Shift-Enter 换行", .color(Theme.muted))]
+            if spanWidth(footer) + spanWidth(hint) + 6 < panelWidth {
+                canvas.draw(hint, row: footerRow, col: composerLeft + panelWidth - spanWidth(hint) - 2, limit: spanWidth(hint))
+            }
+            if let completion = view.completion {
+                drawCompletion(completion, left: composerLeft, width: panelWidth,
+                               anchorTop: composerRow, anchorBottom: composerRow + composerHeight, below: home, into: &canvas)
+            }
         }
-        return frame + "\u{1B}[?2026l"
+
+        if let auth = view.auth {
+            cursor = nil
+            drawAuth(auth, feedback: view.feedback, into: &canvas)
+        } else if let picker = view.picker {
+            cursor = nil
+            drawPicker(picker, into: &canvas)
+        }
+
+        var text = "\u{1B}[?2026h" + canvas.emit()
+        if let cursor, (0..<height).contains(cursor.row), cursor.col < width {
+            // The real cursor sits in the editor so IME composition appears where the user types.
+            text += "\u{1B}[\(cursor.row + 1);\(cursor.col + 1)H" + "\u{1B}[?25h"
+        } else {
+            text += "\u{1B}[?25l"
+        }
+        return (text + "\u{1B}[?2026l", info)
     }
 
-    private func drawPicker(_ picker: Picker, into screen: inout [String]) {
-        let panelWidth = max(1, min(68, width - 6))
-        let count = max(1, min(7, height - 10))
+    // MARK: chrome
+
+    private func drawTopBar(_ view: ViewState, home: Bool, into canvas: inout Canvas) {
+        canvas.fill(row: 0, col: 0, count: width, bg: Theme.charcoalRaised)
+        var spans: [Span] = [Span(" ◆ ", .color(Theme.fox)), Span("lingxi", .color(Theme.fox, bold: true))]
+        if !home {
+            spans += [Span("  │  ", .color(Theme.muted)), Span(Renderer.oneLine(view.sessionTitle))]
+        }
+        let location = Renderer.oneLine(URL(fileURLWithPath: view.workspace).lastPathComponent)
+        let right = [Span(location + " ", .color(Theme.dim))]
+        let rightWidth = spanWidth(right)
+        let used = canvas.draw(spans, row: 0, col: 0, limit: max(0, width - rightWidth - 2))
+        if used + rightWidth + 2 <= width {
+            canvas.draw(right, row: 0, col: width - rightWidth, limit: rightWidth)
+        }
+    }
+
+    private func drawStatus(_ status: StatusLine, into canvas: inout Canvas) {
+        let row = height - 1
+        let used = canvas.draw([Span(" ")] + status.left, row: row, col: 0, limit: width)
+        let right = Renderer.oneLine(status.right)
+        let rightWidth = TextWidth.width(right)
+        if used + rightWidth + 4 <= width {
+            canvas.draw([Span(right, .color(Theme.muted))], row: row, col: width - rightWidth - 1, limit: rightWidth)
+        }
+    }
+
+    private func drawScrollbar(total: Int, visible: Int, scroll: Int, top: Int, col: Int, into canvas: inout Canvas) {
+        let thumb = max(1, visible * visible / max(1, total))
+        let range = max(1, total - visible)
+        let position = (visible - thumb) * (range - scroll) / range
+        for offset in 0..<visible {
+            let active = (position..<(position + thumb)).contains(offset)
+            canvas.draw([Span(active ? "┃" : "│", .color(active ? Theme.dim : Theme.charcoalRaised))],
+                        row: top + offset, col: col, limit: 1)
+        }
+    }
+
+    private func drawCompletion(_ picker: Picker, left: Int, width panelWidth: Int, anchorTop: Int, anchorBottom: Int,
+                                below: Bool, into canvas: inout Canvas) {
+        let items = picker.items
+        let count = min(items.count, 8, below ? max(1, height - anchorBottom - 2) : max(1, anchorTop - 2))
+        guard count > 0 else { return }
+        let selected = min(max(0, picker.selected), items.count - 1)
+        let start = max(0, min(selected - count / 2, items.count - count))
+        let top = below ? anchorBottom : anchorTop - count
+        let commandWidth = min(14, (items.map { TextWidth.width($0.command) }.max() ?? 0) + 2)
+        for (offset, item) in items.dropFirst(start).prefix(count).enumerated() {
+            let row = top + offset
+            let active = start + offset == selected
+            canvas.fill(row: row, col: left, count: panelWidth, bg: active ? Theme.selection : Theme.overlay)
+            canvas.draw([Span(active ? "▌" : " ", .color(Theme.fox))], row: row, col: left, limit: 1)
+            canvas.draw([Span(item.command, .color(active ? Theme.fox : Theme.cream, bold: active))],
+                        row: row, col: left + 2, limit: commandWidth)
+            canvas.draw([Span(item.title, .color(active ? Theme.cream : Theme.dim))],
+                        row: row, col: left + 2 + commandWidth, limit: panelWidth - commandWidth - 3)
+        }
+    }
+
+    /// A centered modal panel: title row, body rows, footer. Returns nothing; draws on top.
+    private func drawPanel(title: [Span], titleRight: String, body: [[Span]], highlight: Int?, footer: [Span],
+                           footerRight: String, width panelWidth: Int, into canvas: inout Canvas) {
+        let inner = panelWidth - 4
+        let rowsNeeded = body.count + 6
+        let total = min(rowsNeeded, max(3, height - 2))
+        let top = max(1, (height - total) / 2)
+        let left = max(0, (width - panelWidth) / 2)
+        for offset in 0..<total { canvas.fill(row: top + offset, col: left, count: panelWidth, bg: Theme.overlay) }
+        canvas.draw(title, row: top + 1, col: left + 2, limit: inner)
+        let rightWidth = TextWidth.width(titleRight)
+        if spanWidth(title) + rightWidth + 2 <= inner {
+            canvas.draw([Span(titleRight, .color(Theme.muted))], row: top + 1, col: left + 2 + inner - rightWidth, limit: rightWidth)
+        }
+        let bodyRows = max(0, total - 6)
+        for (offset, spans) in body.prefix(bodyRows).enumerated() {
+            let row = top + 3 + offset
+            if offset == highlight {
+                canvas.fill(row: row, col: left + 1, count: panelWidth - 2, bg: Theme.selection)
+                canvas.draw([Span("▌", .color(Theme.fox))], row: row, col: left + 1, limit: 1)
+            }
+            canvas.draw(spans, row: row, col: left + 2, limit: inner)
+        }
+        if total >= 5 {
+            let row = top + total - 2
+            canvas.draw(footer, row: row, col: left + 2, limit: inner)
+            let width = TextWidth.width(footerRight)
+            if spanWidth(footer) + width + 2 <= inner {
+                canvas.draw([Span(footerRight, .color(Theme.muted))], row: row, col: left + 2 + inner - width, limit: width)
+            }
+        }
+    }
+
+    private func drawPicker(_ picker: Picker, into canvas: inout Canvas) {
+        let panelWidth = max(10, min(72, width - 4))
+        let inner = panelWidth - 4
+        let visible = max(1, min(10, height - 12))
         let items = picker.filtered
         let selected = min(max(0, picker.selected), max(0, items.count - 1))
-        let start = max(0, min(selected - count / 2, items.count - count))
-        var panel = [Theme.fox.fg + clean(picker.title) + Theme.dim.fg + "    esc 关闭", "",
-                     Theme.cream.fg + "› " + clean(picker.query) + "▏", ""]
-        if items.isEmpty { panel.append(Theme.dim.fg + "没有匹配项") }
-        for (offset, item) in items.dropFirst(start).prefix(count).enumerated() {
+        let start = max(0, min(selected - visible / 2, items.count - visible))
+        var body: [[Span]] = [[Span("› ", .color(Theme.fox)), Span(Renderer.oneLine(picker.query) + "▏")], [Span(String(repeating: "─", count: inner), .color(Theme.muted))]]
+        var highlight: Int?
+        if items.isEmpty { body.append([Span("没有匹配项", .color(Theme.dim))]) }
+        for (offset, item) in items.dropFirst(start).prefix(visible).enumerated() {
             let active = start + offset == selected
-            panel.append((active ? Theme.fox.fg + "› " : Theme.cream.fg + "  ")
-                + fit(clean(item.title), limit: panelWidth - 4))
-            if active, !item.detail.isEmpty {
-                panel.append(Theme.dim.fg + "  " + fit(clean(item.detail), limit: panelWidth - 4))
+            let detail = Renderer.oneLine(item.detail)
+            let detailWidth = min(TextWidth.width(detail), inner / 2)
+            let titleSpan = Span(Renderer.oneLine(item.title), .color(active ? Theme.fox : Theme.cream, bold: active))
+            var row: [Span] = []
+            if let checked = item.checked {
+                row.append(Span(checked ? "[✓] " : "[ ] ", .color(checked ? Theme.success : Theme.muted)))
             }
+            let titleWidth = inner - detailWidth - 2 - spanWidth(row)
+            row.append(Span(Renderer.truncate(titleSpan.text, to: titleWidth), titleSpan.style))
+            let gap = max(1, inner - spanWidth(row) - detailWidth)
+            row.append(Span(String(repeating: " ", count: gap) + Renderer.truncate(detail, to: detailWidth),
+                            .color(active ? Theme.dim : Theme.muted)))
+            if active { highlight = body.count }
+            body.append(row)
         }
-        panel += ["", Theme.dim.fg + "↑↓ 选择    Enter 确认    Esc 返回"]
-        placePanel(panel, width: panelWidth, into: &screen)
+        let position = items.isEmpty ? "0/0" : "\(selected + 1)/\(items.count)"
+        drawPanel(title: [Span(Renderer.oneLine(picker.title), .color(Theme.fox, bold: true))], titleRight: "esc 关闭",
+                  body: body, highlight: highlight,
+                  footer: [Span(picker.isToggleList ? "Space 切换   Enter 保存   Esc 取消" : "↑↓ 选择   Enter 确认   Esc 返回",
+                                .color(Theme.dim))], footerRight: position,
+                  width: panelWidth, into: &canvas)
     }
 
-    private func placePanel(_ lines: [String], width panelWidth: Int, into screen: inout [String]) {
-        let left = max(0, (width - panelWidth - 4) / 2)
-        let count = min(lines.count, max(1, height - 4))
-        let start = max(1, (height - count - 2) / 2)
-        let panel = [""] + Array(lines.prefix(count)) + [""]
-        for (offset, line) in panel.enumerated() where start + offset < height - 1 {
-            let styled = line.replacingOccurrences(of: Theme.reset, with: "\u{1B}[0m" + Theme.charcoalRaised.bg + Theme.cream.fg)
-            screen[start + offset] = String(repeating: " ", count: left)
-                + Theme.charcoalRaised.bg + "  " + fit(styled, limit: panelWidth)
-                + String(repeating: " ", count: max(0, panelWidth - visibleWidth(line) + 2)) + Theme.reset
+    private func drawAuth(_ auth: AuthPrompt, feedback: Message?, into canvas: inout Canvas) {
+        let panelWidth = max(10, min(64, width - 4))
+        let mask = auth.characterCount == 0
+            ? [Span("▏", .color(Theme.fox))]
+            : [Span("••••••••", .color(Theme.cream)), Span("  已输入 \(auth.characterCount) 个字符", .color(Theme.dim))]
+        var body: [[Span]] = [
+            [Span("密钥加密保存在此 Mac 的 Keychain。", .color(Theme.dim))],
+            [Span("不会进入对话或命令历史。", .color(Theme.dim))],
+            [],
+            [Span("▌ ", .color(Theme.fox))] + mask,
+        ]
+        if let feedback, feedback.role == .error {
+            body += [[], [Span(Renderer.oneLine(feedback.text), .color(Theme.error))]]
         }
+        drawPanel(title: [Span("连接模型", .color(Theme.fox, bold: true)), Span("  /  " + Renderer.oneLine(auth.label), .color(Theme.cream))],
+                  titleRight: "隐藏输入中", body: body, highlight: nil,
+                  footer: [Span("Enter 保存", .color(Theme.fox)), Span("    Esc 取消", .color(Theme.dim))], footerRight: "",
+                  width: panelWidth, into: &canvas)
     }
 
-    private func centered(_ text: String, cells: Int) -> String {
-        String(repeating: " ", count: max(0, (width - cells) / 2)) + text
+    private func center(_ spans: [Span], row: Int, into canvas: inout Canvas) {
+        let cells = spanWidth(spans)
+        canvas.draw(spans, row: row, col: max(0, (width - cells) / 2), limit: width)
     }
 
-    private func paddedPanel(_ text: String, cells: Int) -> String {
-        let clipped = fit(text, limit: cells)
-        return clipped + Theme.charcoalRaised.bg + String(repeating: " ", count: max(0, cells - visibleWidth(clipped))) + Theme.reset
-    }
+    // MARK: messages
 
-    private func render(_ message: Message, showThinking: Bool) -> [String] {
-        let text = clean(message.text)
+    func messageLines(_ message: Message, width: Int, showThinking: Bool) -> [Line] {
+        let text = Renderer.clean(message.text)
         switch message.role {
         case .user:
-            return [Theme.dim.fg + "你"] + TextWidth.wrap(text, width: max(1, contentWidth - 4)).map {
-                paddedPanel(Theme.charcoalRaised.bg + Theme.dim.fg + "┃ " + Theme.cream.fg + $0, cells: contentWidth)
-            }
+            return text.split(separator: "\n", omittingEmptySubsequences: false).flatMap {
+                Markdown.wrap([Span(String($0))], width: max(1, width - 3), breakAnywhere: false)
+            }.map { Line(spans: [Span("▌ ", .color(Theme.fox))] + $0, fill: Theme.charcoalRaised) }
         case .assistant:
-            return [Theme.fox.fg + "◆ 灵犀"] + markdownLines(text, width: contentWidth, streaming: message.streaming)
+            var lines = [Line(spans: [Span("◆ ", .color(Theme.fox)), Span("泠溪", .color(Theme.fox, bold: true))])]
+            lines += Markdown(width: width).render(text)
+            if message.streaming {
+                if lines.count == 1 { lines.append(Line(spans: [])) }
+                lines[lines.count - 1].spans.append(Span("▍", .color(Theme.fox)))
+            }
+            if let meta = message.meta {
+                lines.append(Line(spans: [Span(meta, .color(Theme.muted))]))
+            }
+            return lines
         case .reasoning:
+            let count = text.filter { !$0.isWhitespace }.count
             let label = message.streaming ? "思考中…" : "思考"
-            return [Theme.dim.fg + (showThinking ? "▾ " : "▸ ") + label + "  ·  Ctrl-T"]
-                + (showThinking ? TextWidth.wrap(text, width: max(1, contentWidth - 2)).map { Theme.dim.fg + "│ " + $0 } : [])
+            let style = Style(fg: Theme.dim, italic: true)
+            var lines = [Line(spans: [Span((showThinking ? "▾ " : "▸ ") + label, .color(Theme.dim)),
+                                      Span("  ·  \(count) 字  ·  Ctrl-T " + (showThinking ? "收起" : "展开"), .color(Theme.muted))])]
+            if showThinking {
+                lines += text.split(separator: "\n", omittingEmptySubsequences: false).flatMap {
+                    Markdown.wrap([Span(String($0), style)], width: max(1, width - 2), breakAnywhere: false)
+                }.map { Line(spans: [Span("│ ", .color(Theme.muted))] + $0) }
+            }
+            return lines
         case .tool:
-            return TextWidth.wrap("· " + text, width: contentWidth).map { Theme.dim.fg + $0 }
+            return Markdown.wrap([Span(text, .color(Theme.dim))], width: max(1, width - 2), breakAnywhere: true)
+                .enumerated().map { Line(spans: [Span($0.offset == 0 ? "◇ " : "  ", .color(Theme.fox))] + $0.element) }
+        case .toolResult:
+            let all = text.split(separator: "\n", omittingEmptySubsequences: false).flatMap {
+                Markdown.wrap([Span(String($0), .color(Theme.muted))], width: max(1, width - 4), breakAnywhere: true)
+            }
+            var lines = all.prefix(4).enumerated().map {
+                Line(spans: [Span($0.offset == 0 ? "  ↳ " : "    ", .color(Theme.muted))] + $0.element)
+            }
+            if all.count > 4 { lines.append(Line(spans: [Span("    … 另有 \(all.count - 4) 行", .color(Theme.muted))])) }
+            return lines
         case .system, .error:
-            return TextWidth.wrap(text, width: contentWidth).map { (message.role == .error ? Theme.error.fg : Theme.dim.fg) + $0 }
+            let color = message.role == .error ? Theme.error : Theme.dim
+            return Markdown.wrap([Span(text, .color(color))], width: width, breakAnywhere: false).map { Line(spans: $0) }
         }
     }
 
-    /// Markdown subset. Code fences keep their content verbatim (wrapped), get a dim orange gutter
-    /// and a raised background; headings are orange; `code` is orange; **bold** is bold.
-    private func markdownLines(_ text: String, width: Int, streaming: Bool) -> [String] {
-        var output: [String] = []
-        var inCode = false
-        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(raw)
-            if line.hasPrefix("```") {
-                inCode.toggle()
-                let language = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
-                output.append(Theme.dim.fg + "  ┄ " + (inCode ? (language.isEmpty ? "code" : language) : "") + Theme.reset)
-                continue
-            }
-            if inCode {
-                let wrapped = TextWidth.wrap(line, width: max(10, width - 3))
-                for piece in wrapped {
-                    output.append(
-                        Theme.charcoalRaised.bg + Theme.dim.fg + " │ " + Theme.cream.fg + piece
-                            + Theme.reset + Theme.charcoal.bg
-                    )
-                }
-                continue
-            }
-            if line.hasPrefix("#") {
-                let heading = line.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
-                output.append(Theme.fox.fg + "\u{1B}[1m" + heading + Theme.reset)
-                continue
-            }
-            for wrapped in TextWidth.wrap(line, width: width) {
-                output.append(inline(wrapped))
-            }
-        }
-        var result = output
-        if streaming {
-            if result.isEmpty {
-                result.append(Theme.fox.fg + "▍" + Theme.reset)
-            } else {
-                result[result.count - 1] += Theme.fox.fg + "▍" + Theme.reset
-            }
-        }
-        return result
-    }
+    // MARK: editor
 
-    private func inline(_ text: String) -> String {
-        var result = ""
-        var index = text.startIndex
-        var inCode = false
-        var inBold = false
-        while index < text.endIndex {
-            if text[index...].hasPrefix("`") {
-                inCode.toggle()
-                result += inCode ? Theme.fox.fg : Theme.cream.fg
-                index = text.index(after: index)
-                continue
-            }
-            if text[index...].hasPrefix("**") {
-                inBold.toggle()
-                result += inBold ? "\u{1B}[1m" : "\u{1B}[22m"
-                index = text.index(index, offsetBy: 2)
-                continue
-            }
-            result.append(text[index])
-            index = text.index(after: index)
-        }
-        return result + Theme.cream.fg
-    }
-
-    private func renderInput(_ input: [Character], cursor: Int, limit: Int) -> (lines: [String], cursorRow: Int) {
+    /// Wraps the draft by cell width and reports where the cursor lands, in cells.
+    private func layoutInput(_ input: [Character], cursor: Int, limit: Int) -> (lines: [String], cursorRow: Int, cursorCol: Int) {
         let index = min(max(0, cursor), input.count)
         var lines = [""]
         var cells = 0
         var cursorRow = 0
+        var cursorCol = 0
         for position in 0...input.count {
-            if position == input.count, position != index { break }
-            let character: Character = position < input.count ? input[position] : " "
-            let newline = character == "\n"
-            let cell = newline ? 1 : TextWidth.width(String(character))
-            if !newline, cells + cell > limit, cells > 0 { lines.append(""); cells = 0 }
             if position == index {
+                if cells >= limit { lines.append(""); cells = 0 }
                 cursorRow = lines.count - 1
-                lines[lines.count - 1] += "\u{1B}[7m" + (newline ? " " : String(character)) + "\u{1B}[27m"
-            } else if !newline, position < input.count {
-                lines[lines.count - 1].append(character)
+                cursorCol = cells
             }
-            if newline { lines.append(""); cells = 0 }
-            else { cells += cell }
+            guard position < input.count else { break }
+            let character = input[position]
+            if character == "\n" { lines.append(""); cells = 0; continue }
+            let printable = character == "\t" ? "  " : Renderer.clean(String(character))
+            let cell = TextWidth.width(printable)
+            if cells + cell > limit, cells > 0 { lines.append(""); cells = 0 }
+            lines[lines.count - 1] += printable
+            cells += cell
         }
-        return (lines, cursorRow)
+        return (lines, cursorRow, cursorCol)
     }
 
-    private func clean(_ text: String) -> String {
+    // MARK: helpers
+
+    static func clean(_ text: String) -> String {
         String(text.unicodeScalars.filter { $0.properties.generalCategory != .control || $0 == "\n" || $0 == "\t" })
-            .replacingOccurrences(of: "\t", with: "  ")
+            .replacingOccurrences(of: "\t", with: "    ")
     }
 
-    private func visibleWidth(_ text: String) -> Int {
-        TextWidth.width(text.replacingOccurrences(of: "\u{1B}\\[[0-9;]*m", with: "", options: .regularExpression))
+    /// Single-row regions never receive a newline: it would break absolute row addressing.
+    static func oneLine(_ text: String) -> String {
+        clean(text).replacingOccurrences(of: "\n", with: " ")
     }
 
-    /// Only our SGR styling is preserved; cell width is measured by grapheme, never byte count.
-    private func fit(_ text: String, limit: Int) -> String {
+    static func truncate(_ text: String, to cells: Int) -> String {
+        guard TextWidth.width(text) > cells else { return text }
+        guard cells > 1 else { return cells == 1 ? "…" : "" }
         var output = ""
-        var cells = 0
-        var escape = false
+        var used = 0
         for character in text {
-            if character == "\u{1B}" { escape = true }
-            if escape {
-                output.append(character)
-                if character == "m" { escape = false }
+            let width = TextWidth.width(String(character))
+            if used + width > cells - 1 { break }
+            output.append(character)
+            used += width
+        }
+        return output + "…"
+    }
+}
+
+func spanWidth(_ spans: [Span]) -> Int {
+    spans.reduce(0) { $0 + TextWidth.width($1.text) }
+}
+
+// MARK: - markdown
+
+/// Block Markdown for terminal output: headings, lists, task lists, quotes, rules, fenced code with
+/// light highlighting, and tables. Inline: code, bold, italic, strike, links. Partial input (a
+/// streaming reply with an unclosed fence) renders as far as it goes.
+struct Markdown {
+    let width: Int
+
+    func render(_ text: String) -> [Line] {
+        var output: [Line] = []
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                let fence = String(trimmed.prefix(3))
+                let language = trimmed.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                var code: [String] = []
+                index += 1
+                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(fence) {
+                    code.append(lines[index]); index += 1
+                }
+                index += 1
+                output += codeBlock(code, language: language)
                 continue
             }
-            let printable = character.isNewline ? " " : String(character)
-            let count = TextWidth.width(printable)
-            guard cells + count <= max(0, limit) else { break }
-            output += printable
-            cells += count
+            if trimmed.hasPrefix("|"), trimmed.count > 1 {
+                var rows: [String] = []
+                while index < lines.count, lines[index].trimmingCharacters(in: .whitespaces).hasPrefix("|") {
+                    rows.append(lines[index].trimmingCharacters(in: .whitespaces)); index += 1
+                }
+                output += table(rows)
+                continue
+            }
+            output += block(line)
+            index += 1
         }
         return output
+    }
+
+    private func block(_ line: String) -> [Line] {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { return [.blank] }
+        if trimmed.hasPrefix("#") {
+            let level = trimmed.prefix { $0 == "#" }.count
+            let heading = trimmed.dropFirst(level).trimmingCharacters(in: .whitespaces)
+            if level <= 6, trimmed.dropFirst(level).first == " " {
+                let style = Style(fg: level <= 2 ? Theme.fox : Theme.cream, bold: true)
+                return Markdown.wrap(Markdown.inline(heading, base: style), width: width, breakAnywhere: false)
+                    .map { Line(spans: $0) }
+            }
+        }
+        if trimmed.count >= 3, Set(trimmed.filter { $0 != " " }).count == 1, let mark = trimmed.first, "-*_".contains(mark) {
+            return [Line(spans: [Span(String(repeating: "─", count: width), .color(Theme.muted))])]
+        }
+        if trimmed.hasPrefix(">") {
+            let quote = trimmed.drop { $0 == ">" || $0 == " " }
+            let style = Style(fg: Theme.dim, italic: true)
+            return Markdown.wrap(Markdown.inline(String(quote), base: style), width: max(1, width - 2), breakAnywhere: false)
+                .map { Line(spans: [Span("▎ ", .color(Theme.muted))] + $0) }
+        }
+        if let item = listItem(line) {
+            let indent = String(repeating: " ", count: item.level * 2)
+            let markerWidth = TextWidth.width(item.marker)
+            let available = max(1, width - indent.count - markerWidth)
+            let wrapped = Markdown.wrap(Markdown.inline(item.text, base: .plain), width: available, breakAnywhere: false)
+            return wrapped.enumerated().map { offset, spans in
+                let lead = offset == 0
+                    ? [Span(indent), Span(item.marker, .color(item.ordered ? Theme.dim : Theme.fox))]
+                    : [Span(indent + String(repeating: " ", count: markerWidth))]
+                return Line(spans: lead + spans)
+            }
+        }
+        return Markdown.wrap(Markdown.inline(trimmed, base: .plain), width: width, breakAnywhere: false).map { Line(spans: $0) }
+    }
+
+    private func listItem(_ line: String) -> (level: Int, marker: String, text: String, ordered: Bool)? {
+        let spaces = line.prefix { $0 == " " }.count
+        let rest = line.dropFirst(spaces)
+        let level = min(3, spaces / 2)
+        if let first = rest.first, "-*+".contains(first), rest.dropFirst().first == " " {
+            var text = String(rest.dropFirst(2))
+            if text.hasPrefix("[ ] ") { text.removeFirst(4); return (level, "☐ ", text, false) }
+            if text.lowercased().hasPrefix("[x] ") { text.removeFirst(4); return (level, "☑ ", text, false) }
+            return (level, ["• ", "◦ ", "▪ ", "▫ "][level], text, false)
+        }
+        let digits = rest.prefix { $0.isASCII && $0.isNumber }
+        if !digits.isEmpty, digits.count <= 3 {
+            let after = rest.dropFirst(digits.count)
+            if let mark = after.first, mark == "." || mark == ")", after.dropFirst().first == " " {
+                return (level, digits + ". ", String(after.dropFirst(2)), true)
+            }
+        }
+        return nil
+    }
+
+    private func codeBlock(_ code: [String], language: String) -> [Line] {
+        let inner = max(1, width - 4)
+        var lines = [Line(spans: [Span("  " + (language.isEmpty ? "code" : language), Style(fg: Theme.muted, italic: true))],
+                          fill: Theme.charcoalRaised)]
+        for raw in code {
+            let spans = Markdown.highlight(raw, language: language.lowercased())
+            for piece in Markdown.wrap(spans, width: inner, breakAnywhere: true, keepLeadingSpace: true) {
+                lines.append(Line(spans: [Span("  ")] + piece, fill: Theme.charcoalRaised))
+            }
+        }
+        lines.append(Line(spans: [], fill: Theme.charcoalRaised))
+        return lines
+    }
+
+    private func table(_ rows: [String]) -> [Line] {
+        func cells(_ row: String) -> [String] {
+            var parts = row.split(separator: "|", omittingEmptySubsequences: false).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            if parts.first == "" { parts.removeFirst() }
+            if parts.last == "" { parts.removeLast() }
+            return parts
+        }
+        var parsed = rows.map(cells)
+        let isSeparator: ([String]) -> Bool = { row in
+            !row.isEmpty && row.allSatisfy { !$0.isEmpty && $0.allSatisfy { ":- ".contains($0) } }
+        }
+        var header: [String]?
+        var alignRight: [Bool] = []
+        if parsed.count >= 2, isSeparator(parsed[1]) {
+            header = parsed[0]
+            alignRight = parsed[1].map { $0.hasSuffix(":") && !$0.hasPrefix(":") }
+            parsed.removeFirst(2)
+        } else if let separator = parsed.firstIndex(where: isSeparator) {
+            parsed.remove(at: separator)
+        }
+        let columns = max(header?.count ?? 0, parsed.map(\.count).max() ?? 0)
+        guard columns > 0 else { return [] }
+        let all = (header.map { [$0] } ?? []) + parsed
+        let rendered = all.map { row in (0..<columns).map { Markdown.inline($0 < row.count ? row[$0] : "", base: .plain) } }
+        var widths = (0..<columns).map { column in max(1, rendered.map { spanWidth($0[column]) }.max() ?? 1) }
+        // Shrink the widest column until the table fits; cells are truncated, never wrapped.
+        while widths.reduce(0, +) + columns * 3 + 1 > width, let widest = widths.indices.max(by: { widths[$0] < widths[$1] }), widths[widest] > 3 {
+            widths[widest] -= 1
+        }
+        let border = Style.color(Theme.muted)
+        func rule(_ left: String, _ middle: String, _ right: String) -> Line {
+            Line(spans: [Span(left + widths.map { String(repeating: "─", count: $0 + 2) }.joined(separator: middle) + right, border)])
+        }
+        func row(_ cells: [[Span]], bold: Bool) -> Line {
+            var spans = [Span("│", border)]
+            for (column, cell) in cells.enumerated() {
+                var content = Markdown.truncate(cell, to: widths[column])
+                if bold { content = content.map { var span = $0; span.style.bold = true; span.style.fg = Theme.fox; return span } }
+                let padding = String(repeating: " ", count: max(0, widths[column] - spanWidth(content)))
+                let right = column < alignRight.count && alignRight[column]
+                spans += [Span(" ")] + (right ? [Span(padding)] + content : content + [Span(padding)]) + [Span(" "), Span("│", border)]
+            }
+            return Line(spans: spans)
+        }
+        var lines = [rule("┌", "┬", "┐")]
+        if header != nil {
+            lines.append(row(rendered[0], bold: true))
+            lines.append(rule("├", "┼", "┤"))
+        }
+        for cells in rendered.dropFirst(header == nil ? 0 : 1) { lines.append(row(cells, bold: false)) }
+        lines.append(rule("└", "┴", "┘"))
+        return lines
+    }
+
+    // MARK: inline
+
+    static func inline(_ text: String, base: Style) -> [Span] {
+        let characters = Array(text)
+        var spans: [Span] = []
+        var buffer = ""
+        func flush() { if !buffer.isEmpty { spans.append(Span(buffer, base)); buffer = "" } }
+        func find(_ token: String, from start: Int) -> Int? {
+            let pattern = Array(token)
+            guard start <= characters.count - pattern.count else { return nil }
+            for index in start...(characters.count - pattern.count) where Array(characters[index..<(index + pattern.count)]) == pattern {
+                return index
+            }
+            return nil
+        }
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "`", let close = find("`", from: index + 1), close > index + 1 {
+                flush()
+                var style = base
+                style.fg = Theme.fox
+                style.bg = Theme.charcoalRaised
+                spans.append(Span(String(characters[(index + 1)..<close]), style))
+                index = close + 1
+                continue
+            }
+            if index + 1 < characters.count, characters[index + 1] == character, character == "*" || character == "~",
+               let close = find(String(repeating: character, count: 2), from: index + 2), close > index + 2 {
+                flush()
+                var style = base
+                if character == "*" { style.bold = true } else { style.strike = true }
+                spans += inline(String(characters[(index + 2)..<close]), base: style)
+                index = close + 2
+                continue
+            }
+            if character == "*", index + 1 < characters.count, characters[index + 1] != " ", characters[index + 1] != "*",
+               let close = find("*", from: index + 1), close > index + 1, characters[close - 1] != " " {
+                flush()
+                var style = base
+                style.italic = true
+                spans += inline(String(characters[(index + 1)..<close]), base: style)
+                index = close + 1
+                continue
+            }
+            if character == "[", let middle = find("](", from: index + 1), let close = find(")", from: middle + 2) {
+                flush()
+                let label = String(characters[(index + 1)..<middle])
+                let url = String(characters[(middle + 2)..<close])
+                var style = base
+                style.fg = Theme.link
+                style.underline = true
+                spans.append(Span(label, style))
+                if url != label, !url.isEmpty { spans.append(Span(" (" + url + ")", .color(Theme.muted))) }
+                index = close + 1
+                continue
+            }
+            buffer.append(character)
+            index += 1
+        }
+        flush()
+        return spans
+    }
+
+    static func truncate(_ spans: [Span], to cells: Int) -> [Span] {
+        guard spanWidth(spans) > cells else { return spans }
+        var output: [Span] = []
+        var used = 0
+        for span in spans {
+            let room = cells - 1 - used
+            guard room > 0 else { break }
+            let piece = Renderer.truncate(span.text, to: room + 1)
+            let clipped = piece.hasSuffix("…") && TextWidth.width(span.text) > room + 1 ? String(piece.dropLast()) : piece
+            output.append(Span(clipped, span.style))
+            used += TextWidth.width(clipped)
+            if TextWidth.width(span.text) > room { break }
+        }
+        output.append(Span("…", spans.last?.style ?? .plain))
+        return output
+    }
+
+    // MARK: wrapping
+
+    /// Word-aware wrapping for styled spans. Latin words move to the next line whole unless they are
+    /// longer than a line; CJK breaks between any two characters. Styles survive the break.
+    static func wrap(_ spans: [Span], width: Int, breakAnywhere: Bool, keepLeadingSpace: Bool = false) -> [[Span]] {
+        let width = max(1, width)
+        struct Token { var text: String; var style: Style; var cells: Int; var space: Bool }
+        var tokens: [Token] = []
+        for span in spans {
+            var current = ""
+            var currentCells = 0
+            func push() {
+                if !current.isEmpty { tokens.append(Token(text: current, style: span.style, cells: currentCells, space: false)) }
+                current = ""; currentCells = 0
+            }
+            for character in span.text {
+                let cells = TextWidth.width(String(character))
+                if character == " " {
+                    push()
+                    tokens.append(Token(text: " ", style: span.style, cells: 1, space: true))
+                } else if breakAnywhere || cells == 2 {
+                    push()
+                    tokens.append(Token(text: String(character), style: span.style, cells: cells, space: false))
+                } else {
+                    current.append(character); currentCells += cells
+                }
+            }
+            push()
+        }
+        var lines: [[Span]] = [[]]
+        var used = 0
+        func append(_ text: String, _ style: Style, _ cells: Int) {
+            if let last = lines[lines.count - 1].last, last.style == style {
+                lines[lines.count - 1][lines[lines.count - 1].count - 1].text += text
+            } else {
+                lines[lines.count - 1].append(Span(text, style))
+            }
+            used += cells
+        }
+        var leading = keepLeadingSpace
+        for token in tokens {
+            if token.space {
+                if used == 0 && !leading && lines.count > 1 { continue }
+                if used + 1 > width { lines.append([]); used = 0; continue }
+                append(" ", token.style, 1)
+                continue
+            }
+            leading = false
+            if used + token.cells <= width {
+                append(token.text, token.style, token.cells)
+            } else if token.cells > width || breakAnywhere {
+                for character in token.text {
+                    let cells = TextWidth.width(String(character))
+                    if used + cells > width, used > 0 { lines.append([]); used = 0 }
+                    append(String(character), token.style, cells)
+                }
+            } else {
+                // Drop trailing spaces before the break.
+                if var last = lines[lines.count - 1].popLast() {
+                    while last.text.hasSuffix(" ") { last.text.removeLast() }
+                    if !last.text.isEmpty { lines[lines.count - 1].append(last) }
+                }
+                lines.append([]); used = 0
+                append(token.text, token.style, token.cells)
+            }
+        }
+        return lines
+    }
+
+    // MARK: highlighting
+
+    private static let keywords: Set<String> = [
+        "let", "var", "func", "fn", "def", "class", "struct", "enum", "protocol", "extension", "import", "return",
+        "if", "else", "elif", "for", "while", "in", "guard", "switch", "case", "break", "continue", "true", "false",
+        "nil", "null", "None", "True", "False", "self", "Self", "const", "static", "public", "private", "internal",
+        "fileprivate", "async", "await", "throw", "throws", "try", "catch", "new", "this", "function", "interface",
+        "type", "package", "go", "defer", "match", "impl", "pub", "use", "mod", "where", "yield", "lambda", "from",
+        "as", "is", "not", "and", "or", "with", "export", "default", "do", "end", "then", "fi", "local", "echo",
+        "mut", "override", "final", "init", "some", "any", "inout", "typealias", "actor", "nonisolated", "undefined",
+    ]
+
+    static func highlight(_ line: String, language: String) -> [Span] {
+        let hashComment = ["python", "py", "sh", "bash", "zsh", "shell", "ruby", "rb", "yaml", "yml", "toml",
+                           "perl", "r", "dockerfile", "make", "makefile", "conf", "ini", "console"].contains(language)
+        let dashComment = ["sql", "lua", "haskell", "hs"].contains(language)
+        let characters = Array(line)
+        var spans: [Span] = []
+        var index = 0
+        func add(_ text: String, _ style: Style) {
+            if let last = spans.last, last.style == style { spans[spans.count - 1].text += text } else { spans.append(Span(text, style)) }
+        }
+        while index < characters.count {
+            let character = characters[index]
+            let next = index + 1 < characters.count ? characters[index + 1] : nil
+            if (hashComment && character == "#") || (!hashComment && character == "/" && next == "/")
+                || (dashComment && character == "-" && next == "-") {
+                add(String(characters[index...]), Style(fg: Theme.muted, italic: true))
+                break
+            }
+            if character == "\"" || character == "'" || character == "`" {
+                var end = index + 1
+                while end < characters.count, characters[end] != character {
+                    end += characters[end] == "\\" ? 2 : 1
+                }
+                end = min(end, characters.count - 1)
+                add(String(characters[index...end]), .color(Theme.string))
+                index = end + 1
+                continue
+            }
+            if character.isNumber, index == 0 || !(characters[index - 1].isLetter || characters[index - 1] == "_") {
+                var end = index
+                while end < characters.count, characters[end].isHexDigit || characters[end] == "." || characters[end] == "x" || characters[end] == "_" { end += 1 }
+                add(String(characters[index..<end]), .color(Theme.number))
+                index = end
+                continue
+            }
+            if character.isLetter || character == "_" || character == "@" {
+                var end = index + 1
+                while end < characters.count, characters[end].isLetter || characters[end].isNumber || characters[end] == "_" { end += 1 }
+                let word = String(characters[index..<end])
+                if keywords.contains(word) || character == "@" {
+                    add(word, .color(Theme.fox))
+                } else if character.isUppercase {
+                    add(word, .color(Theme.type))
+                } else {
+                    add(word, .plain)
+                }
+                index = end
+                continue
+            }
+            add(String(character), .plain)
+            index += 1
+        }
+        return spans
     }
 }

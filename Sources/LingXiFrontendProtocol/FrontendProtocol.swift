@@ -134,6 +134,22 @@ public struct FrontendReply: Codable, Sendable {
     }
 }
 
+/// Token counts for one provider call. Absent is not zero: a provider that reports nothing stays
+/// distinguishable from one that reports a zero.
+public struct TokenUsage: Codable, Sendable, Equatable {
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var reasoningTokens: Int?
+    public var cacheReadTokens: Int?
+
+    public init(inputTokens: Int? = nil, outputTokens: Int? = nil, reasoningTokens: Int? = nil, cacheReadTokens: Int? = nil) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.reasoningTokens = reasoningTokens
+        self.cacheReadTokens = cacheReadTokens
+    }
+}
+
 public struct FrontendEvent: Codable, Sendable {
     public var event: String
     public var runID: String?
@@ -149,6 +165,10 @@ public struct FrontendEvent: Codable, Sendable {
     public var sessions: [SessionSummary]?
     public var plugins: [PluginSummary]?
     public var message: String?
+    /// Tool name for `tool` events; `status` is "started" or "requested".
+    public var tool: String?
+    /// Token usage for `usage` events.
+    public var usage: TokenUsage?
 
     public init(
         event: String,

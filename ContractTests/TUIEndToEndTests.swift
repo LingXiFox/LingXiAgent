@@ -201,11 +201,23 @@ func TUI_001_ptyChatWithMiMo() async throws {
         Issue.record("TRANSCRIPT=[\(clean.suffix(2500))]")
     }
 
+    // The reply footer carries model and cassette token usage from the new `usage` event.
+    #expect(await waitUntil { tui.screenText.contains("↑89") && tui.screenText.contains("↓7") },
+            "footer missing: \(tui.screenText)")
+
     tui.write("/plugins\r")
     #expect(await tui.waitFor("site.lingxi.provider.mimo"), "plugins transcript tail: \(tui.transcript.suffix(1500))")
     #expect(tui.transcript.contains("provider.mimo"))
+    // Space only stages a toggle; Esc discards it and the registry is untouched.
+    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    tui.write(" ")
+    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
     tui.write("\u{1B}")
     try #require(await waitUntil { !tui.screenText.contains("esc 关闭") })
+    tui.write("/plugins\r")
+    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    tui.write("\r")
+    try #require(await waitUntil { tui.screenText.contains("插件未修改") && !tui.screenText.contains("esc 关闭") })
 
     tui.write("/quit\r")
     #expect(await waitUntil(timeout: .seconds(60)) { tui.isRunning == false })
@@ -246,8 +258,26 @@ func TUI_002_frameAndPickers() async throws {
     try #require(await waitUntil { tui.screenText.contains("已取消凭据输入") })
     #expect(!tui.screenText.contains("隐藏输入中"))
 
+    // The real cursor sits in the editor (for IME placement); a panel hides it.
+    #expect(tui.latestFrame.hasSuffix("\u{1B}[?25h"))
+    // Readline editing: Ctrl-W deletes a word, Ctrl-A goes to line start, SS3 arrows move.
+    tui.write("alpha beta")
+    try #require(await waitUntil { tui.screenText.contains("alpha beta") })
+    tui.write("\u{17}")
+    try #require(await waitUntil { tui.screenText.contains("alpha ") && !tui.screenText.contains("beta") })
+    tui.write("\u{01}X\u{1B}OCY")
+    try #require(await waitUntil { tui.screenText.contains("XaYlpha") })
+    tui.write("\u{01}\u{0B}")
+    try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+    // Kitty keyboard reports (CSI u) and the backslash-Enter fallback both edit, never send.
+    tui.write("one\\\rtwo\u{1B}[13;2uthree")
+    try #require(await waitUntil { tui.screenText.contains("3 行") && tui.screenText.contains("three") })
+    tui.write("\u{1B}[117;5u")
+    try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+
     tui.write("\u{10}切换模型\r")
     try #require(await waitUntil { tui.screenText.contains("mimo-v2.6-pro") && tui.screenText.contains("esc 关闭") })
+    #expect(tui.latestFrame.hasSuffix("\u{1B}[?25l"))
     tui.write("\u{1B}[200~pro\r\u{1B}[201~")
     try #require(await waitUntil { tui.screenText.contains("› pro ") })
     #expect(tui.screenText.contains("esc 关闭"))
