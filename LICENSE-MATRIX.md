@@ -39,6 +39,7 @@ Tracks in use:
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Official example plugin used by the L2 contract tests: one `contextPrepare` hook that rewrites the request. Third-party authors write against the same ABI and the same manifest. |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | The same capability written in plain C, so the ABI is proven cross-language rather than asserted. |
 | `DeepSeekProvider` | `Plugins/DeepSeekProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | First real provider plugin. DeepSeek Responses API over SSE, normalized to the provider wire events; cassette replay for offline tests. |
+| `MiMoProvider` | `Plugins/MiMoProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Second provider, deliberately a different wire family: OpenAI Chat Completions against MiMo. Same ABI, same runtime, no shared compatibility layer. |
 | `ContractTests` | `ContractTests` | Not shipped | n/a | L2 contract gate: real Host process, real `dlopen`, real fault injection. |
 
 ---

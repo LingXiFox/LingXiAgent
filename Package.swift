@@ -12,6 +12,7 @@ let package = Package(
         .library(name: "LingXiContextProbe", type: .dynamic, targets: ["LingXiContextProbe"]),
         .library(name: "LingXiCProbe", type: .dynamic, targets: ["LingXiCProbe"]),
         .library(name: "DeepSeekProvider", type: .dynamic, targets: ["DeepSeekProvider"]),
+        .library(name: "MiMoProvider", type: .dynamic, targets: ["MiMoProvider"]),
     ],
     targets: [
         .target(name: "LingXiKernel"),
@@ -28,6 +29,7 @@ let package = Package(
         .target(name: "LingXiContextProbe", dependencies: ["LingXiPluginABI"], path: "Plugins/LingXiContextProbe"),
         .target(name: "LingXiCProbe", dependencies: ["LingXiPluginABIC"], path: "Plugins/LingXiCProbe", publicHeadersPath: "."),
         .target(name: "DeepSeekProvider", dependencies: ["LingXiPluginABI"], path: "Plugins/DeepSeekProvider"),
+        .target(name: "MiMoProvider", dependencies: ["LingXiPluginABI"], path: "Plugins/MiMoProvider"),
         .testTarget(name: "LingXiKernelTests", dependencies: ["LingXiKernel"]),
         // L2: real Host process, real dlopen, real plugin dylib, real fault injection.
         .testTarget(name: "ContractTests", dependencies: ["LingXiKernel", "LingXiPluginRuntime", "LingXiPluginABI"], path: "ContractTests", resources: [.copy("Fixtures")]),

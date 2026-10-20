@@ -36,6 +36,7 @@ TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──>
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | 官方示例插件（Swift）：一个 `contextPrepare` Hook | PolyForm Noncommercial 1.0.0 |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | 同一能力的 C 实现，用于证明 ABI 跨语言 | PolyForm Noncommercial 1.0.0 |
 | `DeepSeekProvider` | `Plugins/DeepSeekProvider` | 首个真实 Provider：DeepSeek Responses API + SSE 流式，Cassette 回放 | PolyForm Noncommercial 1.0.0 |
+| `MiMoProvider` | `Plugins/MiMoProvider` | 第二个 Provider，故意不同 wire family：MiMo Chat Completions | PolyForm Noncommercial 1.0.0 |
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | L0 结构门禁 + L1 内核回归 | 不发布 |
 | `ContractTests` | `ContractTests` | L2 契约：真 `.lxap`、真签名、真 Host 进程、故障注入 | 不发布 |
 
@@ -139,7 +140,7 @@ Core 侧的注册表（`plugins.json`，独立于会话事件日志）是「是�
 
 ```bash
 swift build --build-tests        # 零告警
-swift test                       # 124 tests：104 内核 + 20 契约
+swift test                       # 128 tests：104 内核 + 24 契约
 
 # 空核启动：无 Provider 时启动、报状态、给出引导，不写事件日志
 DATA_DIR="$(mktemp -d)"
@@ -160,11 +161,11 @@ test ! -s "$DATA_DIR/events.jsonl"
 Core 退出只停进程，不改注册表；用户禁用才写 `enabled=false`。
 
 CI：`.github/workflows/ci.yml`，`macos-26` 单 job，执行构建、测试与空核启动检查；push `rewrite/2.0`、
-PR→`main`、`workflow_dispatch` 触发。最近一次：run `39373895994`，124 tests 全绿（Provider 离线用例在列，live 用例跳过）。
+PR→`main`、`workflow_dispatch` 触发。最近一次 CI 覆盖 Provider 离线用例；live 用例按设计跳过。
 
 ## 7. Provider 插件
 
-Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 Host、ABI 与生命周期。首个实现是 DeepSeek：
+Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 Host、ABI 与生命周期。目前有两个独立实现：DeepSeek（Responses API）与 MiMo（Chat Completions），两者不共享兼容层，只共享 ABI/Host/Runtime。
 
 - capability `provider.deepseek`，模型 `deepseek-flash`，`POST https://api.deepseek.com/responses`。
 - 插件把 SSE 事件归一化为文本增量、推理增量、工具调用增量/完成、usage、终态与失败；
@@ -184,7 +185,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
-- **首个真实 Provider**（DeepSeek Responses API）：真 SSE 流式、工具调用循环、usage、在途取消、脱敏 cassette；离线 4 条用例。真实 API 录制与最终验收记录见 `Validation/Provider-DeepSeek.md`。
+- **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。真实 API 录制与最终验收见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
 
 尚未实现（技术待办，按建议顺序）：
 

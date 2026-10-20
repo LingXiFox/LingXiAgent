@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "provider": "mimo",
+  "exchanges": [
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "textDelta", "text": "Hello"},
+        {"type": "textDelta", "text": " from"},
+        {"type": "textDelta", "text": " MiMo."},
+        {"type": "usage", "usage": {"inputTokens": 11, "outputTokens": 4}},
+        {"type": "completed", "stopReason": "stop"}
+      ]
+    },
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "toolCallStarted", "callID": "call_mimo_1", "name": "echo"},
+        {"type": "toolCallDelta", "callID": "call_mimo_1", "arguments": "{\"value\":"},
+        {"type": "toolCallDelta", "callID": "call_mimo_1", "arguments": "\"42\"}"},
+        {"type": "toolCallCompleted", "callID": "call_mimo_1", "name": "echo", "arguments": "{\"value\":\"42\"}"},
+        {"type": "usage", "usage": {"inputTokens": 38, "outputTokens": 10}},
+        {"type": "completed", "stopReason": "toolCalls"}
+      ]
+    },
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "textDelta", "text": "The"},
+        {"type": "textDelta", "text": " tool returned 42."},
+        {"type": "usage", "usage": {"inputTokens": 55, "outputTokens": 7}},
+        {"type": "completed", "stopReason": "stop"}
+      ]
+    }
+  ]
+}
