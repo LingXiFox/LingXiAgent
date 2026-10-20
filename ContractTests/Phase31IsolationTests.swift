@@ -275,7 +275,7 @@ func LOOP_023_disableDuringInFlightProviderRequest() async throws {
     let run = Task {
         await harness.loop.run(mimoTurn("in-flight"), policy: LoopPolicy(overallTimeout: .seconds(30)))
     }
-    #expect(await waitUntil { binding.adapter.inFlightRequestCount > 0 })
+    #expect(await waitUntil(timeout: .seconds(30)) { binding.adapter.inFlightRequestCount > 0 })
 
     try await harness.coordinator.disable(bundleID: mimoBundle)
     let outcome = await run.value

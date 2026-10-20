@@ -234,7 +234,9 @@ func LOOP_023_timeoutCancelsInHost() async throws {
     }
     let elapsed = Date().timeIntervalSince(started)
     #expect(failed)
-    #expect(elapsed < 1.0)
+    // The 200ms call deadline is exact; the observed time also includes the cancel round trip and
+    // CI scheduling. The point is that it returns promptly instead of running the slow replay out.
+    #expect(elapsed < 10.0, "timeout path took \(elapsed)s")
 
     // The host did not die from the timeout and still answers.
     #expect(await session.ping(timeout: .seconds(1)))

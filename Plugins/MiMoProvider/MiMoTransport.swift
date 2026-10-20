@@ -105,7 +105,7 @@ enum MiMoTransport {
     ) async throws {
         for event in events {
             if slow {
-                try await Task.sleep(for: .milliseconds(50))
+                try await Task.sleep(for: .milliseconds(200))
             } else {
                 await Task.yield()
             }
