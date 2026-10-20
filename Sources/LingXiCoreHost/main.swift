@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LingXiCredentialStore
 import LingXiFrontendProtocol
 import LingXiKernel
 import LingXiPluginABI
@@ -23,13 +24,7 @@ private func loadCredentialMap(dataDirectory: String) throws -> [String: String]
     let url = URL(fileURLWithPath: dataDirectory).appendingPathComponent("credentials.json")
     guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
     let data = try Data(contentsOf: url)
-    guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
-    var resolved: [String: String] = [:]
-    for (capability, variable) in raw {
-        guard let name = variable as? String, let value = ProcessInfo.processInfo.environment[name] else { continue }
-        resolved[capability] = value
-    }
-    return resolved
+    return try JSONDecoder().decode([String: String].self, from: data)
 }
 
 private func pluginHostExecutable() -> URL {
@@ -64,9 +59,18 @@ do {
     let registry = try PluginRegistry(configURL: registryURL)
     let pipeline = HookPipeline()
     let credentialMap = try loadCredentialMap(dataDirectory: dataDirectory)
+    let credentials = CredentialAuthority(
+        backend: KeychainSecretBackend(service: ProcessInfo.processInfo.environment["LINGXI_KEYCHAIN_SERVICE"]
+            ?? KeychainSecretBackend.defaultService),
+        mode: .parse(ProcessInfo.processInfo.environment["LINGXI_CREDENTIAL_SOURCE"]),
+        environment: ProcessInfo.processInfo.environment, environmentOverrides: credentialMap
+    )
     let coordinator = PluginCoordinator(
         hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline, router: router,
-        credential: { capability in credentialMap[capability] }
+        credential: { bundleID, declaration in
+            guard let requirement = declaration.credentials?.first else { return nil }
+            return try credentials.secret(bundleID: bundleID, providerID: declaration.id, requirement: requirement)
+        }
     )
 
     let installed = await registry.all()
@@ -126,7 +130,7 @@ do {
     if ProcessInfo.processInfo.environment["LINGXI_FRONTEND"] == "stdio" {
         let server = FrontendServer(
             loop: loop, store: recovered.store, router: router,
-            registry: registry, coordinator: coordinator, policy: policy
+            registry: registry, coordinator: coordinator, policy: policy, credentials: credentials
         )
         await server.serve()
     } else if controlMode {

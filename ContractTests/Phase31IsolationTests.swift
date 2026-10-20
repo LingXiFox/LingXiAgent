@@ -70,7 +70,7 @@ private func makeDualHarness(
     let coordinator = PluginCoordinator(
         hostExecutableURL: builtProduct("LingXiPluginHost"),
         registry: registry, pipeline: pipeline, router: router,
-        credential: { _ in "offline-test-credential" }
+        credential: { _, _ in "offline-test-credential" }
     )
     try await installProviderBundles(coordinator)
     _ = try await coordinator.enable(bundleID: mimoBundle, policy: .development, grantedPermissions: mimoGrants)

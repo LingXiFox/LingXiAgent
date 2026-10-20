@@ -41,7 +41,7 @@ enum Key: Equatable {
     case left, right, up, down
     case pageUp, pageDown, home, end
     case escape, interrupt, endOfInput, clearLine
-    case unknown
+    case unknown, pasteStart, pasteEnd
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -70,6 +70,8 @@ final class KeyParser {
                     }
                     let suffix = String(decoding: pending[(index + 2)...end], as: UTF8.self)
                     switch suffix {
+                    case "200~": keys.append(.pasteStart)
+                    case "201~": keys.append(.pasteEnd)
                     case "A": keys.append(.up)
                     case "B": keys.append(.down)
                     case "C": keys.append(.right)

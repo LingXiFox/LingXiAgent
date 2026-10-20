@@ -24,7 +24,10 @@ let package = Package(
         // The Swift half: Core-Host wire types. Deliberately depended on by the host and the runtime,
         // never by the kernel, which keeps its own ports instead (L0).
         .target(name: "LingXiPluginABI", dependencies: ["LingXiPluginABIC"]),
-        .executableTarget(name: "LingXiCoreHost", dependencies: ["LingXiKernel", "LingXiPluginRuntime", "LingXiPluginABI", "LingXiFrontendProtocol"]),
+        // Custody of declared provider credentials. Linked only into the Core: the TUI and the plugin
+        // host must not be able to reach a saved secret, and that is enforced by the link graph.
+        .target(name: "LingXiCredentialStore", dependencies: ["LingXiPluginABI"]),
+        .executableTarget(name: "LingXiCoreHost", dependencies: ["LingXiKernel", "LingXiPluginRuntime", "LingXiPluginABI", "LingXiFrontendProtocol", "LingXiCredentialStore"]),
         .executableTarget(name: "LingXiPluginHost", dependencies: ["LingXiPluginABI"]),
         .target(name: "LingXiPluginRuntime", dependencies: ["LingXiKernel", "LingXiPluginABI"]),
         // Official plugin sources live under Plugins/, one directory per plugin (Project-Conventions §二).
@@ -34,6 +37,7 @@ let package = Package(
         .target(name: "MiMoProvider", dependencies: ["LingXiPluginABI"], path: "Plugins/MiMoProvider"),
         .executableTarget(name: "LingXiTUI", dependencies: ["LingXiFrontendProtocol"]),
         .testTarget(name: "LingXiKernelTests", dependencies: ["LingXiKernel"]),
+        .testTarget(name: "LingXiCredentialStoreTests", dependencies: ["LingXiCredentialStore", "LingXiPluginABI"]),
         // L2: real Host process, real dlopen, real plugin dylib, real fault injection.
         .testTarget(name: "ContractTests", dependencies: ["LingXiKernel", "LingXiPluginRuntime", "LingXiPluginABI", "LingXiFrontendProtocol"], path: "ContractTests", resources: [.copy("Fixtures")]),
     ],

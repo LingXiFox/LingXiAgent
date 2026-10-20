@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LingXiKernel
 import LingXiPluginABI
@@ -6,7 +7,7 @@ import Testing
 
 /// Runs the real TUI inside a PTY (via /usr/bin/script) against a real Core and the real MiMo
 /// plugin process, replaying a recorded cassette. No part of the UI is mocked.
-private final class PTYProcess: @unchecked Sendable {
+final class PTYProcess: @unchecked Sendable {
     private let process = Process()
     private let stdin = Pipe()
     private let output = Pipe()
@@ -48,12 +49,18 @@ private final class PTYProcess: @unchecked Sendable {
         stdin.fileHandleForWriting.write(Data(text.utf8))
     }
 
-    func waitFor(_ text: String, timeout: Duration = .seconds(90)) async -> Bool {
-        await waitUntil(timeout: timeout) { self.transcript.contains(text) }
+    func waitFor(_ text: String, after start: Int = 0, timeout: Duration = .seconds(90)) async -> Bool {
+        await waitUntil(timeout: timeout) { self.transcript.dropFirst(start).contains(text) }
     }
 
     func terminate() {
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            // `script` does not guarantee forwarding SIGTERM to its child. Exit the TUI first.
+            write("\u{03}\u{03}/quit\r")
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning && Date() < deadline { usleep(10_000) }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
         process.waitUntilExit()
     }
 
@@ -61,7 +68,7 @@ private final class PTYProcess: @unchecked Sendable {
     var status: Int32 { process.terminationStatus }
 }
 
-private func seedTUI(_ directory: URL) async throws {
+func seedTUI(_ directory: URL) async throws {
     let bundle = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
         dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
@@ -86,6 +93,8 @@ func TUI_001_ptyChatWithMiMo() async throws {
     environment["LINGXI_DATA_DIR"] = directory.path
     environment["LINGXI_CORE_HOST"] = builtProduct("LingXiCoreHost").path
     environment["LINGXI_PLUGIN_POLICY"] = "development"
+    environment["LINGXI_KEYCHAIN_SERVICE"] = "site.lingxi.credentials.test.\(UUID().uuidString)"
+    environment.removeValue(forKey: "LINGXI_CREDENTIAL_SOURCE")
     environment["TERM"] = "xterm-256color"
     environment.removeValue(forKey: "LINGXI_CORE_CONTROL")
     environment.removeValue(forKey: "LINGXI_FRONTEND")

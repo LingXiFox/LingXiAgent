@@ -90,7 +90,7 @@ final class MiMoCore: @unchecked Sendable {
                     switch error {
                     case .missingCredential: kind = "unauthorized"
                     case .streamEndedWithoutTerminal: kind = "streamProtocol"
-                    case .httpStatus(let code, _): kind = Self.failureKind(forHTTP: code)
+                    case .httpStatus(let code): kind = Self.failureKind(forHTTP: code)
                     }
                     emit(.init(type: "failed", failureKind: kind, message: "\(error)"))
                     outcome.set(.capabilityFailed)
@@ -202,7 +202,13 @@ private let describeImpl: @convention(c) (
             id: MiMoWire.providerID,
             models: MiMoWire.models,
             supportsParallelToolCalls: false,
-            toolResultPlacement: "anywhereInHistory"
+            toolResultPlacement: "anywhereInHistory",
+            credentials: [CredentialRequirement(
+                id: "apiKey",
+                label: "MiMo API Key",
+                envVariable: "MIMO_API_KEY",
+                helpURL: nil
+            )]
         )]
     )
     return emitJSON(identity, out: out, length: length)

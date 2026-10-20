@@ -181,3 +181,15 @@ Provider 类目下限 300s（配置更低时被抬高），idle 下限 120s。`h
 | Q-PR5 | `supportsParallelToolCalls` / `toolResultPlacement` 两个新能力字段的默认值：缺省即失败（无默认值纪律），还是缺省取最保守的"不并行 + 必须紧跟" |
 | Q-PR2 | 模型目录随包分发还是内核内置最小目录（涉及"内核不含厂商信息"的边界解释） |
 | Q-PR3 | 凭据取用是拉取式（插件请求）还是推流式（内核随请求下发），影响审计粒度 |
+
+## API Key 声明与托管（Phase 4.1）
+
+`ProviderIdentity.credentials` 是可选的 `[CredentialRequirement]`，旧插件缺少字段时按无认证需求处理。
+当前最多一项，字段为 `id`、`label`、可选 `envVariable` 与 `helpURL`，只描述需求，不含凭据值。
+Core 用 bundle ID、provider ID、credential ID 划分 Keychain 项；协调器校验注册 ID 和实际加载 ID 一致。
+没有声明就不授予凭据，插件也不能指定其他插件的 Keychain account。
+
+每次 `PluginProviderAdapter.stream` 调用重新解析凭据，再通过既有独立 Host IPC 的
+`ProviderWireRequest.credential` 交付这一请求所需的值；不在 adapter 或插件保存跨请求缓存。
+官方插件只把值放入 Authorization header，digest/body/cassette 不含该字段，HTTP 错误也不回传响应正文。
+Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或共享全局凭据入口。

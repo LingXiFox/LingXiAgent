@@ -65,6 +65,11 @@ jobs:
         timeout-minutes: 10
         run: LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter TUI_001_ptyChatWithMiMo
 
+      - name: Keychain and hidden credential input (no API keys)
+        # Uses a fresh Keychain service per test; never reads the runner's provider credentials.
+        timeout-minutes: 10
+        run: LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter 'AUTH_'
+
       - name: Empty core starts without a provider and writes no journal records
         # QA-013: with no provider plugin the host must start, report guidance, and write nothing.
         # A fresh data directory must stay clean — an empty journal is the whole point of the

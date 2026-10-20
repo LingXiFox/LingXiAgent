@@ -9,7 +9,7 @@ public struct PluginProviderAdapter: ModelProvider {
 
     private let session: PluginSession
     private let capabilityID: String
-    private let credential: @Sendable () -> String?
+    private let credential: @Sendable () throws -> String?
     private let active = ActiveRequests()
 
     private final class ActiveRequests: @unchecked Sendable {
@@ -46,7 +46,7 @@ public struct PluginProviderAdapter: ModelProvider {
         session: PluginSession,
         providerID: String,
         declaration: ProviderIdentity,
-        credential: @escaping @Sendable () -> String?
+        credential: @escaping @Sendable () throws -> String?
     ) {
         self.session = session
         self.capabilityID = "provider.\(providerID)"
@@ -59,9 +59,13 @@ public struct PluginProviderAdapter: ModelProvider {
     }
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+        let granted: String?
+        do { granted = try credential() } catch {
+            throw ModelFailure(kind: .unauthorized, message: "credential store access failed; use /auth <provider> status")
+        }
         let requestID = UUID().uuidString
         active.add(request.executionID, requestID)
-        let wire = Self.wireRequest(from: request, credential: credential())
+        let wire = Self.wireRequest(from: request, credential: granted)
         let payload = try JSONValue.encode(wire)
         let events = await session.invokeStreaming(
             capability: capabilityID, payload: payload, requestID: requestID, timeout: .seconds(300)

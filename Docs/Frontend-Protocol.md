@@ -51,3 +51,29 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 
 `LINGXI_CORE_CONTROL=1` 是 Phase 3.1 的最小测试控制面（`models`/`plugins`/`enable`/`disable`/`quit`），
 与前端协议相互独立，不会被 TUI 使用。
+
+## 凭据管理（Phase 4.1）
+
+| method | 参数 | 回复字段 |
+|---|---|---|
+| `auth.status` | `provider` | `credentials[]`（providerID、credentialID、label、source、configured） |
+| `auth.set` | `provider`, `secret` | 同上，仅状态 |
+| `auth.remove` | `provider` | 同上，仅状态 |
+
+没有读取密钥的方法。`secret` 只能从专用隐藏输入进入 `auth.set`，不得进入 `chat.send`、普通输入缓冲、
+消息列表、历史、日志或错误正文。TUI 收到保存回复前丢弃后续按键；Esc/Ctrl-C 取消输入，多行粘贴拒绝。
+`/auth <provider>` 首次设置，已有凭据时只提示更新命令；`update` 显式替换，`status` 不返回密钥。
+
+Core 根据已启用插件的认证声明授权；Keychain account 为 `bundleID/providerID/credentialID`。
+禁用插件不删除项，已保存凭据可在禁用期间查看状态或移除；重新启用后下一次调用重新读取。
+当前每个 Provider 支持一个 API Key；其他认证方案未实现。
+
+默认只用 macOS Keychain。开发/自动化必须显式设置 `LINGXI_CREDENTIAL_SOURCE=environment`，并由
+`<data>/credentials.json` 将能力 ID 映射到变量名，例如 `{"provider.mimo":"MIMO_API_KEY"}`。
+插件的 `envVariable` 只是建议，不能授权读取任意 Core 环境变量。JSON 中从不保存变量值。
+环境覆盖生效时禁止通过 `/auth` 伪装更新/删除环境变量；须移除覆盖并重启 Core 后管理保存的 Key。
+`LINGXI_KEYCHAIN_SERVICE` 可指定独立命名空间（测试用唯一 `.test.<UUID>` 服务，不触碰用户条目）。
+
+SwiftPM ad-hoc Core 使用文件型 Keychain默认 ACL，仅信任创建项的 Core 身份，不信任 TUI 或 Host。
+同一构建重启可复用凭据；代码重建导致 cdhash 改变时可能触发 macOS 重新授权。发布版需要稳定签名身份，
+不能把 ACL 改为“所有应用”或仅验证可伪造的 identifier 来消除提示。

@@ -86,7 +86,7 @@ private func makeDeepSeekHarness(grants: [String], credential: @escaping @Sendab
         hostExecutableURL: builtProduct("LingXiPluginHost"),
         registry: registry,
         pipeline: HookPipeline(),
-        credential: { _ in credential() }
+        credential: { _, _ in credential() }
     )
     try await coordinator.install(bundleID: deepSeekID, version: "1.0.0", bundlePath: bundle.url.path)
     _ = try await coordinator.enable(

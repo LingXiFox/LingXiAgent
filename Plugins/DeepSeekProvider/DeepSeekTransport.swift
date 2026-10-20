@@ -58,13 +58,13 @@ final class CassetteStore: @unchecked Sendable {
 /// the credential in the Authorization header only.
 enum DeepSeekTransport {
     enum TransportError: Error, CustomStringConvertible {
-        case httpStatus(Int, String)
+        case httpStatus(Int)
         case missingCredential
         case streamEndedWithoutTerminal
 
         var description: String {
             switch self {
-            case .httpStatus(let code, let body): "HTTP \(code): \(body.prefix(300))"
+            case .httpStatus(let code): "HTTP \(code): upstream refused the request"
             case .missingCredential: "no credential was granted for this invocation"
             case .streamEndedWithoutTerminal: "the provider stream ended without a terminal event"
             }
@@ -89,9 +89,7 @@ enum DeepSeekTransport {
 
         let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-            var body = ""
-            for try await line in bytes.lines { body += line; if body.count > 1024 { break } }
-            throw TransportError.httpStatus(http.statusCode, body)
+            throw TransportError.httpStatus(http.statusCode)
         }
 
         var normalizer = DeepSeekWire.Normalizer()

@@ -30,8 +30,10 @@ Tracks in use:
 | Target | Path | License | Third-party redistribution | Notes |
 |---|---|---|---|---|
 | `LingXiKernel` | `Sources/LingXiKernel` | LCSAL-1.1 | Source: no; binary: no | Minimal agent kernel: loop, single context, run state, durable event log. Contains no provider, no tool implementation and no plugin loading code — that absence is enforced by the L0 gate, not by convention. |
-| `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The shipped Core process. Once the credential store lands it will be the only process that reads the credentials passphrase. |
+| `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The shipped Core process, and after Phase 4.1 the only process that reads a saved provider credential. |
+| `LingXiCredentialStore` | `Sources/LingXiCredentialStore` | LCSAL-1.1 | Source: no; binary: no | Custody of declared provider credentials: the resolution rules (`keychain` by default, `environment` only when explicitly selected) and the single macOS Keychain implementation. Linked into the Core only, so neither the TUI nor the plugin host can reach a saved secret. Declared by the owner on 2026-10-20. |
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | Not shipped | n/a | Test target only. |
+| `LingXiCredentialStoreTests` | `Tests/LingXiCredentialStoreTests` | Not shipped | n/a | Test target only: resolution rules against an in-memory backend, and a Keychain round trip behind `LINGXI_RUN_KEYCHAIN_TESTS=1`. |
 | `LingXiFrontendProtocol` | `Sources/LingXiFrontendProtocol` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Frontend wire protocol: request/reply/event types shared by the Core and the TUI. |
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Terminal frontend. Speaks the protocol only; never loads a provider or a plugin. |
 | `LingXiPluginABIC` | `Sources/LingXiPluginABIC` | MIT (`LICENSE-ABI`) | Yes, verbatim | The C half of the ABI: the header plus one translation unit. Separate because a Swift target cannot export C structs and `@convention(c)` needs them. |
@@ -69,9 +71,13 @@ into the SPM table in the same commit that adds it to `Package.swift`.
 
 | Planned target | Expected track | Phase |
 |---|---|---|
-| `LingXiPlatform` (Darwin process, file, terminal, secure storage) | LCSAL-1.1 | 2 |
+| `LingXiPlatform` (Darwin process, file, terminal) | LCSAL-1.1 | 2 |
 | Further official plugins under `Plugins/` | PolyForm Noncommercial 1.0.0 | 2-3 |
 | Frontend protocol and TUI targets | PolyForm Noncommercial 1.0.0 | 4 |
+
+Secure storage left this list in Phase 4.1: it landed as `LingXiCredentialStore` rather than as part
+of `LingXiPlatform`, because credential custody deserves its own link boundary instead of sharing a
+module with process and terminal helpers.
 
 `LingXiPluginABI`, `LingXiPluginHost`, `LingXiPluginRuntime` and the first example plugin were
 declared in the SPM table during Phase 2, together with the `ContractTests` target that

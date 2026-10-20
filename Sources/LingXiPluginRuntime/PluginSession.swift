@@ -22,6 +22,7 @@ public actor PluginSession {
     public let hostExecutableURL: URL
     public private(set) var state: SessionState = .installed
     public private(set) var capabilities: [DeclaredCapability] = []
+    public private(set) var bundleID: String?
     public private(set) var providers: [ProviderIdentity] = []
     public private(set) var permissions: [String] = []
     public private(set) var processIdentifier: Int32?
@@ -77,6 +78,7 @@ public actor PluginSession {
             state = .failed
             throw SessionError.handshake(reason)
         }
+        bundleID = loaded.bundleID
         capabilities = declared
         providers = loaded.providers ?? []
         permissions = loaded.permissions ?? []

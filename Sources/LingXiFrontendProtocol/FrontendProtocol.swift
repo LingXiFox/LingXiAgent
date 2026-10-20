@@ -14,7 +14,34 @@ public enum FrontendMethod: String, Codable, Sendable {
     case pluginsList = "plugins.list"
     case pluginEnable = "plugin.enable"
     case pluginDisable = "plugin.disable"
+    /// Credential management. The secret travels **only** in `auth.set`; every reply reports state,
+    /// never the value, so a saved key can never be read back through this protocol.
+    case authStatus = "auth.status"
+    case authSet = "auth.set"
+    case authRemove = "auth.remove"
     case shutdown
+}
+
+/// What the Core reports about one declared credential. Deliberately status-only: there is no field
+/// that could carry the secret.
+public struct CredentialStatus: Codable, Sendable, Equatable {
+    public let providerID: String
+    public let credentialID: String
+    public let label: String
+    /// "keychain" when a saved secret is available, "environment" when the explicit environment
+    /// source supplies it, "missing" when neither does.
+    public let source: String
+    public let configured: Bool
+
+    public init(
+        providerID: String, credentialID: String, label: String, source: String, configured: Bool
+    ) {
+        self.providerID = providerID
+        self.credentialID = credentialID
+        self.label = label
+        self.source = source
+        self.configured = configured
+    }
 }
 
 public struct FrontendRequest: Codable, Sendable {
@@ -25,10 +52,19 @@ public struct FrontendRequest: Codable, Sendable {
     public var text: String?
     public var runID: String?
     public var bundleID: String?
+    /// Which provider an `auth.*` request is about. Never a secret.
+    public var provider: String?
+    /// The secret for `auth.set` only. It is written to the Core, stored once, and never returned:
+    /// no reply, event, log line or journal entry can carry it back out.
+    public var secret: String?
 
-    public init(id: Int, method: FrontendMethod) {
+    public init(
+        id: Int, method: FrontendMethod, provider: String? = nil, secret: String? = nil
+    ) {
         self.id = id
         self.method = method
+        self.provider = provider
+        self.secret = secret
     }
 }
 
@@ -88,6 +124,8 @@ public struct FrontendReply: Codable, Sendable {
     public var sessions: [SessionSummary]?
     public var history: [HistoryEntry]?
     public var plugins: [PluginSummary]?
+    /// Auth state only. There is deliberately no field that could echo a saved secret.
+    public var credentials: [CredentialStatus]?
 
     public init(id: Int, ok: Bool, error: String? = nil) {
         self.id = id

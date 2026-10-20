@@ -20,7 +20,7 @@ public actor PluginCoordinator {
     private let registry: PluginRegistry
     private let pipeline: HookPipeline
     private let router: ModelRouter?
-    private let credential: @Sendable (String) -> String?
+    private let credential: @Sendable (String, ProviderIdentity) throws -> String?
     private var sessions: [String: PluginSession] = [:]
     private var handlerIDs: [String: [String]] = [:]
     private var adapters: [String: [PluginProviderAdapter]] = [:]
@@ -34,7 +34,7 @@ public actor PluginCoordinator {
         registry: PluginRegistry,
         pipeline: HookPipeline,
         router: ModelRouter? = nil,
-        credential: @escaping @Sendable (String) -> String? = { _ in nil }
+        credential: @escaping @Sendable (String, ProviderIdentity) throws -> String? = { _, _ in nil }
     ) {
         self.hostExecutableURL = hostExecutableURL
         self.registry = registry
@@ -74,6 +74,21 @@ public actor PluginCoordinator {
         var mounted: [String] = []
         do {
             try await session.enable(policy: policy, grantedPermissions: grantedPermissions)
+            guard await session.bundleID == bundleID else {
+                throw PluginSession.SessionError.handshake("registered bundle id does not match loaded plugin")
+            }
+            for declaration in await session.providers {
+                let validID: (String) -> Bool = { value in
+                    !value.isEmpty && value.utf8.count <= 200 && value.utf8.allSatisfy {
+                        (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 46, 95].contains($0)
+                    }
+                }
+                guard validID(bundleID), validID(declaration.id),
+                      (declaration.credentials ?? []).count <= 1,
+                      (declaration.credentials ?? []).allSatisfy({ validID($0.id) && !$0.label.isEmpty }) else {
+                    throw PluginSession.SessionError.handshake("invalid provider credential declaration; at most one API key is supported")
+                }
+            }
             await session.setUnexpectedExitHandler { [weak self] in
                 Task { await self?.handleUnexpectedExit(bundleID: bundleID) }
             }
@@ -85,7 +100,7 @@ public actor PluginCoordinator {
                         session: session,
                         providerID: declaration.id,
                         declaration: declaration,
-                        credential: { [credential] in credential("provider.\(declaration.id)") }
+                        credential: { [credential] in try credential(bundleID, declaration) }
                     )
                 )
             }
@@ -186,6 +201,15 @@ public actor PluginCoordinator {
         let providers = await session.providers
         let built = adapters[bundleID] ?? []
         return Array(zip(providers, built)).map { ProviderBinding(declaration: $0.0, adapter: $0.1) }
+    }
+
+    /// Only successfully enabled plugin declarations can authorize secret delivery.
+    public func credentialProviders() async -> [(bundleID: String, declaration: ProviderIdentity)] {
+        var result: [(String, ProviderIdentity)] = []
+        for (bundleID, session) in sessions {
+            for declaration in await session.providers { result.append((bundleID, declaration)) }
+        }
+        return result
     }
 
     // MARK: - teardown

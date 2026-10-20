@@ -32,6 +32,7 @@ TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──>
 | `LingXiPluginABI` | `Sources/LingXiPluginABI` | Core↔Host 线协议、Hook 载荷、签名策略枚举 | MIT |
 | `LingXiPluginHost` | `Sources/LingXiPluginHost` | 通用 Host 进程：验包、签名/Team 策略、manifest、`dlopen`、调用分发、取消 | LCSAL-1.1 |
 | `LingXiPluginRuntime` | `Sources/LingXiPluginRuntime` | Core 侧监管：注册表、会话、进程与 IPC 客户端、Hook 桥、启停编排 | LCSAL-1.1 |
+| `LingXiCredentialStore` | `Sources/LingXiCredentialStore` | 凭据托管：解析规则（默认 Keychain；环境变量仅在显式选择时使用）与唯一的 macOS Keychain 实现；只链接进 Core，TUI 与 Host 都读不到已存密钥 | LCSAL-1.1 |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | 正式 Core 进程：恢复内核状态与插件，把 HookPipeline 接到真实 AgentLoop | LCSAL-1.1 |
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | 官方示例插件（Swift）：一个 `contextPrepare` Hook | PolyForm Noncommercial 1.0.0 |
 | `LingXiFrontendProtocol` | `Sources/LingXiFrontendProtocol` | Core↔TUI 的请求/回复/事件契约 | PolyForm Noncommercial 1.0.0 |
@@ -40,6 +41,7 @@ TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──>
 | `DeepSeekProvider` | `Plugins/DeepSeekProvider` | 首个真实 Provider：DeepSeek Responses API + SSE 流式，Cassette 回放 | PolyForm Noncommercial 1.0.0 |
 | `MiMoProvider` | `Plugins/MiMoProvider` | 第二个 Provider，故意不同 wire family：MiMo Chat Completions | PolyForm Noncommercial 1.0.0 |
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | L0 结构门禁 + L1 内核回归 | 不发布 |
+| `LingXiCredentialStoreTests` | `Tests/LingXiCredentialStoreTests` | 凭据解析规则（内存后端）+ 真实 Keychain 往返（`LINGXI_RUN_KEYCHAIN_TESTS=1` 门禁） | 不发布 |
 | `ContractTests` | `ContractTests` | L2 契约：真 `.lxap`、真签名、真 Host 进程、故障注入 | 不发布 |
 
 依赖方向由 L0 门禁解析 `Package.swift` 强制执行：内核不得依赖任何其他 target、只 import `Foundation`，

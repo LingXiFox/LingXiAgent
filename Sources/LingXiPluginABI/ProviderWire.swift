@@ -1,5 +1,28 @@
 import Foundation
 
+/// A credential a plugin needs before it can talk to its upstream. The plugin only *describes* the
+/// need; the Core owns storage, consent and delivery. Nothing here names a vendor-specific store:
+/// the Core maps every requirement to one Keychain item.
+public struct CredentialRequirement: Codable, Sendable, Equatable {
+    /// Scoped to the declaring provider, e.g. `apiKey`. The Core composes the durable key from the
+    /// provider id and this id, so two providers can both use `apiKey` without colliding.
+    public let id: String
+    /// Human label the frontend shows while asking for the secret.
+    public let label: String
+    /// The explicit development/automation fallback: when the Core runs in environment source mode,
+    /// this suggests a variable name. Only the operator mapping authorizes a Core environment read.
+    public let envVariable: String?
+    /// Optional documentation link shown by the frontend.
+    public let helpURL: String?
+
+    public init(id: String, label: String, envVariable: String?, helpURL: String?) {
+        self.id = id
+        self.label = label
+        self.envVariable = envVariable
+        self.helpURL = helpURL
+    }
+}
+
 /// A provider capability as declared by a plugin and reported by the host. No defaults: the models a
 /// plugin offers and the request shape it accepts are explicit, not assumed.
 public struct ProviderIdentity: Codable, Sendable, Equatable {
@@ -7,12 +30,20 @@ public struct ProviderIdentity: Codable, Sendable, Equatable {
     public let models: [String]
     public let supportsParallelToolCalls: Bool
     public let toolResultPlacement: String
+    /// What the provider needs before it can reach its upstream. `nil` means "declares nothing",
+    /// which is the safe direction: a plugin that needs a secret but forgets to declare it gets no
+    /// secret and fails loudly with `unauthorized`, instead of silently inheriting one.
+    public let credentials: [CredentialRequirement]?
 
-    public init(id: String, models: [String], supportsParallelToolCalls: Bool, toolResultPlacement: String) {
+    public init(
+        id: String, models: [String], supportsParallelToolCalls: Bool, toolResultPlacement: String,
+        credentials: [CredentialRequirement]? = nil
+    ) {
         self.id = id
         self.models = models
         self.supportsParallelToolCalls = supportsParallelToolCalls
         self.toolResultPlacement = toolResultPlacement
+        self.credentials = credentials
     }
 }
 

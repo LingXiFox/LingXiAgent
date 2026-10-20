@@ -7,7 +7,6 @@ swift build
 DIST="$PWD/dist"
 BUNDLE="$DIST/MiMoProvider.lxap"
 DATA="$DIST/data"
-rm -rf "$BUNDLE"
 mkdir -p "$BUNDLE/Contents/MacOS" "$DATA"
 cp .build/debug/libMiMoProvider.dylib "$BUNDLE/Contents/MacOS/MiMoProvider"
 
@@ -36,18 +35,40 @@ PLIST
 
 codesign --force --deep --sign - --identifier site.lingxi.provider.mimo "$BUNDLE"
 
+if [[ ! -e "$DATA/plugins.json" && ! -L "$DATA/plugins.json" ]]; then
+(
+setopt noclobber
 cat > "$DATA/plugins.json" <<JSON
 {"plugins":[{"bundleID":"site.lingxi.provider.mimo","version":"1.0.0","bundlePath":"$BUNDLE","enabled":true}]}
 JSON
+)
+fi
+
+# This file maps capability ids to variable NAMES only; it never stores a key. Preserve user edits.
+if [[ ! -e "$DATA/credentials.json" && ! -L "$DATA/credentials.json" ]]; then
+(
+setopt noclobber
+cat > "$DATA/credentials.json" <<'JSON'
+{"provider.mimo":"MIMO_API_KEY"}
+JSON
+)
+fi
 
 cat <<EOF
 MiMo bundle: $BUNDLE
 Data dir:    $DATA
 
-Run the TUI (the key stays in your shell; the TUI never reads it):
+Run the TUI, then enter /auth mimo to save your API Key in macOS Keychain:
 
-  MIMO_API_KEY=... LINGXI_PLUGIN_POLICY=development LINGXI_DATA_DIR="$DATA" swift run LingXiTUI
+  LINGXI_PLUGIN_POLICY=development LINGXI_DATA_DIR="$DATA" .build/debug/LingXiTUI
 
-If MIMO_API_KEY is already exported, omit it. LINGXI_PLUGIN_POLICY=development is required because
-the locally built bundle is ad-hoc signed; the default restricted tier refuses it by design.
+/auth mimo update replaces the saved key; /auth mimo remove deletes it; /auth mimo status reports state.
+Existing plugins.json and credentials.json are preserved. If your registry predates this bundle,
+install/enable MiMo in that registry first. Disabling a plugin never removes saved credentials.
+
+Development/automation only: explicitly set LINGXI_CREDENTIAL_SOURCE=environment and MIMO_API_KEY.
+Never put the key on a command line. The Core alone reads the variable; plugin environments are filtered.
+The locally built plugin is ad-hoc signed, so LINGXI_PLUGIN_POLICY=development is required.
+The same Core build can reuse Keychain across restarts. A changed ad-hoc Core may require macOS
+Keychain authorization again; a release must use a stable signing identity. No ACL is opened to all apps.
 EOF

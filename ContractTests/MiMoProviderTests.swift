@@ -91,7 +91,7 @@ private func makeMiMoHarness(
         registry: registry,
         pipeline: HookPipeline(),
         router: ownedRouter,
-        credential: { _ in credential() }
+        credential: { _, _ in credential() }
     )
     try await coordinator.install(bundleID: mimoID, version: "1.0.0", bundlePath: bundle.url.path)
     _ = try await coordinator.enable(bundleID: mimoID, policy: .development, grantedPermissions: grants)
@@ -270,4 +270,36 @@ func MIMO_liveSmoke() async throws {
     )
     #expect(followUp.status == .completed)
     #expect(!followUp.assistantText.isEmpty)
+}
+
+private final class InvocationGrants: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: String? = "first-invocation-sentinel"
+    private var seen: [String?] = []
+    func replace(_ value: String?) { lock.lock(); defer { lock.unlock() }; current = value }
+    func grant() -> String? {
+        lock.lock(); defer { lock.unlock() }; seen.append(current); return current
+    }
+    var history: [String?] { lock.lock(); defer { lock.unlock() }; return seen }
+}
+
+@Test("AUTH-001 the real provider adapter asks the Core for a new grant on every request")
+func AUTH_001_eachRequestUsesFreshGrant() async throws {
+    let fixture = Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")!
+    var cassette = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [String: Any])
+    let first = try #require((cassette["exchanges"] as? [[String: Any]])?.first)
+    cassette["exchanges"] = [first, first, first]
+    let path = FileManager.default.temporaryDirectory.appendingPathComponent("grants-\(UUID().uuidString).json")
+    try JSONSerialization.data(withJSONObject: cassette).write(to: path)
+    defer { try? FileManager.default.removeItem(at: path) }
+    let grants = InvocationGrants()
+    let harness = try await makeMiMoHarness(grants: ["vcr=\(path.path)"], credential: { grants.grant() })
+    for turn in 1...3 {
+        if turn == 2 { grants.replace("updated-invocation-sentinel") }
+        if turn == 3 { grants.replace(nil) }
+        let result = await harness.loop.run(mimoRequest(turn: turn, prompt: "grant probe"), policy: LoopPolicy())
+        #expect(result.status == .completed && result.cause == .completedWithText)
+    }
+    #expect(grants.history == ["first-invocation-sentinel", "updated-invocation-sentinel", nil])
+    await harness.coordinator.shutdown()
 }

@@ -1,4 +1,5 @@
 import Foundation
+import LingXiCredentialStore
 import LingXiFrontendProtocol
 import LingXiKernel
 import LingXiPluginABI
@@ -12,6 +13,7 @@ final class FrontendServer: @unchecked Sendable {
     private let router: ModelRouter
     private let registry: PluginRegistry
     private let coordinator: PluginCoordinator
+    private let credentials: CredentialAuthority
     private let policy: SignaturePolicy
     private let output = FileHandle.standardOutput
     private let lock = NSLock()
@@ -20,7 +22,8 @@ final class FrontendServer: @unchecked Sendable {
 
     init(
         loop: AgentLoop, store: SessionStore, router: ModelRouter,
-        registry: PluginRegistry, coordinator: PluginCoordinator, policy: SignaturePolicy
+        registry: PluginRegistry, coordinator: PluginCoordinator, policy: SignaturePolicy,
+        credentials: CredentialAuthority
     ) {
         self.loop = loop
         self.store = store
@@ -28,6 +31,7 @@ final class FrontendServer: @unchecked Sendable {
         self.registry = registry
         self.coordinator = coordinator
         self.policy = policy
+        self.credentials = credentials
         Task { [weak self, coordinator] in
             await coordinator.setStateChangeHandler { [weak self] in
                 Task { await self?.broadcastState() }
@@ -117,10 +121,60 @@ final class FrontendServer: @unchecked Sendable {
                 reply.error = "\(error)"
                 reply.plugins = await pluginSummaries()
             }
+        case .authStatus, .authSet, .authRemove:
+            do {
+                guard let providerID = request.provider, !providerID.isEmpty else {
+                    throw AuthError.invalidRequest
+                }
+                let declared = await coordinator.credentialProviders().filter { $0.declaration.id == providerID }
+                let bundleID: String
+                let requirement: CredentialRequirement
+                if declared.count == 1, let provider = declared.first,
+                   let first = provider.declaration.credentials?.first {
+                    bundleID = provider.bundleID
+                    requirement = first
+                } else {
+                    let installed = await registry.all().map(\.bundleID)
+                    let saved = try credentials.storedKeys().filter {
+                        $0.providerID == providerID && installed.contains($0.bundleID)
+                    }
+                    guard declared.isEmpty, saved.count == 1, let key = saved.first else { throw AuthError.enableFirst }
+                    guard request.method != .authSet else { throw AuthError.enableFirst }
+                    bundleID = key.bundleID
+                    requirement = CredentialRequirement(id: key.credentialID, label: "API Key", envVariable: nil, helpURL: nil)
+                }
+                switch request.method {
+                case .authSet:
+                    guard let secret = request.secret else { throw AuthError.invalidRequest }
+                    try credentials.set(secret, bundleID: bundleID, providerID: providerID, requirement: requirement)
+                case .authRemove:
+                    try credentials.remove(bundleID: bundleID, providerID: providerID, requirement: requirement)
+                default: break
+                }
+                let state = try credentials.availability(bundleID: bundleID, providerID: providerID, requirement: requirement)
+                reply.credentials = [CredentialStatus(
+                    providerID: state.providerID, credentialID: state.credentialID, label: state.label,
+                    source: state.source.rawValue, configured: state.configured
+                )]
+            } catch {
+                reply.ok = false
+                // Auth errors carry fixed text or OSStatus only, never an IPC payload or secret.
+                reply.error = String(describing: error)
+            }
         case .shutdown:
             shuttingDown = true
         }
         send(reply)
+    }
+
+    private enum AuthError: Error, CustomStringConvertible {
+        case invalidRequest, enableFirst
+        var description: String {
+            switch self {
+            case .invalidRequest: "auth needs a provider id and auth.set needs a nonempty secret"
+            case .enableFirst: "enable the provider plugin with one declared API key first; a saved key may still be inspected or removed while disabled"
+            }
+        }
     }
 
     private func startRun(runID: String, sessionID: String, model: String, text: String) {

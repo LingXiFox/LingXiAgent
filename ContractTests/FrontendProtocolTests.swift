@@ -5,7 +5,7 @@ import LingXiPluginABI
 import LingXiPluginRuntime
 import Testing
 
-private final class ProtocolCore: @unchecked Sendable {
+final class ProtocolCore: @unchecked Sendable {
     private enum Stream { case stdout, stderr }
     private let process = Process()
     private let stdin = Pipe()
@@ -17,10 +17,12 @@ private final class ProtocolCore: @unchecked Sendable {
     private var nextID = 1
     private var cursor = 0
 
-    init(dataDirectory: URL) throws {
+    init(dataDirectory: URL, keychainService: String = "site.lingxi.credentials.test.\(UUID().uuidString)") throws {
         process.executableURL = builtProduct("LingXiCoreHost")
         var environment = ProcessInfo.processInfo.environment
         environment["LINGXI_DATA_DIR"] = dataDirectory.path
+        environment["LINGXI_KEYCHAIN_SERVICE"] = keychainService
+        environment.removeValue(forKey: "LINGXI_CREDENTIAL_SOURCE")
         environment["LINGXI_FRONTEND"] = "stdio"
         environment["LINGXI_PLUGIN_POLICY"] = "development"
         environment.removeValue(forKey: "LINGXI_CORE_CONTROL")
@@ -61,11 +63,13 @@ private final class ProtocolCore: @unchecked Sendable {
     }
 
     func send(_ method: FrontendMethod, sessionID: String? = nil, model: String? = nil,
-              text: String? = nil, runID: String? = nil, bundleID: String? = nil) -> Int {
+              text: String? = nil, runID: String? = nil, bundleID: String? = nil,
+              provider: String? = nil, secret: String? = nil) -> Int {
         lock.lock(); let id = nextID; nextID += 1; lock.unlock()
         var request = FrontendRequest(id: id, method: method)
         request.sessionID = sessionID; request.model = model; request.text = text
         request.runID = runID; request.bundleID = bundleID
+        request.provider = provider; request.secret = secret
         stdin.fileHandleForWriting.write((try! JSONEncoder().encode(request)) + Data([UInt8(ascii: "\n")]))
         return id
     }
@@ -110,7 +114,7 @@ private final class ProtocolCore: @unchecked Sendable {
     func closeInput() { stdin.fileHandleForWriting.closeFile() }
 }
 
-private func seedTUICore(_ directory: URL) async throws {
+func seedTUICore(_ directory: URL) async throws {
     let bundle = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
         dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]

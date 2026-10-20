@@ -87,7 +87,8 @@ private final class CoreClient: @unchecked Sendable {
     var isRunning: Bool { process.isRunning }
 
     func send(_ method: FrontendMethod, sessionID: String? = nil, model: String? = nil,
-              text: String? = nil, runID: String? = nil, bundleID: String? = nil) -> Int {
+              text: String? = nil, runID: String? = nil, bundleID: String? = nil,
+              provider: String? = nil, secret: String? = nil) -> Int {
         lock.lock()
         let id = nextID
         nextID += 1
@@ -98,6 +99,8 @@ private final class CoreClient: @unchecked Sendable {
         request.text = text
         request.runID = runID
         request.bundleID = bundleID
+        request.provider = provider
+        request.secret = secret
         if let data = try? JSONEncoder().encode(request) {
             stdin.fileHandleForWriting.write(data + Data([UInt8(ascii: "\n")]))
         }
@@ -119,6 +122,14 @@ private enum Pending {
     case history
     case enable(String)
     case disable(String)
+    case auth(String, String)
+}
+
+private struct SecretInput {
+    let provider: String
+    let label: String
+    var characters: [Character] = []
+    var invalidPaste = false
 }
 
 private struct App {
@@ -136,6 +147,10 @@ private struct App {
     var cancelling = false
     var pending: [Int: Pending] = [:]
     var coreGone = false
+    var secretInput: SecretInput?
+    var authBusy = false
+    var pasting = false
+    var discardInputBatch = false
 
     var sessionTitle: String {
         guard let activeSession else { return "新会话" }
@@ -150,6 +165,8 @@ private struct App {
 
     var status: String {
         if coreGone { return "Core 已退出；按 Ctrl-C 退出" }
+        if let secretInput { return "\(secretInput.label)：隐藏输入中 · Enter 保存 · Esc 取消" }
+        if authBusy { return "正在处理凭据…" }
         if cancelling { return "正在取消…" }
         if running { return "生成中…  Esc 取消" }
         return "Enter 发送  ·  /help 查看命令  ·  PgUp/PgDn 滚动  ·  Ctrl-C 退出"
@@ -201,7 +218,7 @@ InputReader { bytes in
 }.start()
 
 private let output = FileHandle.standardOutput
-output.write(Data("\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J\u{1B}[H".utf8))
+output.write(Data("\u{1B}[?2004h\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J\u{1B}[H".utf8))
 output.write(Data(Theme.charcoal.bg.utf8))
 output.write(Data(Theme.cream.fg.utf8))
 
@@ -216,7 +233,7 @@ func draw() {
     let renderer = Renderer(columns: size.columns, rows: size.rows)
     var frame = renderer.frame(
         messages: app.messages, scrollFromBottom: app.scroll,
-        input: app.input, cursor: app.cursor,
+        input: app.secretInput == nil ? app.input : [], cursor: app.secretInput == nil ? app.cursor : 0,
         header: app.header, status: app.status
     )
     frame = "\u{1B}[H" + frame + "\u{1B}[J"
@@ -226,9 +243,10 @@ func draw() {
 
 @MainActor
 func shutdown() {
+    app.secretInput = nil
     _ = client.send(.shutdown)
     client.stop()
-    output.write(Data((Theme.reset + "\u{1B}[?25h\u{1B}[?1049l").utf8))
+    output.write(Data((Theme.reset + "\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1049l").utf8))
     Terminal.restore(original)
 }
 
@@ -270,11 +288,11 @@ func handleReply(_ reply: FrontendReply) {
     case .hello:
         if app.model == nil || !(app.models.contains(app.model!)) { app.model = app.models.first }
         if app.models.isEmpty {
-            app.notice("没有可用模型。请设置 MIMO_API_KEY、安装并启用 MiMo 插件；本地构建的插件还需要显式设置 LINGXI_PLUGIN_POLICY=development。用 /plugins 查看状态。")
+            app.notice("没有可用模型。请安装并启用 Provider 插件；本地构建的插件需要显式设置 LINGXI_PLUGIN_POLICY=development。用 /plugins 查看状态。")
         } else if !app.sessions.isEmpty {
             app.notice("欢迎回来。已有 \(app.sessions.count) 个会话，用 /sessions 查看、/switch <序号> 切换，或直接输入开始新对话。")
         } else {
-            app.notice("输入消息开始对话。用 /help 查看命令。")
+            app.notice("输入消息开始对话。用 /help 查看命令。首次使用请 /auth <provider> 配置 API Key。")
         }
     case .plugins:
         app.notice(pluginReport(app.plugins))
@@ -302,6 +320,23 @@ func handleReply(_ reply: FrontendReply) {
             app.error("插件操作失败：\(reply.error ?? "未知错误")")
         } else {
             app.notice("已禁用 \(bundleID)。")
+        }
+    case .auth(let provider, let action):
+        app.authBusy = false
+        if !reply.ok {
+            app.error("凭据操作失败：\(reply.error ?? "未知错误")")
+        } else if let state = reply.credentials?.first {
+            if action == "set" || action == "update" {
+                if state.configured && action == "set" {
+                    app.notice("\(provider) 已配置（\(state.source)）。更新请用 /auth \(provider) update。")
+                } else {
+                    app.secretInput = SecretInput(provider: provider, label: state.label)
+                    app.notice("请输入 \(state.label)。输入内容完全隐藏；Enter 保存，Esc 取消。请勿在命令后附加 Key。")
+                }
+            } else {
+                let stateText = state.configured ? "已配置（\(state.source)）" : "未配置"
+                app.notice("\(provider)：\(stateText)。" + (action == "saved" ? "可立即发送新请求。" : ""))
+            }
         }
     case nil:
         if !reply.ok {
@@ -400,6 +435,9 @@ func runCommand(_ raw: String) {
           /new               开始新会话
           /models            列出可用模型
           /model <id>        切换模型
+          /auth <provider>   隐藏输入并保存 API Key
+          /auth <provider> update / remove / status
+                             更新 / 删除 / 查看设置状态
           /plugins           查看插件、能力与权限
           /enable <id>       启用/重新启用插件
           /disable <id>      禁用插件
@@ -439,6 +477,18 @@ func runCommand(_ raw: String) {
             : client.send(.pluginDisable, bundleID: argument)
         app.pending[id] = command == "/enable" ? .enable(argument) : .disable(argument)
         app.notice("正在\(command == "/enable" ? "启用" : "禁用") \(argument)…")
+    case "/auth":
+        let fields = argument.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard (1...2).contains(fields.count),
+              fields.count == 1 || ["update", "remove", "status"].contains(fields[1]) else {
+            app.error("用法：/auth <provider> [update|remove|status]。Key 必须在专用隐藏输入中填写。")
+            return
+        }
+        let provider = fields[0]
+        let action = fields.count == 1 ? "set" : fields[1]
+        app.authBusy = true
+        let id = client.send(action == "remove" ? .authRemove : .authStatus, provider: provider)
+        app.pending[id] = .auth(provider, action)
     case "/clear":
         app.messages = []
         app.scroll = 0
@@ -453,6 +503,44 @@ func runCommand(_ raw: String) {
 
 @MainActor
 func handleKey(_ key: Key) {
+    if key == .pasteStart { app.pasting = true; return }
+    if key == .pasteEnd { app.pasting = false; return }
+    if app.discardInputBatch { return }
+    if app.authBusy {
+        if key == .interrupt { shutdown(); exit(0) }
+        return
+    }
+    if app.secretInput != nil {
+        switch key {
+        case .character(let character):
+            if character.isWhitespace || app.secretInput!.characters.count >= 8192 {
+                app.secretInput?.invalidPaste = true
+            } else { app.secretInput?.characters.append(character) }
+        case .backspace: _ = app.secretInput?.characters.popLast()
+        case .clearLine:
+            app.secretInput?.characters = []
+            app.secretInput?.invalidPaste = false
+        case .enter:
+            if app.pasting { app.secretInput?.invalidPaste = true; break }
+            guard let input = app.secretInput, !input.characters.isEmpty, !input.invalidPaste else {
+                app.secretInput?.characters = []
+                app.secretInput?.invalidPaste = false
+                app.error("Key 不能为空或包含空白，最长 8192 字符。请重新输入。")
+                break
+            }
+            app.secretInput = nil
+            app.authBusy = true
+            let id = client.send(.authSet, provider: input.provider, secret: String(input.characters))
+            app.pending[id] = .auth(input.provider, "saved")
+        case .escape, .interrupt, .endOfInput:
+            app.secretInput = nil
+            app.discardInputBatch = true
+            app.notice("已取消凭据输入。")
+        default: break
+        }
+        needsRender = true
+        return
+    }
     switch key {
     case .character(let character):
         if app.cursor >= app.input.count { app.input.append(character) } else { app.input.insert(character, at: app.cursor) }
@@ -497,7 +585,7 @@ func handleKey(_ key: Key) {
         if app.input.isEmpty { shutdown(); exit(0) }
     case .tab:
         for _ in 0..<2 { app.input.insert(" ", at: app.cursor); app.cursor += 1 }
-    case .unknown:
+    case .unknown, .pasteStart, .pasteEnd:
         break
     }
     needsRender = true
@@ -512,6 +600,7 @@ while true {
         needsRender = true
     }
     keys.wait(milliseconds: 30)
+    app.discardInputBatch = false
     for key in keys.drain() { handleKey(key) }
     for line in client.lines.drain() {
         if let reply = try? JSONDecoder().decode(FrontendReply.self, from: line) {
@@ -524,6 +613,8 @@ while true {
         app.error("Core: \(errorLine)")
     }
     if !client.isRunning && !app.coreGone {
+        app.secretInput = nil
+        app.authBusy = false
         app.coreGone = true
         app.running = false
         app.error("Core 进程已退出。按 Ctrl-C 退出。")

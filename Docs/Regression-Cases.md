@@ -217,6 +217,14 @@
 | FE-007 | 常驻 Core 的前端协议 | 请求/回复/事件按行分帧；chat 流式增量到达；会话列表与历史可读；插件启停立即反映到模型列表；无模型时在触达插件前拒绝 | 1.x 前端 wire 分散（E-13） | 4 | L2 | 已覆盖（阶段 4：`FE_007_protocolEndToEnd`，真实 Core + 真实 MiMo 插件 + cassette） |
 | TUI-001 | 终端 TUI 端到端 | 真实 PTY 中启动、中文输入、流式回复、插件面板、干净退出；TUI 不加载插件 | 1.x OpenTUI 方案未迁移 | 4 | L2 | 已覆盖（阶段 4：`TUI_001_ptyChatWithMiMo`） |
 
+### AUTH 组 — 凭据托管
+
+| ID | 场景 | 期望行为 | 来源 | 阶段 | 层 | 状态 |
+|---|---|---|---|---|---|---|
+| AUTH-001 | 凭据解析与撤销 | 默认 Keychain；显式环境源需操作者映射；每次请求重取；按 bundle/provider/requirement 隔离；拒绝空白 Key | 2.0 TUI 每次启动手动传 Key | 4.1 | L1 + L2 | `CredentialStoreTests` |
+| AUTH-002 | 真实 macOS Keychain | Core 写入、重启解密、更新、禁用保留、启用恢复、显式移除；状态回复无 Key | 本次需求 | 4.1 | L2 | `AUTH_002_*`，独立测试命名空间，env 门禁 |
+| AUTH-003 | 专用隐藏输入 | PTY 不回显；拒绝多行粘贴；取消不转成聊天；重新启动复用；日志/注册表无 Key | 本次需求 | 4.1 | L2 | `AUTH_003_hiddenInputPTY`，Keychain + PTY 门禁 |
+
 ### QA 组 — 测试与门禁卫生
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
