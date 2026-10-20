@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "provider": "mimo",
+  "exchanges": [
+    {
+      "events": [
+        {
+          "text": "Simple",
+          "type": "reasoningDelta"
+        },
+        {
+          "text": " request",
+          "type": "reasoningDelta"
+        },
+        {
+          "text": ".",
+          "type": "reasoningDelta"
+        },
+        {
+          "text": "pong",
+          "type": "textDelta"
+        },
+        {
+          "type": "usage",
+          "usage": {
+            "inputTokens": 89,
+            "outputTokens": 7,
+            "reasoningTokens": 4
+          }
+        },
+        {
+          "stopReason": "stop",
+          "type": "completed"
+        }
+      ],
+      "requestDigest": ""
+    }
+  ]
+}

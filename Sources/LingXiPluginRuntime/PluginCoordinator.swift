@@ -25,6 +25,7 @@ public actor PluginCoordinator {
     private var handlerIDs: [String: [String]] = [:]
     private var adapters: [String: [PluginProviderAdapter]] = [:]
     private var disabling: Set<String> = []
+    private var stateChangeHandler: (@Sendable () -> Void)?
 
     /// `credential` resolves a capability id to a secret the Core owns. It never comes from the host
     /// environment and is never written to a log; only the provider adapter puts it on the wire.
@@ -45,6 +46,12 @@ public actor PluginCoordinator {
     /// Installs a bundle in the registry without starting it. Enabling is a separate, explicit act.
     public func install(bundleID: String, version: String, bundlePath: String) async throws {
         try await registry.upsert(.init(bundleID: bundleID, version: version, bundlePath: bundlePath, enabled: false))
+    }
+
+    /// Called after any change to running/enabled state, including unexpected exits. The Core uses
+    /// it to refresh the frontend without polling.
+    public func setStateChangeHandler(_ handler: @escaping @Sendable () -> Void) {
+        stateChangeHandler = handler
     }
 
     /// Starts a plugin, mounts its hooks and registers its model routes. Registration is atomic per
@@ -99,13 +106,19 @@ public actor PluginCoordinator {
                 mounted.append(bridge.handlerID)
             }
 
+            let capabilityLabels = await session.capabilities.map { "\($0.kind).\($0.id)" }
+                + session.providers.map { "provider.\($0.id)" }
             try await registry.upsert(.init(
-                bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath, enabled: true
+                bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath,
+                enabled: true, grants: entry.grants,
+                capabilities: capabilityLabels,
+                permissions: await session.permissions
             ))
 
             sessions[bundleID] = session
             adapters[bundleID] = deployments.map(\.1)
             handlerIDs[bundleID] = mounted
+            stateChangeHandler?()
             return Loaded(bundleID: bundleID, capabilities: await session.capabilities)
         } catch {
             for providerID in registered {
@@ -133,6 +146,7 @@ public actor PluginCoordinator {
             try await registry.upsert(disabled)
         }
         await teardown(bundleID)
+        stateChangeHandler?()
     }
 
     public func uninstall(bundleID: String) async throws {
@@ -210,5 +224,6 @@ public actor PluginCoordinator {
             disabled.enabled = false
             try? await registry.upsert(disabled)
         }
+        stateChangeHandler?()
     }
 }

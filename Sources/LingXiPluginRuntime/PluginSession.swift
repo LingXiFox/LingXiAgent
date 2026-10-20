@@ -23,6 +23,7 @@ public actor PluginSession {
     public private(set) var state: SessionState = .installed
     public private(set) var capabilities: [DeclaredCapability] = []
     public private(set) var providers: [ProviderIdentity] = []
+    public private(set) var permissions: [String] = []
     public private(set) var processIdentifier: Int32?
 
     private var process: PluginProcess?
@@ -78,6 +79,7 @@ public actor PluginSession {
         }
         capabilities = declared
         providers = loaded.providers ?? []
+        permissions = loaded.permissions ?? []
 
         var start = HostRequest(id: nil, method: .start)
         start.grantedPermissions = grantedPermissions
@@ -200,6 +202,7 @@ public actor PluginSession {
         self.process = nil
         capabilities = []
         providers = []
+        permissions = []
         state = .disabled
     }
 

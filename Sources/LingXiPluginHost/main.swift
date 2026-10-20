@@ -177,6 +177,7 @@ final class HostAgent {
             DeclaredCapability(kind: "hook", id: $0.id, node: $0.node, priority: $0.priority, canVeto: $0.canVeto)
         }
         reply.providers = opened.identity.providers
+        reply.permissions = manifest.permissions
         reply.payload = .object([
             "version": .string(manifest.version),
             "teamID": manifest.teamID.map { .string($0) } ?? .null,

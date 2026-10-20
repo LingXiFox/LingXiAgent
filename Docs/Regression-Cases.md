@@ -5,6 +5,8 @@
 
 ## 修订记录
 
+- **Phase 4（2026-10-20，可交互 Core + TUI）**：CoreHost 在 `LINGXI_FRONTEND=stdio` 下常驻，按行 JSON 提供 `hello/models/sessions/history/chat.send/run.cancel/plugins/enable/disable/shutdown`；聊天增量经 `AgentLoop` 的只读事件观察点流到前端，执行逻辑未复制。TUI 是独立进程，只讲协议、不加载 Provider/插件；raw mode、备用屏、中文输入、CJK 宽度换行、滚动、代码块与基础 Markdown、Esc 取消、插件面板。证据：`FE_007_protocolEndToEnd`（真实 Core + 真实 MiMo 插件 + cassette：流式文本、会话标题/历史、禁用后模型消失与新请求被拒、重新启用恢复）、`TUI_001_ptyChatWithMiMo`（真实 PTY 中中文输入 → 流式 `pong` → `/plugins` → `/quit`）。全套 139 tests（104 + 35）连跑 3 次全绿。真实网络的手动 TUI 验收待主人用 `Scripts/tui-setup.sh` 执行。
+
 - **Phase 3.1（2026-10-20，多 Provider 隔离与动态撤销）**：`ModelRouter` 增加原子 `register`（重复 provider / 模型冲突整批拒绝）与按所有者精确删除的 `unregister`；`PluginCoordinator` 持有 router 后，启用注册、禁用撤销，任何一步失败整体回滚。禁用顺序：注册表先写 → 摘路由 → 取消在途 → 卸 Hook → 停 Host；Host 意外退出按插件作用域清理并把 `enabled` 置 false（ADR-0004）。新增 7 条证据：双 Provider 各自服务、禁用只撤销自己的路由且 DeepSeek 继续完成 Run、强杀 Host 的作用域清理、禁用期间的在途取消与无幽灵路由、重复注册冲突、注册表写入失败回滚、常驻 Core 的运行时启停与重启状态恢复。原 `MIMO_disableRemovesProviderRoute` 补齐为真正的路由断言；`PLG_018_pluginCrashIsIsolated` 改为断言死插件路由被自动清理。全套 137 tests（104 + 33）连跑 3 次全绿。
 
 - **Provider-MiMo（2026-10-20，第二个 Provider，验证跨 wire family）**：MiMo 走 OpenAI Chat Completions（`POST https://api.xiaomimimo.com/v1/chat/completions`，`mimo-v2.6-flash` / `mimo-v2.6-pro`），与 DeepSeek 的 Responses 属不同协议族。实现为**独立插件**，请求编码、SSE 归一化、cassette 均不共享兼容层；只复用已冻结的 ABI、Host 与 Runtime。关键差异处理：工具调用按 index 累积且 id/name 齐备后才发 started；终态延迟到流末尾，确保 `stream_options.include_usage` 的 trailing usage 不被内核终态守卫丢弃。证据：离线 4 条（真流式 ≥2 delta、两轮对话、完整工具循环、取消/超时清理、禁用撤销），同套 128 tests 连跑 3 次全绿；并行负载暴露握手超时过紧，默认从 5s 调到 15s。真实 API 已验证（2026-10-20，`mimo-v2.6-flash`）：三轮录制、工具循环、reasoning 与 cacheRead usage 均命中；脱敏 cassette `ContractTests/Fixtures/mimo-chat-live.json` 已入库，离线用例按 digest 匹配全部通过。详见 `Docs/Validation/Provider-MiMo.md`。
@@ -211,7 +213,9 @@
 | FE-003 | 流式回放有界 | 已关闭流保留条数有上限，超窗口或宽限期后清 payload；revert 必须彻底 reset 流状态 | `acd8cf4`、`StreamReplayLifecycleTests` | 4 | L2 | 待继承 |
 | FE-004 | 调试遥测 | 不得改变任何发往模型的请求（先断言数量再断言内容，且共享同一工作区）；环形缓冲满不得越界 | `ec84c78`、`RuntimeObservatoryBypassTests` | 1 | L1 | 待继承 |
 | FE-005 | HTTP 接受短连接探测 | 0ms 可写探测即关闭时不得误发内容；客户端承诺 503 时读 0 字节；短消息不得等 EOF | `147354f`、`4219b7a` | 4 | L2 | 待继承 |
-| FE-006 | 终端尺寸变化 / 长任务 / 大输出 | 无撕裂、无错位、无内存无界增长；Core 崩溃时 TUI 给出诊断而非随之退出 | 1.x 无对应资产（缺口） | 4 | L3 | 新增 |
+| FE-006 | 终端尺寸变化 / 长任务 / 大输出 | 无撕裂、无错位、无内存无界增长；Core 崩溃时 TUI 给出诊断而非随之退出 | 1.x 无对应资产（缺口） | 4 | L3 | 进行中（阶段 4：每帧重读尺寸、SIGWINCH 重绘、滚动视口、Core 退出提示；尺寸变化的自动化未覆盖） |
+| FE-007 | 常驻 Core 的前端协议 | 请求/回复/事件按行分帧；chat 流式增量到达；会话列表与历史可读；插件启停立即反映到模型列表；无模型时在触达插件前拒绝 | 1.x 前端 wire 分散（E-13） | 4 | L2 | 已覆盖（阶段 4：`FE_007_protocolEndToEnd`，真实 Core + 真实 MiMo 插件 + cassette） |
+| TUI-001 | 终端 TUI 端到端 | 真实 PTY 中启动、中文输入、流式回复、插件面板、干净退出；TUI 不加载插件 | 1.x OpenTUI 方案未迁移 | 4 | L2 | 已覆盖（阶段 4：`TUI_001_ptyChatWithMiMo`） |
 
 ### QA 组 — 测试与门禁卫生
 

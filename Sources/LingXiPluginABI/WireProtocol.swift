@@ -112,6 +112,7 @@ public struct HostReply: Codable, Sendable {
     public var abiMajor: UInt32?
     public var capabilities: [DeclaredCapability]?
     public var providers: [ProviderIdentity]?
+    public var permissions: [String]?
     public var payload: JSONValue?
     public var fault: HostFault?
 

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LingXiFrontendProtocol
 import LingXiKernel
 import LingXiPluginABI
 import LingXiPluginRuntime
@@ -72,7 +73,9 @@ do {
     var failures: [String] = []
     for entry in installed where entry.enabled {
         do {
-            _ = try await coordinator.enable(bundleID: entry.bundleID, policy: policy)
+            _ = try await coordinator.enable(
+                bundleID: entry.bundleID, policy: policy, grantedPermissions: entry.grants ?? []
+            )
         } catch {
             // A plugin that cannot be restored must not take the Core down with it.
             failures.append("\(entry.bundleID): \(error)")
@@ -120,7 +123,13 @@ do {
         print("Provider plugins are active. Connect a frontend to start a conversation.")
     }
 
-    if controlMode {
+    if ProcessInfo.processInfo.environment["LINGXI_FRONTEND"] == "stdio" {
+        let server = FrontendServer(
+            loop: loop, store: recovered.store, router: router,
+            registry: registry, coordinator: coordinator, policy: policy
+        )
+        await server.serve()
+    } else if controlMode {
         // A line-oriented control surface for verifying runtime switching without a frontend. It
         // touches plugin routes and processes only; the journal is never written.
         print("control: ready")
@@ -150,7 +159,10 @@ do {
                     guard parts.count == 2 else { emit("error: \(command) needs a bundle id"); continue }
                     do {
                         if command == "enable" {
-                            _ = try await coordinator.enable(bundleID: parts[1], policy: policy)
+                            let grants = await registry.entry(parts[1])?.grants ?? []
+                            _ = try await coordinator.enable(
+                                bundleID: parts[1], policy: policy, grantedPermissions: grants
+                            )
                         } else {
                             try await coordinator.disable(bundleID: parts[1])
                         }

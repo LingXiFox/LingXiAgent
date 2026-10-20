@@ -9,12 +9,25 @@ public actor PluginRegistry {
         public var version: String
         public var bundlePath: String
         public var enabled: Bool
+        /// Grants passed to the plugin at start (e.g. `vcr=<path>`). Optional so existing files
+        /// still decode; absent means no grants.
+        public var grants: [String]?
+        /// Last known declared capabilities and permissions, cached when the plugin was enabled so
+        /// the UI can describe a stopped plugin without loading it.
+        public var capabilities: [String]?
+        public var permissions: [String]?
 
-        public init(bundleID: String, version: String, bundlePath: String, enabled: Bool) {
+        public init(
+            bundleID: String, version: String, bundlePath: String, enabled: Bool,
+            grants: [String]? = nil, capabilities: [String]? = nil, permissions: [String]? = nil
+        ) {
             self.bundleID = bundleID
             self.version = version
             self.bundlePath = bundlePath
             self.enabled = enabled
+            self.grants = grants
+            self.capabilities = capabilities
+            self.permissions = permissions
         }
     }
 

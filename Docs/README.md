@@ -34,6 +34,8 @@ TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──>
 | `LingXiPluginRuntime` | `Sources/LingXiPluginRuntime` | Core 侧监管：注册表、会话、进程与 IPC 客户端、Hook 桥、启停编排 | LCSAL-1.1 |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | 正式 Core 进程：恢复内核状态与插件，把 HookPipeline 接到真实 AgentLoop | LCSAL-1.1 |
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | 官方示例插件（Swift）：一个 `contextPrepare` Hook | PolyForm Noncommercial 1.0.0 |
+| `LingXiFrontendProtocol` | `Sources/LingXiFrontendProtocol` | Core↔TUI 的请求/回复/事件契约 | PolyForm Noncommercial 1.0.0 |
+| `LingXiTUI` | `Sources/LingXiTUI` | 终端前端：流式聊天、会话、插件管理；不加载插件 | PolyForm Noncommercial 1.0.0 |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | 同一能力的 C 实现，用于证明 ABI 跨语言 | PolyForm Noncommercial 1.0.0 |
 | `DeepSeekProvider` | `Plugins/DeepSeekProvider` | 首个真实 Provider：DeepSeek Responses API + SSE 流式，Cassette 回放 | PolyForm Noncommercial 1.0.0 |
 | `MiMoProvider` | `Plugins/MiMoProvider` | 第二个 Provider，故意不同 wire family：MiMo Chat Completions | PolyForm Noncommercial 1.0.0 |
@@ -140,7 +142,7 @@ Core 侧的注册表（`plugins.json`，独立于会话事件日志）是「是�
 
 ```bash
 swift build --build-tests        # 零告警
-swift test                       # 137 tests：104 内核 + 33 契约
+swift test                       # 139 tests：104 内核 + 35 契约
 
 # 空核启动：无 Provider 时启动、报状态、给出引导，不写事件日志
 DATA_DIR="$(mktemp -d)"
@@ -185,6 +187,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
+- **TUI**：真实 PTY 中完成中文输入、流式回复、插件面板与干净退出；Core 常驻服务、协议见 `Docs/Frontend-Protocol.md`，一键打包 `Scripts/tui-setup.sh`。
 - **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。模型路由按插件归属，启停/崩溃只影响所属插件（ADR-0004）。MiMo 已完成真实 API 录制（`mimo-chat-live.json`，离线按 digest 重放）；DeepSeek 等候真实录制。详见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
 
 尚未实现（技术待办，按建议顺序）：
@@ -204,6 +207,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
 | `Project-Conventions.md` | 目录与命名、依赖审批、Core 不膨胀评审、提交与许可登记、安全红线 |
 | `Kernel-Design.md` | 最小内核：职责白名单、Run/Step 状态机、批次语义、恢复、取消、上下文、预算、缓存 |
 | `Plugin-System-Design.md` | `.lxap`、C ABI、Host、握手与能力注册、生命周期、故障分类、Hook、权限 |
+| `Frontend-Protocol.md` | Core↔TUI 的行式 JSON 协议：聊天流、会话、取消、插件管理 |
 | `Provider-Plugin-Contract.md` | Provider 契约：wire family、事件流终态、错误分类、用量与缓存 |
 | `Testing-and-Acceptance.md` | 测试分层（L0–L4）与完成标准判定 |
 | `Regression-Cases.md` | 回归台账：带 ID 的场景 → 期望行为 → 证据 → 阶段归属 |

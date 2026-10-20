@@ -100,7 +100,14 @@ public actor AgentLoop {
         self.instructions = instructions
     }
 
-    public func run(_ request: RunRequest, policy: LoopPolicy) async -> RunResult {
+    /// `observe` receives every provider event as the run consumes it. It is observation only: it
+    /// cannot alter the stream, the accumulator or the terminal decision (a frontend uses it to
+    /// render deltas without duplicating the loop).
+    public func run(
+        _ request: RunRequest,
+        policy: LoopPolicy,
+        observe: (@Sendable (ModelEvent) -> Void)? = nil
+    ) async -> RunResult {
         var state = LoopState()
 
         // Pre-flight: a core without a provider is a configuration state, not a failed run. Report
@@ -175,7 +182,7 @@ public actor AgentLoop {
         let outcome: (RunStatus, TerminalCause, String?)
         do {
             try await runs.markRunning(request.runID)
-            outcome = try await drive(request, policy: policy, state: &state)
+            outcome = try await drive(request, policy: policy, state: &state, observe: observe)
         } catch let failure as ModelFailure {
             outcome = (.failed, .providerFailure, failure.message)
         } catch let error as ModelRouterError {
@@ -227,7 +234,12 @@ public actor AgentLoop {
         )
     }
 
-    private func drive(_ request: RunRequest, policy: LoopPolicy, state: inout LoopState) async throws -> (RunStatus, TerminalCause, String?) {
+    private func drive(
+        _ request: RunRequest,
+        policy: LoopPolicy,
+        state: inout LoopState,
+        observe: (@Sendable (ModelEvent) -> Void)?
+    ) async throws -> (RunStatus, TerminalCause, String?) {
         let origin = clock.now()
 
         while true {
@@ -325,7 +337,8 @@ public actor AgentLoop {
                     overallTimeout: policy.overallTimeout
                 ),
                 remainingTimeout: remainingTimeout,
-                state: &state
+                state: &state,
+                observe: observe
             )
 
             switch step {
@@ -461,14 +474,15 @@ public actor AgentLoop {
         provider: any ModelProvider,
         modelRequest: ModelRequest,
         remainingTimeout: Duration?,
-        state: inout LoopState
+        state: inout LoopState,
+        observe: (@Sendable (ModelEvent) -> Void)?
     ) async -> StepOutcome {
         let accumulator = StreamAccumulator()
         let race = StepRace()
         let clock = self.clock
 
         let consumer = Task {
-            await Self.pump(provider: provider, request: modelRequest, accumulator: accumulator, race: race)
+            await Self.pump(provider: provider, request: modelRequest, accumulator: accumulator, race: race, observe: observe)
         }
 
         let watchdog: Task<Void, Never>?
@@ -508,11 +522,13 @@ public actor AgentLoop {
         provider: any ModelProvider,
         request: ModelRequest,
         accumulator: StreamAccumulator,
-        race: StepRace
+        race: StepRace,
+        observe: (@Sendable (ModelEvent) -> Void)?
     ) async {
         do {
             let stream = try await provider.stream(request)
             for try await event in stream {
+                observe?(event)
                 accumulator.apply(event)
                 if let outcome = accumulator.outcome() {
                     race.resolve(outcome)
