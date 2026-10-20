@@ -139,3 +139,63 @@ func assemblyKeepsPrefixStable() async throws {
     #expect(first.entries.filter { $0.segment.isPrivileged }.count == 1)
     #expect(first.entries.contains { $0.segment == .currentUser })
 }
+
+@Test("CTX-018 non-privileged content must never reach the instruction channel through role system")
+func CTX_018_nonPrivilegedSystemRoleRejected() throws {
+    let instructions = entry("i", .immutableInstructions, "system")
+    let derivedSystem = ContextEntry(id: "d", segment: .derivedPage, role: .system, payload: .text("retrieved"))
+
+    #expect(throws: ContextValidationError.nonPrivilegedSystemRole(index: 1)) {
+        try ContextRequestValidator.validate([instructions, derivedSystem], placement: .anywhereInHistory)
+    }
+}
+
+@Test("CTX-018 the eviction reference is data, fits the hard limit, and is counted in the plan")
+func CTX_018_referenceIsCountedAndNonPrivileged() throws {
+    let instructions = entry("i", .immutableInstructions, String(repeating: "s", count: 336))
+    let currentUser = entry("u", .currentUser, "now")
+    let history = entry("h", .history, filler)
+    let plan = try ContextBudgetPlanner().plan(
+        [instructions, currentUser, history],
+        limits: BudgetLimits(preferredTokens: 100, hardTokens: 400)
+    )
+
+    let reference = try #require(plan.selected.first { $0.segment == .derivedPage })
+    #expect(reference.role == .user)
+    #expect(plan.evicted.map(\.id.rawValue) == ["h"])
+    let recomputed = plan.selected.reduce(0) { $0 + TokenEstimator().estimate($1) }
+    #expect(plan.estimatedTokens == recomputed)
+    #expect(plan.estimatedTokens <= 400)
+    try ContextRequestValidator.validate(plan.selected, placement: .immediatelyAfterCall)
+}
+
+@Test("CTX-018 a reference line that cannot fit under the hard limit fails closed")
+func CTX_018_referenceOverHardLimit() {
+    let instructions = entry("i", .immutableInstructions, String(repeating: "s", count: 336))
+    let currentUser = entry("u", .currentUser, "now")
+    let history = entry("h", .history, filler)
+
+    #expect(throws: BudgetError.referenceExceedsHardLimit(estimatedTokens: 108, hardTokens: 100)) {
+        _ = try ContextBudgetPlanner().plan(
+            [instructions, currentUser, history],
+            limits: BudgetLimits(preferredTokens: 100, hardTokens: 100)
+        )
+    }
+}
+
+@Test("CTX-017 only the newest user turn is mandatory; older user turns become history")
+func CTX_017_previousUserTurnsAreDemoted() async {
+    let store = SessionStore()
+    let turn1 = ContextEntry(id: "turn-1", segment: .currentUser, role: .user, payload: .text("first"))
+    let assistant1 = ContextEntry(id: "assistant-1", segment: .history, role: .assistant, payload: .text("reply"))
+    let turn2 = ContextEntry(id: "turn-2", segment: .currentUser, role: .user, payload: .text("second"))
+
+    await store.append(turn1, to: "s")
+    await store.append(assistant1, to: "s")
+    await store.append(turn2, to: "s")
+
+    let entries = await store.entries(for: "s")
+    #expect(entries.map(\.id.rawValue) == ["turn-1", "assistant-1", "turn-2"])
+    #expect(entries.map(\.segment) == [.history, .history, .currentUser])
+    #expect(entries.filter { $0.segment.isMandatory }.map(\.id.rawValue) == ["turn-2"])
+}

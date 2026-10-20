@@ -26,11 +26,15 @@ public struct BudgetLimits: Sendable {
 
 public enum BudgetError: Error, Equatable {
     case mandatoryFloorExceedsHardLimit(pinnedTokens: Int, hardTokens: Int)
+    /// The eviction reference line itself does not fit under the hard limit; failing closed is
+    /// better than silently omitting the recoverable ids or exceeding the hard limit.
+    case referenceExceedsHardLimit(estimatedTokens: Int, hardTokens: Int)
 }
 
 public struct BudgetPlan: Sendable {
     public let selected: [ContextEntry]
     public let evicted: [ContextEntry]
+    /// Tokens of `selected`, including the eviction reference line.
     public let estimatedTokens: Int
     public let highWaterTokens: Int
     public let lowWaterTokens: Int
@@ -56,41 +60,47 @@ public struct ContextBudgetPlanner: Sendable {
         var keep = Array(repeating: true, count: entries.count)
         var running = perEntry.reduce(0, +)
 
+        let candidates = entries.indices
+            .filter { !entries[$0].segment.isMandatory }
+            .sorted { lhs, rhs in
+                let left = entries[lhs].segment.evictionPriority
+                let right = entries[rhs].segment.evictionPriority
+                return left == right ? lhs < rhs : left < right
+            }
+
         if running > highWater {
-            let candidates = entries.indices
-                .filter { !entries[$0].segment.isMandatory }
-                .sorted { lhs, rhs in
-                    let left = entries[lhs].segment.evictionPriority
-                    let right = entries[rhs].segment.evictionPriority
-                    return left == right ? lhs < rhs : left < right
-                }
             for index in candidates {
                 if running <= lowWater { break }
-                guard keep[index] else { continue }
-                for member in unitMembers(of: index, entries: entries, keep: keep) {
-                    keep[member] = false
-                    running -= perEntry[member]
-                }
+                evictUnit(at: index, entries: entries, keep: &keep, running: &running, perEntry: perEntry)
             }
         }
 
-        guard running <= limits.hardTokens else {
-            throw BudgetError.mandatoryFloorExceedsHardLimit(pinnedTokens: running, hardTokens: limits.hardTokens)
+        var reference: ContextEntry?
+        if keep.contains(false) {
+            let referenceEntry = makeReference(entries: entries, keep: keep)
+            let referenceTokens = estimator.estimate(referenceEntry)
+            if running + referenceTokens > limits.hardTokens {
+                // The reference line is part of the request too: make room for it instead of
+                // exceeding the hard limit, and fail closed if even the mandatory floor plus the
+                // reference cannot fit.
+                for index in candidates {
+                    if running + referenceTokens <= limits.hardTokens { break }
+                    evictUnit(at: index, entries: entries, keep: &keep, running: &running, perEntry: perEntry)
+                }
+            }
+            guard running + referenceTokens <= limits.hardTokens else {
+                throw BudgetError.referenceExceedsHardLimit(
+                    estimatedTokens: running + referenceTokens,
+                    hardTokens: limits.hardTokens
+                )
+            }
+            reference = referenceEntry
+            running += referenceTokens
         }
 
         let evicted = entries.indices.filter { !keep[$0] }.map { entries[$0] }
         var selected = entries.indices.filter { keep[$0] }.map { entries[$0] }
-
-        if !evicted.isEmpty {
-            let reference = ContextEntry(
-                id: "eviction-reference",
-                segment: .derivedPage,
-                role: .system,
-                payload: .text("Evicted for budget; recoverable by entry id: " + evicted.map(\.id.rawValue).joined(separator: ", "))
-            )
-            selected.append(reference)
-            running += estimator.estimate(reference)
-        }
+        if let reference { selected.append(reference) }
 
         return BudgetPlan(
             selected: selected,
@@ -101,9 +111,35 @@ public struct ContextBudgetPlanner: Sendable {
         )
     }
 
+    private func evictUnit(
+        at index: Int,
+        entries: [ContextEntry],
+        keep: inout [Bool],
+        running: inout Int,
+        perEntry: [Int]
+    ) {
+        guard keep[index] else { return }
+        for member in unitMembers(of: index, entries: entries, keep: keep) {
+            keep[member] = false
+            running -= perEntry[member]
+        }
+    }
+
     /// A causal batch leaves together or not at all, otherwise the surviving half fails validation.
     private func unitMembers(of index: Int, entries: [ContextEntry], keep: [Bool]) -> [Int] {
         guard let unit = entries[index].unit else { return [index] }
         return entries.indices.filter { entries[$0].unit == unit && keep[$0] }
+    }
+
+    /// Derived content goes on the data channel: `role: .system` is reserved for the immutable
+    /// instruction block (CTX-001, CTX-018).
+    private func makeReference(entries: [ContextEntry], keep: [Bool]) -> ContextEntry {
+        let ids = entries.indices.filter { !keep[$0] }.map { entries[$0].id.rawValue }
+        return ContextEntry(
+            id: "eviction-reference",
+            segment: .derivedPage,
+            role: .user,
+            payload: .text("Evicted for budget; recoverable by entry id: " + ids.joined(separator: ", "))
+        )
     }
 }

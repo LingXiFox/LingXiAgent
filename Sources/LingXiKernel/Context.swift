@@ -33,10 +33,16 @@ public enum MessageRole: String, Sendable, Codable {
 public enum ContextPayload: Sendable, Codable {
     case text(String)
     case toolCall(requests: [ToolCall])
+    /// A tool-call turn may also carry assistant text. Both parts are one history entry so the
+    /// request keeps a single assistant message with the calls (LOOP-024).
+    case assistantMessage(text: String, requests: [ToolCall])
     case toolResult(outcomes: [ToolOutcome])
 
     public var toolCalls: [ToolCall] {
-        if case .toolCall(let calls) = self { calls } else { [] }
+        switch self {
+        case .toolCall(let calls), .assistantMessage(_, let calls): calls
+        default: []
+        }
     }
 
     public var toolOutcomes: [ToolOutcome] {
@@ -63,15 +69,21 @@ public struct ContextEntry: Sendable, Codable, Identifiable {
 
     public var renderedText: String {
         switch payload {
-        case .text(let text): text
-        case .toolCall(let calls): calls.map { "\($0.callID.rawValue):\($0.toolName):\($0.argumentsJSON)" }.joined(separator: "\n")
-        case .toolResult(let outcomes): outcomes.map { "\($0.callID.rawValue):\($0.content)" }.joined(separator: "\n")
+        case .text(let text): return text
+        case .toolCall(let calls): return calls.map { "\($0.callID.rawValue):\($0.toolName):\($0.argumentsJSON)" }.joined(separator: "\n")
+        case .assistantMessage(let text, let calls):
+            let renderedCalls = calls.map { "\($0.callID.rawValue):\($0.toolName):\($0.argumentsJSON)" }.joined(separator: "\n")
+            return renderedCalls.isEmpty ? text : text + "\n" + renderedCalls
+        case .toolResult(let outcomes): return outcomes.map { "\($0.callID.rawValue):\($0.content)" }.joined(separator: "\n")
         }
     }
 }
 
 public enum ContextValidationError: Error, Equatable {
     case privilegedEntryNotFirst(index: Int)
+    /// Non-privileged content must never reach the model's instruction channel through `role.system`
+    /// (CTX-001, CTX-018).
+    case nonPrivilegedSystemRole(index: Int)
     case multiplePrivilegedEntries
     case orphanToolResult(ToolCallID)
     case unconsumedToolCall(ToolCallID)
@@ -95,6 +107,9 @@ public enum ContextRequestValidator {
             if entry.segment.isPrivileged {
                 privilegedCount += 1
                 guard index == 0 else { throw ContextValidationError.privilegedEntryNotFirst(index: index) }
+            }
+            if entry.role == .system, !entry.segment.isPrivileged {
+                throw ContextValidationError.nonPrivilegedSystemRole(index: index)
             }
 
             let calls = entry.payload.toolCalls

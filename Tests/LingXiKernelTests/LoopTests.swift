@@ -101,25 +101,65 @@ func LOOP_005_duplicateCallIDRejectsBatch() async throws {
     #expect(executor.executed.isEmpty)
 }
 
-@Test("LOOP-006 a provider failure is not rewritten by a concurrent cancel")
-func LOOP_006_failureSurvivesCancel() async throws {
-    let arrival = Gate()
-    let proceed = Gate()
+@Test("LOOP-006 a provider failure is reported as the terminal cause, not rewritten as a cancel")
+func LOOP_006_providerFailureSurvives() async throws {
     let provider = ScriptedProvider(scripts: [[.started, .failed(ModelFailure(kind: .rateLimited, message: "429 too many requests"))]])
-    provider.arrivalGate = arrival
-    provider.proceedGate = proceed
     let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
-    let request = runRequest("race")
-
-    let task = Task { await loop.run(request, policy: LoopPolicy()) }
-    #expect(await arrival.wait())
-    task.cancel()
-    proceed.fire()
-    let result = await task.value
+    let result = await loop.run(runRequest("failure"), policy: LoopPolicy())
 
     #expect(result.status == .failed)
     #expect(result.cause == .providerFailure)
     #expect(result.detail?.contains("429") == true)
+    #expect(result.terminalCommitted)
+}
+
+@Test("LOOP-023 cancelling while the provider stream is blocked reports cancelled and never fabricates a failure")
+func LOOP_023_cancelWhileStreamBlocked() async throws {
+    let provider = BlockingStreamProvider(terminalEvents: [
+        .failed(ModelFailure(kind: .rateLimited, message: "late 429")),
+    ])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+    let request = runRequest("cancel-blocked")
+    let task = Task { await loop.run(request, policy: LoopPolicy()) }
+
+    #expect(await provider.arrival.wait())
+    task.cancel()
+    let result = await task.value
+
+    #expect(result.status == .cancelled)
+    #expect(result.cause == .cancelledByUser)
+    #expect(result.detail == nil)
+    #expect(result.terminalCommitted)
+    // Release the stream so the helper task ends. The late failure must not change the outcome.
+    provider.release.fire()
+    #expect(result.cause == .cancelledByUser)
+}
+
+@Test("LOOP-023 a blocked provider stream is bounded by the overall timeout")
+func LOOP_023_blockedStreamTimeout() async throws {
+    let clock = ManualClock()
+    let provider = BlockingStreamProvider(terminalEvents: [.textDelta("late"), .completed(.stop)])
+    let loop = await makeLoop(
+        provider: provider,
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink()),
+        clock: clock
+    )
+    let request = runRequest("blocked-timeout")
+    let task = Task { await loop.run(request, policy: LoopPolicy(overallTimeout: .seconds(10))) }
+
+    #expect(await provider.arrival.wait())
+    // Wait until the watchdog has registered its deadline, otherwise advancing time could land
+    // before registration and the test would race the scheduler.
+    #expect(await clock.sleepStarted.wait())
+    clock.advance(.seconds(11))
+
+    let result = await task.value
+    #expect(result.status == .deadlineExceeded)
+    #expect(result.cause == .deadlineExceeded)
+    #expect(result.detail?.contains("overall timeout") == true)
+    #expect(result.terminalCommitted)
+    provider.release.fire()
 }
 
 @Test("LOOP-007 cancelling after a batch settled does not re-run the settled tool")
@@ -143,17 +183,259 @@ func LOOP_007_cancelAfterSettled() async throws {
     #expect(provider.requestCount == 1)
 }
 
-@Test("DEADLINE an overall timeout terminates the run")
-func DEADLINE_overallTimeout() async throws {
-    let clock = ManualClock()
+@Test("LOOP-022 truncated, filtered and refused replies are not reported as normal completions")
+func LOOP_022_incompleteOutcomes() async throws {
+    let truncated = await makeLoop(
+        provider: ScriptedProvider(scripts: [[.started, .textDelta("half"), .completed(.maxTokens)]]),
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink())
+    )
+    let truncatedResult = await truncated.run(runRequest("truncated"), policy: LoopPolicy())
+    #expect(truncatedResult.status == .failed)
+    #expect(truncatedResult.cause == .outputTruncated)
+    #expect(truncatedResult.assistantText == "half")
+    #expect(truncatedResult.terminalCommitted)
+
+    let filtered = await makeLoop(
+        provider: ScriptedProvider(scripts: [[.started, .completed(.contentFilter)]]),
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink())
+    )
+    let filteredResult = await filtered.run(runRequest("filtered"), policy: LoopPolicy())
+    #expect(filteredResult.status == .failed)
+    #expect(filteredResult.cause == .contentFiltered)
+
+    let refused = await makeLoop(
+        provider: ScriptedProvider(scripts: [[.started, .completed(.refusal)]]),
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink())
+    )
+    let refusedResult = await refused.run(runRequest("refused"), policy: LoopPolicy())
+    #expect(refusedResult.status == .failed)
+    #expect(refusedResult.cause == .refused)
+
+    let normal = await makeLoop(
+        provider: ScriptedProvider(scripts: [completed("done")]),
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink())
+    )
+    let normalResult = await normal.run(runRequest("normal"), policy: LoopPolicy())
+    #expect(normalResult.status == .completed)
+    #expect(normalResult.cause == .completedWithText)
+}
+
+@Test("CACHE-007 usage is summed across steps and absence stays distinguishable from zero")
+func CACHE_007_usageAccumulatesAcrossSteps() async throws {
     let registry = ToolRegistry()
     try await registerEchoTool(registry)
-    let provider = ScriptedProvider(scripts: [toolBatch([makeCall("c1")]), completed("x")])
-    provider.onStream = { index in if index == 0 { clock.advance(.seconds(30)) } }
-    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), registry: registry, log: try! DurableEventLog(sink: MemorySink()), clock: clock)
+    let firstStep: [ModelEvent] = [
+        .started,
+        .toolCallStarted(ToolCallStart(callID: "c1", toolName: "echo")),
+        .toolCallCompleted(makeCall("c1")),
+        .usage(ModelUsage(inputTokens: 100, outputTokens: 5, cacheReadTokens: 0)),
+        .completed(.toolCalls),
+    ]
+    let secondStep: [ModelEvent] = [
+        .started,
+        .textDelta("done"),
+        .usage(ModelUsage(inputTokens: 20, outputTokens: 7)),
+        .completed(.stop),
+    ]
+    let loop = await makeLoop(
+        provider: ScriptedProvider(scripts: [firstStep, secondStep]),
+        executor: RecordingExecutor(),
+        registry: registry,
+        log: try DurableEventLog(sink: MemorySink())
+    )
 
-    let result = await loop.run(runRequest("slow"), policy: LoopPolicy(overallTimeout: .seconds(10)))
+    let result = await loop.run(runRequest("usage"), policy: LoopPolicy())
+    #expect(result.status == .completed)
+    let usage = try #require(result.usage)
+    #expect(usage.inputTokens == 120)
+    #expect(usage.outputTokens == 12)
+    #expect(usage.cacheReadTokens == 0, "an explicitly reported zero must survive aggregation")
+    #expect(usage.reasoningTokens == nil, "a field nobody reported stays absent")
+    #expect(usage.cacheWriteTokens == nil)
+}
 
-    #expect(result.status == .deadlineExceeded)
-    #expect(result.cause == .deadlineExceeded)
+@Test("CACHE-007 an all-nil usage event is no telemetry, not a reported zero")
+func CACHE_007_allNilUsageStaysAbsent() async throws {
+    let loop = await makeLoop(
+        provider: ScriptedProvider(scripts: [[.started, .textDelta("done"), .usage(ModelUsage()), .completed(.stop)]]),
+        executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink())
+    )
+
+    let result = await loop.run(runRequest("usage-empty"), policy: LoopPolicy())
+    #expect(result.status == .completed)
+    #expect(result.usage == nil)
+}
+
+@Test("LOOP-024 three real turns keep every prior user and assistant message")
+func LOOP_024_threeTurnsKeepHistory() async throws {
+    let log = try DurableEventLog(sink: MemorySink())
+    let store = SessionStore()
+    let provider = ScriptedProvider(scripts: [completed("reply-1"), completed("reply-2"), completed("reply-3")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: log, store: store)
+    let session = SessionID("session-multi")
+
+    for turn in 1...3 {
+        let request = RunRequest(
+            sessionID: session,
+            turnID: TurnID("turn-\(turn)"),
+            runID: RunID("run-multi-\(turn)"),
+            executionID: ExecutionID("exec-\(turn)"),
+            model: "test-model",
+            prompt: "prompt-\(turn)"
+        )
+        let result = await loop.run(request, policy: LoopPolicy())
+        #expect(result.status == .completed)
+        #expect(result.cause == .completedWithText)
+    }
+
+    let entries = await store.entries(for: session)
+    #expect(
+        entries.map(\.id.rawValue)
+            == ["turn-turn-1", "assistant-run-multi-1", "turn-turn-2", "assistant-run-multi-2", "turn-turn-3", "assistant-run-multi-3"]
+    )
+    #expect(entries.map(\.segment) == [.history, .history, .history, .history, .currentUser, .history])
+
+    let thirdRequest = try #require(provider.request(at: 2))
+    let visible = thirdRequest.entries.filter { !$0.segment.isPrivileged }.map(\.renderedText)
+    #expect(visible.contains("prompt-1"))
+    #expect(visible.contains("reply-1"))
+    #expect(visible.contains("prompt-2"))
+    #expect(visible.contains("reply-2"))
+    #expect(visible.contains("prompt-3"))
+    #expect(thirdRequest.entries.filter { $0.segment == .currentUser }.count == 1)
+    #expect(thirdRequest.entries.filter { $0.segment.isMandatory }.count == 2)
+}
+
+@Test("LOOP-024 a tool round persists assistant text and calls as one assistant entry")
+func LOOP_024_toolRoundKeepsAssistantText() async throws {
+    let registry = ToolRegistry()
+    try await registerEchoTool(registry)
+    let stepWithText: [ModelEvent] = [
+        .started,
+        .textDelta("thinking"),
+        .toolCallStarted(ToolCallStart(callID: "c1", toolName: "echo")),
+        .toolCallCompleted(makeCall("c1")),
+        .completed(.toolCalls),
+    ]
+    let provider = ScriptedProvider(scripts: [stepWithText, completed("final")])
+    let store = SessionStore()
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), registry: registry, log: try DurableEventLog(sink: MemorySink()), store: store)
+
+    let result = await loop.run(runRequest("tool-text"), policy: LoopPolicy())
+    #expect(result.status == .completed)
+    #expect(result.assistantText == "final")
+
+    let entries = await store.entries(for: runRequest("tool-text").sessionID)
+    #expect(entries.count == 4)
+    guard case .assistantMessage(let text, let requests) = entries[1].payload else {
+        Issue.record("the tool-call entry must keep the assistant text, got \(entries[1].payload)")
+        return
+    }
+    #expect(text == "thinking")
+    #expect(requests.map(\.callID.rawValue) == ["c1"])
+    #expect(entries[1].unit == "run-tool-text-batch1")
+    #expect(entries[2].payload.toolOutcomes.map(\.callID.rawValue) == ["c1"])
+    #expect(entries[3].renderedText == "final")
+
+    // The next model request (a later step in the same run) already contained both parts.
+    let secondStep = try #require(provider.request(at: 1))
+    #expect(secondStep.entries.contains { $0.renderedText.contains("thinking") })
+    #expect(secondStep.entries.contains { !$0.payload.toolOutcomes.isEmpty })
+}
+
+@Test("LOOP-021 a second active run on the same session is rejected without touching the journal")
+func LOOP_021_secondRunOnActiveSessionRejected() async throws {
+    let log = try DurableEventLog(sink: MemorySink())
+    let provider = BlockingStreamProvider(terminalEvents: [.textDelta("late"), .completed(.stop)])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: log)
+    let session = SessionID("session-concurrent")
+
+    let first = Task {
+        await loop.run(
+            RunRequest(sessionID: session, turnID: "turn-1", runID: "run-first", executionID: "exec-1", model: "test-model", prompt: "one"),
+            policy: LoopPolicy()
+        )
+    }
+    #expect(await provider.arrival.wait())
+    let baselineRecordCount = await log.recordCount
+
+    let rejected = await loop.run(
+        RunRequest(sessionID: session, turnID: "turn-2", runID: "run-second", executionID: "exec-2", model: "test-model", prompt: "two"),
+        policy: LoopPolicy()
+    )
+
+    #expect(rejected.status == .failed)
+    #expect(rejected.cause == .concurrentRunRejected)
+    #expect(!rejected.terminalCommitted)
+    #expect(rejected.detail?.contains("active run") == true)
+    #expect(await log.recordCount == baselineRecordCount)
+
+    provider.release.fire()
+    let firstResult = await first.value
+    #expect(firstResult.status == .completed)
+}
+
+@Test("LOOP-021 different sessions may run concurrently")
+func LOOP_021_differentSessionsMayRunConcurrently() async throws {
+    let provider = BlockingStreamProvider(terminalEvents: [.textDelta("late"), .completed(.stop)])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+
+    let first = Task {
+        await loop.run(
+            RunRequest(sessionID: "session-a", turnID: "turn-a", runID: "run-a", executionID: "exec-a", model: "test-model", prompt: "a"),
+            policy: LoopPolicy()
+        )
+    }
+    let second = Task {
+        await loop.run(
+            RunRequest(sessionID: "session-b", turnID: "turn-b", runID: "run-b", executionID: "exec-b", model: "test-model", prompt: "b"),
+            policy: LoopPolicy()
+        )
+    }
+    #expect(await provider.arrival.wait())
+    // Both streams are the same blocking provider; one stream() call per run.
+    provider.release.fire()
+    let firstResult = await first.value
+    let secondResult = await second.value
+    #expect(firstResult.status == .completed)
+    #expect(secondResult.status == .completed)
+    #expect(provider.requestCount == 2)
+}
+
+@Test("CTX-018 a long conversation keeps trimming history and keeps every request valid")
+func CTX_018_longConversationTrimsHistory() async throws {
+    let store = SessionStore()
+    let provider = ScriptedProvider(scripts: (1...6).map { _ in completed(String(repeating: "r", count: 200)) })
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()), store: store)
+    let session = SessionID("session-budget")
+
+    for turn in 1...6 {
+        let request = RunRequest(
+            sessionID: session,
+            turnID: TurnID("turn-\(turn)"),
+            runID: RunID("run-budget-\(turn)"),
+            executionID: ExecutionID("exec-\(turn)"),
+            model: "test-model",
+            prompt: String(repeating: "p", count: 200)
+        )
+        let result = await loop.run(request, policy: LoopPolicy(preferredTokens: 120, hardTokens: 200))
+        #expect(result.status == .completed)
+        #expect(result.cause == .completedWithText)
+    }
+
+    let lastRequest = try #require(provider.request(at: 5))
+    #expect(lastRequest.entries.first?.segment == .immutableInstructions)
+    #expect(lastRequest.entries.filter { $0.segment == .currentUser }.count == 1)
+    #expect(lastRequest.entries.contains { $0.segment == .derivedPage })
+    let reference = try #require(lastRequest.entries.first { $0.segment == .derivedPage })
+    #expect(reference.role != .system)
+    #expect(reference.renderedText.contains("Evicted for budget"))
+    let estimated = lastRequest.entries.reduce(0) { $0 + TokenEstimator().estimate($1) }
+    #expect(estimated <= 200)
+    #expect(await store.entries(for: session).count == 12)
 }

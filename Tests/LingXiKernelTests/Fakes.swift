@@ -157,6 +157,7 @@ final class MemorySink: EventLogSink, @unchecked Sendable {
     private let lock = NSLock()
     private var lines: [String] = []
     var failOnAppendCount: Int?
+    var failOnTruncate = false
 
     init(lines: [String] = []) {
         self.lines = lines
@@ -175,6 +176,7 @@ final class MemorySink: EventLogSink, @unchecked Sendable {
     }
 
     func truncate(toLineCount count: Int) throws {
+        if failOnTruncate { throw EventSinkFault.truncateFailed }
         lock.lock()
         lines = Array(lines.prefix(count))
         lock.unlock()
@@ -195,11 +197,36 @@ final class MemorySink: EventLogSink, @unchecked Sendable {
 
 enum EventSinkFault: Error {
     case writeFailed
+    case truncateFailed
 }
 
+/// Injected monotonic clock. `sleep` registers a waiter and `advance` resumes every waiter whose
+/// deadline has passed, so time-outs are deterministic instead of relying on real wall time
+/// (QA-002).
 final class ManualClock: MonotonicClock, @unchecked Sendable {
+    private final class Waiter {
+        let deadline: Duration
+        let continuation: CheckedContinuation<Bool, Never>
+
+        init(deadline: Duration, continuation: CheckedContinuation<Bool, Never>) {
+            self.deadline = deadline
+            self.continuation = continuation
+        }
+    }
+
+    private final class SleepToken: @unchecked Sendable {
+        var id: Int?
+        var cancelled = false
+    }
+
+    /// Fires when a `sleep` waiter has been registered. Tests await this before advancing time so
+    /// the watchdog's deadline is deterministic regardless of task scheduling order.
+    let sleepStarted = Gate()
+
     private let lock = NSLock()
     private var elapsed = Duration.zero
+    private var waiters: [Int: Waiter] = [:]
+    private var nextID = 0
 
     init(elapsed: Duration = .zero) {
         self.elapsed = elapsed
@@ -214,7 +241,48 @@ final class ManualClock: MonotonicClock, @unchecked Sendable {
     func advance(_ amount: Duration) {
         lock.lock()
         elapsed += amount
+        var due: [Waiter] = []
+        for (id, waiter) in waiters where waiter.deadline <= elapsed {
+            due.append(waiter)
+            waiters[id] = nil
+        }
         lock.unlock()
+        for waiter in due { waiter.continuation.resume(returning: true) }
+    }
+
+    func sleep(for duration: Duration) async throws {
+        try Task.checkCancellation()
+        let token = SleepToken()
+        let fired = await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                lock.lock()
+                if token.cancelled {
+                    lock.unlock()
+                    continuation.resume(returning: false)
+                    return
+                }
+                let deadline = elapsed + duration
+                let id = nextID
+                nextID += 1
+                waiters[id] = Waiter(deadline: deadline, continuation: continuation)
+                token.id = id
+                lock.unlock()
+                sleepStarted.fire()
+            }
+        } onCancel: {
+            let pending: CheckedContinuation<Bool, Never>? = {
+                lock.lock()
+                defer { lock.unlock() }
+                if let id = token.id, let waiter = waiters.removeValue(forKey: id) {
+                    token.id = nil
+                    return waiter.continuation
+                }
+                token.cancelled = true
+                return nil
+            }()
+            pending?.resume(returning: false)
+        }
+        if !fired { throw CancellationError() }
     }
 }
 
@@ -244,6 +312,64 @@ func toolBatch(_ calls: [ToolCall]) -> [ModelEvent] {
 
 func newRunID(_ tag: String) -> RunID { RunID(tag) }
 
+/// A provider whose stream yields `.started` and then blocks until the test opens `release`. The
+/// test can cancel/time the run while the stream is blocked, then release late terminal events to
+/// prove they are discarded (LOOP-023).
+final class BlockingStreamProvider: ModelProvider, @unchecked Sendable {
+    let capabilities: ModelCapabilities
+    let arrival = Gate()
+    let release = Gate()
+
+    private let terminalEvents: [ModelEvent]
+    private let lock = NSLock()
+    private var recorded: [ModelRequest] = []
+
+    init(
+        terminalEvents: [ModelEvent],
+        capabilities: ModelCapabilities = ModelCapabilities(
+            supportsReasoning: false,
+            supportsParallelToolCalls: true,
+            toolResultPlacement: .anywhereInHistory
+        )
+    ) {
+        self.terminalEvents = terminalEvents
+        self.capabilities = capabilities
+    }
+
+    var requestCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded.count
+    }
+
+    func request(at index: Int) -> ModelRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recorded.indices.contains(index) ? recorded[index] : nil
+    }
+
+    private func record(_ request: ModelRequest) {
+        lock.lock()
+        recorded.append(request)
+        lock.unlock()
+    }
+
+    func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+        record(request)
+        arrival.fire()
+        let release = self.release
+        let terminalEvents = self.terminalEvents
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.started)
+            Task {
+                _ = await release.wait(within: .seconds(10))
+                for event in terminalEvents { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+    }
+}
+
 final class GatingExecutor: ToolExecutor, @unchecked Sendable {
     private let lock = NSLock()
     private var calls: [ToolCall] = []
@@ -271,7 +397,7 @@ final class GatingExecutor: ToolExecutor, @unchecked Sendable {
 }
 
 func makeLoop(
-    provider: ScriptedProvider,
+    provider: any ModelProvider,
     executor: any ToolExecutor,
     registry: ToolRegistry = ToolRegistry(),
     log: DurableEventLog,

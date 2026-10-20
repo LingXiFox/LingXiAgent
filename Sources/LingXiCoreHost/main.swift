@@ -5,43 +5,29 @@ let dataDirectory = ProcessInfo.processInfo.environment["LINGXI_DATA_DIR"]
     ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/LingXiAgent")
 try FileManager.default.createDirectory(atPath: dataDirectory, withIntermediateDirectories: true)
 
-let log = try DurableEventLog(sink: FileEventLogSink(url: URL(fileURLWithPath: dataDirectory).appendingPathComponent("events.jsonl")))
-let router = ModelRouter()
-let loop = AgentLoop(
-    router: router,
-    toolRegistry: ToolRegistry(),
-    executor: UnavailableToolExecutor(),
-    log: log,
-    runs: RunRegistry(),
-    store: SessionStore(),
-    instructions: "LingXiAgent 2.0 core"
-)
+// Startup is a status report, not a run: with no provider the host must print availability and
+// configuration guidance without writing a meaningless failed run to the journal (QA-013).
+do {
+    let journalURL = URL(fileURLWithPath: dataDirectory).appendingPathComponent("events.jsonl")
+    let log = try DurableEventLog(sink: FileEventLogSink(url: journalURL))
+    let recovered = try await KernelRecovery.recover(log: log)
+    let router = ModelRouter()
+    let toolRegistry = ToolRegistry()
 
-print("LingXiAgent 2.0 core host")
-print("  providers: \(await router.providerCount)")
-print("  tools:     \(await ToolRegistry().manifest().count)")
+    print("LingXiAgent 2.0 core host")
+    print("  providers:      \(await router.providerCount)")
+    print("  models:         \(await router.offeredModels.map(\.rawValue).joined(separator: ", "))")
+    print("  tools:          \(await toolRegistry.manifest().count)")
+    print("  journal:        \(await log.recordCount) records, repaired tail: \(await log.repairedTailRecordCount)")
+    print("  recovered runs: \(recovered.report.restoredRunCount), failed: \(recovered.report.failedRunIDs.count), unknown execution: \(recovered.report.executionStateUnknownRunIDs.count)")
 
-let runID = RunID("boot-\(Date().timeIntervalSince1970)")
-let result = await loop.run(
-    RunRequest(
-        sessionID: "boot",
-        turnID: "boot",
-        runID: runID,
-        executionID: ExecutionID("boot"),
-        model: ModelID("none"),
-        prompt: ""
-    ),
-    policy: LoopPolicy()
-)
-
-print("  run:       \(result.status.rawValue) / \(result.cause.rawValue)")
-if let detail = result.detail {
-    print("  guidance:  \(detail)")
-}
-print("The core runs without a provider, but cannot start a conversation until a provider plugin is enabled.")
-
-struct UnavailableToolExecutor: ToolExecutor {
-    func execute(_ call: ToolCall, descriptor: ToolDescriptor) async throws -> ToolOutcome {
-        ToolOutcome(callID: call.callID, content: "no task plugin is enabled", isError: true, effect: .unknown)
+    if await router.providerCount == 0 {
+        print("No provider plugin is active. Install and enable a provider plugin to start a conversation; the core runs without one.")
+        print("No inference was attempted; nothing was added to the journal.")
+    } else {
+        print("Provider plugins are active. Connect a frontend to start a conversation.")
     }
+} catch {
+    FileHandle.standardError.write(Data("LingXiAgent core failed to start: \(error)\n".utf8))
+    exit(1)
 }

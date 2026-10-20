@@ -76,16 +76,18 @@ func L0_kernelImportsOnlyFoundation() throws {
     }
 }
 
-@Test("空内核可启动：with no provider the run stops with guidance instead of crashing")
-func emptyCoreBootsButCannotInfer() async throws {
+@Test("QA-013 with no provider the run reports guidance without touching the journal")
+func QA_013_emptyCoreDoesNotPolluteJournal() async throws {
+    let log = try DurableEventLog(sink: MemorySink())
     let runs = RunRegistry()
+    let store = SessionStore()
     let loop = AgentLoop(
         router: ModelRouter(),
         toolRegistry: ToolRegistry(),
         executor: RecordingExecutor(),
-        log: try DurableEventLog(sink: MemorySink()),
+        log: log,
         runs: runs,
-        store: SessionStore(),
+        store: store,
         instructions: "instructions"
     )
     let request = RunRequest(
@@ -102,5 +104,10 @@ func emptyCoreBootsButCannotInfer() async throws {
     #expect(result.status == .failed)
     #expect(result.cause == .runtimeFailure)
     #expect(result.detail?.contains("No provider plugin is active") == true)
-    #expect(try await runs.record(result.runID)?.status == .failed)
+    #expect(!result.terminalCommitted)
+    // A core without a provider must not write a meaningless failed run into the journal.
+    #expect(await log.recordCount == 0)
+    #expect(try await log.events().isEmpty)
+    #expect(try await runs.record(request.runID) == nil)
+    #expect(await store.sessionIDs().isEmpty)
 }
