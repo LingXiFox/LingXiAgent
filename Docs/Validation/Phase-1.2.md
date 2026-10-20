@@ -1,6 +1,6 @@
 # Phase 1.2 验收记录：三项内核收尾与告警清零
 
-> **状态：已验收（待 CI run 记录补入第五节）** —— 代码 HEAD `8bc8774`，96 tests 全绿 ×5，`swift build --build-tests` 零告警，反例 4/4 RED。
+> **状态：已验收** —— 代码 HEAD `8bc8774`，96 tests 全绿 ×5（本地 0.019–0.020s），`swift build --build-tests` 零告警，反例 4/4 RED，CI run `39365903961` 在 `macos-26` 上 success（96 tests、0 告警、空核零日志，第五节）。
 > 依据：`Docs/Validation/Phase-1.1.md` 第八节风险清单第 1/3/9/18 条（本阶段只收这几笔债）；判定口径：`Docs/Testing-and-Acceptance.md`（实测数字 + trace 顺序 + 反例）。
 
 ## 一、范围
@@ -82,13 +82,19 @@ Phase 1.1 记录第 18 条初写为「唯一告警」，是**核查方法错误*
 
 | 项 | 值 |
 |---|---|
-| workflow | `.github/workflows/ci.yml`（同 Phase 1.1，`macos-26` 单 job；代码变更**不得**加 `[skip ci]`，`Project-Conventions.md` 第七章） |
+| workflow | `.github/workflows/ci.yml`（同 Phase 1.1，`macos-26` 单 job） |
 | 代码基线 SHA | `8bc8774`（`fix(kernel): close the three Phase 1.2 correctness gaps in the loop and recovery`） |
-| CI head SHA | TODO（push 后 run 的 `headSha`） |
-| Run ID / URL / Conclusion | TODO |
-| runner 工具链 | TODO |
-| `swift test` 汇总行（CI） | TODO（期望 `Test run with 96 tests ... passed`） |
-| 空核启动步骤 | TODO（本地实测：退出码 0、`providers: 0`、无 `events.jsonl`） |
+| CI head SHA | `44b3a8af682b285d658f412dd9b1878df57f6403`（含代码提交 `8bc8774`，树内 `Sources/**`、`Tests/**` 与其一致） |
+| Run ID | `39365903961` |
+| Run URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39365903961 |
+| Conclusion | **success** — 10/10 步骤全 success，2026-10-20T03:45:01Z → 03:45:48Z（47s，SwiftPM 缓存命中） |
+| runner | GitHub Actions 托管 `macos-26`（arm64），runner id `1000000899` |
+| runner 工具链 | `xcode: /Applications/Xcode_26.6.0.app`；`Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)`；`Target: arm64-apple-macosx26.0`（与本地 6.4.2 / Xcode 27.2 不同，口径同 Phase 1.1 风险 8.2 第 14 条） |
+| `swift test` 汇总行（CI） | `✔ Test run with 96 tests in 0 suites passed after 0.052 seconds.` |
+| 构建告警数（CI） | **0**（`grep -c warning:` 对全量日志计数，按来源位置核对） |
+| 空核启动步骤 | **success** — `empty-core startup clean: guidance printed, no journal records` |
+
+**一次踩坑记录（有教学价值，故写进正文）**：`44b3a8a` 推送后 CI **没有自动起跑**，原因是本阶段刻意不想跳过 CI，却在 commit message 正文里写了那个方括号跳过标记的**字面量**来解释意图；GitHub 对整条 message 做子串匹配，正文里的字面量同样触发跳过。处置：用 `gh workflow run --ref rewrite/2.0` 在同一 head SHA 上 `workflow_dispatch` 补跑，得到上表记录（`event: workflow_dispatch`），证据效力不变。**口径**：想让 CI 跑的提交，正文里不要出现该字面量；解释这件事时改用「跳过标记」之类的描述。
 
 ## 六、残余风险
 
@@ -117,3 +123,4 @@ test ! -s "$DATA_DIR/events.jsonl"       # 空核仍零日志
 ## 八、修订记录
 
 - 2026-10-20：建立记录；填入三项收口的逐项证据、4/4 反例明细、告警计数更正与残余风险。CI 运行记录待第五节补入。
+- 2026-10-20：CI 实跑回填，状态转「已验收」。run `39365903961`（`workflow_dispatch`，head `44b3a8a`）success：96 tests、构建零告警、空核步骤通过；同时记录一次真实踩坑——push 提交的正文里出现了跳过标记字面量导致 push 事件未起跑（第五节）。
