@@ -391,8 +391,14 @@ public actor AgentLoop {
         } catch let failure as ModelFailure {
             race.resolve(.failure(failure))
         } catch {
-            if error is CancellationError || Task.isCancelled {
+            if Task.isCancelled {
+                // The run itself was cancelled; by then the race normally already resolved
+                // `.cancelled`, so this path is only a fallback.
                 race.resolve(.cancelled)
+            } else if error is CancellationError {
+                // A provider that aborts its own stream with CancellationError must not be reported
+                // as a user cancellation: it is a provider-side failure.
+                race.resolve(.failure(ModelFailure(kind: .transport, message: "provider stream ended with CancellationError")))
             } else {
                 race.resolve(.failure(ModelFailure(kind: .streamProtocol, message: "\(error)")))
             }

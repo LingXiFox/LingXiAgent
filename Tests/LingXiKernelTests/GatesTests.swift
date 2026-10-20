@@ -111,3 +111,15 @@ func QA_013_emptyCoreDoesNotPolluteJournal() async throws {
     #expect(try await runs.record(request.runID) == nil)
     #expect(await store.sessionIDs().isEmpty)
 }
+
+@Test("CTX-018 structural gate: the loop revalidates the budgeted request before sending it")
+func CTX_018_postBudgetValidationGatePresent() throws {
+    let agentLoop = try String(
+        contentsOf: kernelSourceDirectory.appendingPathComponent("AgentLoop.swift"),
+        encoding: .utf8
+    )
+    #expect(
+        agentLoop.contains("try ContextRequestValidator.validate(plan.selected, placement: capabilities.toolResultPlacement)"),
+        "the post-budget protocol gate must stay in the request path; it is defense-in-depth against an invalid plan"
+    )
+}

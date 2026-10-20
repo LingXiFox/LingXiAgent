@@ -439,3 +439,109 @@ func CTX_018_longConversationTrimsHistory() async throws {
     #expect(estimated <= 200)
     #expect(await store.entries(for: session).count == 12)
 }
+
+@Test("LOOP-012 the hard budget limit stops the run instead of silently truncating the request")
+func LOOP_012_budgetExceeded() async throws {
+    let provider = ScriptedProvider(scripts: [completed("x")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+
+    let result = await loop.run(runRequest("budget"), policy: LoopPolicy(preferredTokens: 5, hardTokens: 10))
+
+    #expect(result.status == .budgetExceeded)
+    #expect(result.cause == .budgetExceeded)
+    #expect(result.detail?.contains("mandatoryFloorExceedsHardLimit") == true)
+    #expect(provider.requestCount == 0)
+    #expect(result.terminalCommitted)
+}
+
+@Test("QA-013 a model no active provider offers is guidance, not a journal-polluting run")
+func QA_013_modelNotOfferedGuidance() async throws {
+    let log = try DurableEventLog(sink: MemorySink())
+    let router = ModelRouter()
+    await router.register(provider: ScriptedProvider(scripts: []), id: "test.provider", models: ["offered"])
+    let loop = AgentLoop(
+        router: router,
+        toolRegistry: ToolRegistry(),
+        executor: RecordingExecutor(),
+        log: log,
+        runs: RunRegistry(),
+        store: SessionStore(),
+        instructions: "instructions"
+    )
+    let request = RunRequest(
+        sessionID: "session-not-offered",
+        turnID: "turn-not-offered",
+        runID: "run-not-offered",
+        executionID: "exec-not-offered",
+        model: "missing-model",
+        prompt: "hello"
+    )
+
+    let result = await loop.run(request, policy: LoopPolicy())
+
+    #expect(result.status == .failed)
+    #expect(result.cause == .runtimeFailure)
+    #expect(result.detail?.contains("No active provider offers model missing-model") == true)
+    #expect(!result.terminalCommitted)
+    #expect(await log.recordCount == 0)
+}
+
+@Test("LOOP-021 reusing a run id that already reached a terminal state is rejected without journal writes")
+func LOOP_021_duplicateRunIDRejected() async throws {
+    let log = try DurableEventLog(sink: MemorySink())
+    let loop = await makeLoop(
+        provider: ScriptedProvider(scripts: [completed("one"), completed("two")]),
+        executor: RecordingExecutor(),
+        log: log
+    )
+    let request = runRequest("dup-run")
+
+    let first = await loop.run(request, policy: LoopPolicy())
+    #expect(first.status == .completed)
+    let countAfterFirst = await log.recordCount
+
+    let second = await loop.run(request, policy: LoopPolicy())
+    #expect(second.status == .failed)
+    #expect(second.cause == .runtimeFailure)
+    #expect(second.detail?.contains("duplicateRun") == true)
+    #expect(!second.terminalCommitted)
+    #expect(await log.recordCount == countAfterFirst)
+    let terminals = try await log.events().filter { if case .runTerminal(RunID("run-dup-run"), _, _) = $0 { true } else { false } }
+    #expect(terminals.count == 1)
+}
+
+@Test("DEADLINE a step boundary past the overall deadline stops before the next model request")
+func DEADLINE_stepBoundaryCheck() async throws {
+    let clock = ManualClock()
+    let registry = ToolRegistry()
+    try await registerEchoTool(registry)
+    let executor = RecordingExecutor()
+    executor.onExecute = { _ in clock.advance(.seconds(30)) }
+    let provider = ScriptedProvider(scripts: [toolBatch([makeCall("c1")]), completed("never asked")])
+    let loop = await makeLoop(
+        provider: provider,
+        executor: executor,
+        registry: registry,
+        log: try DurableEventLog(sink: MemorySink()),
+        clock: clock
+    )
+
+    let result = await loop.run(runRequest("step-deadline"), policy: LoopPolicy(overallTimeout: .seconds(10)))
+
+    #expect(result.status == .deadlineExceeded)
+    #expect(result.cause == .deadlineExceeded)
+    #expect(provider.requestCount == 1)
+}
+
+@Test("LOOP-006 a provider aborting its own stream is a provider failure, not a user cancel")
+func LOOP_006_providerCancellationIsProviderFailure() async throws {
+    let provider = ScriptedProvider(scripts: [], preStreamError: CancellationError())
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+
+    let result = await loop.run(runRequest("provider-abort"), policy: LoopPolicy())
+
+    #expect(result.status == .failed)
+    #expect(result.cause == .providerFailure)
+    #expect(result.detail?.contains("CancellationError") == true)
+    #expect(result.terminalCommitted)
+}

@@ -26,7 +26,6 @@ public enum RecoveryError: Error, Equatable {
     case duplicateRunCreated(RunID)
     case recordWithoutRun(RunID)
     case batchWithoutRun(BatchID)
-    case batchWithoutCallEntry(BatchID)
 }
 
 /// Rebuilds the kernel's in-memory state from the append-only journal.

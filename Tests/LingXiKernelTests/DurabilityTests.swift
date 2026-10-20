@@ -428,3 +428,29 @@ func LOOP_025_recoveryNeverReplaysUnknownBatch() async throws {
     task.cancel()
     _ = await task.value
 }
+
+@Test("STORE-010 a rollback failure during begin is reported and leaves the journal unusable")
+func STORE_010_beginRollbackFailureIsReported() async throws {
+    let sink = MemorySink()
+    sink.failOnAppendCount = 2
+    sink.failOnTruncate = true
+    let log = try DurableEventLog(sink: sink)
+    let runs = RunRegistry()
+    let request = runRequest("begin-rollback-fault")
+    let loop = await makeLoop(
+        provider: ScriptedProvider(scripts: [completed("x")]),
+        executor: RecordingExecutor(),
+        log: log,
+        runs: runs
+    )
+
+    let result = await loop.run(request, policy: LoopPolicy())
+
+    #expect(result.status == .failed)
+    #expect(!result.terminalCommitted)
+    // The failure is reported instead of hidden, and still no orphan runTerminal is written.
+    #expect(result.detail?.contains("journal rollback failed") == true)
+    #expect(sink.lineCount == 1)
+    #expect(try await runs.record(request.runID) == nil)
+    #expect(await log.isUsable == false)
+}
