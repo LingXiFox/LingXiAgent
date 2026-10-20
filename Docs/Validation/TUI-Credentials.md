@@ -101,3 +101,9 @@ Trivy 对 `Sources/`、`ContractTests/` 的 secret scan 均无发现。
 
 有效 Key 的真实 MiMo 成功调用仍未复验；本轮模型输出使用 cassette。
 原生 Terminal 窗口的手工验收未执行；PTY 渲染预览不作为原生窗口截图。
+
+`69280fd` 的 macOS CI 全绿：[39434186422](https://github.com/LingXiFox/LingXiAgent/actions/runs/39434186422)。
+随后复核补齐 AUTH-003 的分段粘贴取消场景：取消后一直丢弃到 paste-end，不把迟到的密钥尾部插回普通草稿。
+移除该保护后测试能检测尾部泄漏并失败（2.047 秒）；恢复保护后通过。
+证据 `.tmp/tui-v2-paste-cancel-counterexample.log`、`.tmp/tui-v2-paste-cancel-test.log`；
+最终全量回归见 `.tmp/tui-v2-security-final-tests.log`，149 项中 147 实际通过、2 项真实上游门禁跳过。

@@ -155,6 +155,7 @@ private struct App {
     var authBusy = false
     var pasting = false
     var pastedText: [Character] = []
+    var discardPaste = false
     var discardInputBatch = false
     var showThinking = false
     // Chat prompts only, bounded to this process. Commands and hidden input never enter recall.
@@ -554,7 +555,7 @@ func slashPicker() -> Picker? {
 func handleKey(_ key: Key) {
     if key == .pasteStart { app.pasting = true; app.pastedText = []; return }
     if key == .pasteEnd {
-        if app.pasting, !app.authBusy, !app.discardInputBatch, app.secretInput == nil {
+        if app.pasting, !app.authBusy, !app.discardInputBatch, !app.discardPaste, app.secretInput == nil {
             let text = String(app.pastedText).replacingOccurrences(of: "\r\n", with: "\n")
                 .replacingOccurrences(of: "\r", with: "\n")
             if app.picker != nil {
@@ -564,10 +565,11 @@ func handleKey(_ key: Key) {
         }
         app.pasting = false
         app.pastedText = []
+        app.discardPaste = false
         needsRender = true
         return
     }
-    if app.discardInputBatch { return }
+    if app.discardInputBatch || app.discardPaste { return }
     if app.authBusy {
         if key == .interrupt { shutdown(); exit(0) }
         return
@@ -598,6 +600,7 @@ func handleKey(_ key: Key) {
             app.pending[id] = .auth(input.provider, "saved")
         case .escape, .interrupt, .endOfInput:
             app.secretInput = nil
+            app.discardPaste = app.pasting
             app.discardInputBatch = true
             app.notice("已取消凭据输入。")
         default: break

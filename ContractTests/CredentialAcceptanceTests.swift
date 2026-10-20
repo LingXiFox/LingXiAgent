@@ -100,10 +100,14 @@ func AUTH_003_hiddenInputPTY() async throws {
     second.write("/auth mimo\r")
     try #require(await second.waitFor("MiMo API Key：隐藏输入中", after: cancelStart))
     let cancelledKey = "cancelled-hidden-sentinel"
-    second.write(cancelledKey + "\u{1B}")
+    second.write("\u{1B}[200~" + cancelledKey + "\u{03}")
     try #require(await second.waitFor("已取消凭据输入"))
+    // The tail arrives in a later input batch after cancellation; it is still secret paste data.
+    second.write("cancelled-hidden-tail\u{1B}[201~safe-draft")
+    try #require(await waitUntil { second.screenText.contains("safe-draft") })
     #expect(!second.transcript.contains(cancelledKey))
-    second.write("你好\r")
+    #expect(!second.transcript.contains("cancelled-hidden-tail"))
+    second.write("\u{15}你好\r")
     try #require(await second.waitFor("pong"))
     try #require(await waitUntil { !second.screenText.contains("生成中") })
     second.write("\u{1B}[A")
