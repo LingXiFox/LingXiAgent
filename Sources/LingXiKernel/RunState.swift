@@ -218,10 +218,6 @@ public actor SessionStore {
         Array(history.keys)
     }
 
-    func replaceAll(_ rebuilt: [SessionID: [ContextEntry]]) {
-        history = rebuilt
-    }
-
     func replace(_ entries: [ContextEntry], for sessionID: SessionID) {
         history[sessionID] = entries
     }
