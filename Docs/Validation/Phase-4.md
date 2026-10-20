@@ -1,8 +1,8 @@
 # Phase 4 验收记录：可交互 Core + TUI
 
-> **状态：已验收（自动化与离线端到端）；真实 API 的 TUI 手动验收待主人执行** —— 139 tests 全绿
-> （104 内核 + 35 契约），零告警。TUI 端到端使用真实 Core 进程、真实 MiMo 插件进程与脱敏 cassette；
-> 上线前的最后一次真实网络验证见第四节。
+> **状态：已验收（自动化与离线端到端）；真实 API 的 TUI 手动验收待主人执行** —— 合并提交 `5251a0b`，
+> 139 tests（104 内核 + 35 契约，主套件跳过 PTY 与 live，PTY 由 CI 独立步骤执行），CI run `39407552292`
+> success，零告警。TUI 端到端使用真实 Core 进程、真实 MiMo 插件进程与脱敏 cassette；真实网络验证见第四节。
 
 ## 一、交付
 
@@ -56,4 +56,14 @@ MIMO_API_KEY=... LINGXI_PLUGIN_POLICY=development LINGXI_DATA_DIR="$PWD/dist/dat
 
 ## 六、CI
 
-待本轮 push 后回填。
+| 项 | 值 |
+|---|---|
+| Run ID | `39407552292` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39407552292 |
+| head SHA | `5251a0b` |
+| Conclusion | success |
+| runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
+| 主套件 | `Test run with 139 tests ... passed`（live ×2 与 PTY 跳过） |
+| PTY 步骤 | `LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter TUI_001_ptyChatWithMiMo`，主套件之后单独执行，不与进程密集测试竞争 |
+
+CI 期间修复的真实问题：协议测试的回复游标竞态、CI 负载下过紧的慢速窗口与超时上界、PTY 测试与十余个进程测试并行导致的饥饿（改为独立步骤）。
