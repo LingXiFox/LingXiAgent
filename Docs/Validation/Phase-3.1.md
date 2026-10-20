@@ -1,6 +1,6 @@
 # Phase 3.1 验收记录：多 Provider 隔离与动态撤销
 
-> **状态：已验收** —— 137 tests 全绿（104 内核 + 33 契约），`swift build --build-tests` 零告警，CI 记录见第六节。
+> **状态：已验收** —— 合并提交 `0f4ff11`，137 tests 全绿（104 内核 + 33 契约），CI run `39377448830` success，`swift build --build-tests` 零告警。
 
 ## 一、修复内容
 
@@ -56,4 +56,13 @@ LINGXI_DATA_DIR=<dir> LINGXI_CORE_CONTROL=1 LINGXI_PLUGIN_POLICY=development .bu
 
 ## 六、CI 记录
 
-待本轮 push 后回填。
+| 项 | 值 |
+|---|---|
+| Run ID | `39377448830` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39377448830 |
+| head SHA | `0f4ff11` |
+| Conclusion | success |
+| runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
+| `swift test` 汇总 | `Test run with 137 tests in 0 suites passed after 3.998 seconds.` |
+| live 用例 | DeepSeek 与 MiMo 的 live smoke 均 **skipped**（无付费密钥时按设计跳过） |
+| 空核步骤 | success |
