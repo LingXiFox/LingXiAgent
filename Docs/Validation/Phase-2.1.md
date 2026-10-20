@@ -1,6 +1,6 @@
 # Phase 2.1 验收记录：产品接线、安全边界与 Provider 前置
 
-> **状态：已验收（待合并与 CI run 记录）** —— 分支 `wip/phase2.1-host-wiring`，120 tests 全绿（104 内核 + 16 契约），`swift build --build-tests` 零告警。范围与阶段记账见 `Decisions/ADR-0002`。
+> **状态：已验收** —— 合并提交 `d55eaac`（`rewrite/2.0`），本地 120 tests 全绿（104 内核 + 16 契约），CI run `39372322109` 在 `macos-26` 上 success（120 tests），`swift build --build-tests` 零告警。范围与阶段记账见 `Decisions/ADR-0002`。
 
 ## 一、交付
 
@@ -38,7 +38,19 @@ revision 2，头文件 SHA-256 `4ea407f612b471bf4b4f30218ab373c08ba4e6641d544294
 4. **超时后的插件计算**：客户端超时立即发 cancel；若插件不实现 cancel，Host 会在其返回后才释放该调用，但**不会**阻塞读循环或其他调用。这是契约要求（`cancel` 必须能中断长任务），不实现 cancel 的插件会在 Provider 阶段被拒。
 5. **租约/熔断**（PLG-003/005）仍未建，与本阶段无关。
 
-## 五、复现
+## 五、CI 记录
+
+| 项 | 值 |
+|---|---|
+| Run ID | `39372322109` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39372322109 |
+| head SHA | `d55eaacdba6bf987598130ffeb694e8f189fce00` |
+| Conclusion | success |
+| runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
+| `swift test` 汇总 | `✔ Test run with 120 tests in 0 suites passed after 1.905 seconds.` |
+| 空核步骤 | empty-core startup clean: guidance printed, no journal records |
+
+## 六、复现
 
 ```bash
 swift build --build-tests && swift test          # 104 + 16 = 120
