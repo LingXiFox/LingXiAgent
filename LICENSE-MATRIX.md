@@ -32,6 +32,13 @@ Tracks in use:
 | `LingXiKernel` | `Sources/LingXiKernel` | LCSAL-1.1 | Source: no; binary: no | Minimal agent kernel: loop, single context, run state, durable event log. Contains no provider, no tool implementation and no plugin loading code — that absence is enforced by the L0 gate, not by convention. |
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The shipped Core process. Once the credential store lands it will be the only process that reads the credentials passphrase. |
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | Not shipped | n/a | Test target only. |
+| `LingXiPluginABIC` | `Sources/LingXiPluginABIC` | MIT (`LICENSE-ABI`) | Yes, verbatim | The C half of the ABI: the header plus one translation unit. Separate because a Swift target cannot export C structs and `@convention(c)` needs them. |
+| `LingXiPluginABI` | `Sources/LingXiPluginABI` | MIT (`LICENSE-ABI`) | Yes, verbatim | The published plugin contract: the C header plus the Core↔Host wire types. Open on purpose — a closed ABI header would leave community authors reading a licence that forbids what they are doing. Declared by the owner on 2026-10-20. |
+| `LingXiPluginHost` | `Sources/LingXiPluginHost` | LCSAL-1.1 | Source: no; official release binary only (forwarded as-is, non-commercial) | The generic `dlopen` host. Contains no plugin code and no vendor knowledge; one process per plugin. |
+| `LingXiPluginRuntime` | `Sources/LingXiPluginRuntime` | LCSAL-1.1 | Source: no; binary: no | Core-side supervisor: registry, process lifecycle, IPC client, and the adapters that present plugin capabilities through kernel ports. It is the only module that knows a plugin exists. |
+| `LingXiContextProbe` | `Plugins/LingXiContextProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Official example plugin used by the L2 contract tests: one `contextPrepare` hook that rewrites the request. Third-party authors write against the same ABI and the same manifest. |
+| `LingXiCProbe` | `Plugins/LingXiCProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | The same capability written in plain C, so the ABI is proven cross-language rather than asserted. |
+| `ContractTests` | `ContractTests` | Not shipped | n/a | L2 contract gate: real Host process, real `dlopen`, real fault injection. |
 
 ---
 
@@ -45,7 +52,7 @@ be added as targets without first being entered in the table above.
 | `Docs/` | CC-BY-4.0 unless a file says otherwise | Attribution required | Design documents, decisions and the regression ledger. |
 | `Examples/` | — | — | Placeholder only; it becomes license-scoped when a plugin example target is added. |
 | `Package.swift`, `.swift-version`, `.gitignore`, `.gitattributes` | LCSAL-1.1 | No (build infrastructure) | Follows the Core track, as in 1.x. |
-| `LICENSE`, `LICENSE-CORE`, `LICENSE-FRONTEND`, `LICENSE-MATRIX.md` | — | — | The licensing documents themselves. |
+| `LICENSE`, `LICENSE-CORE`, `LICENSE-FRONTEND`, `LICENSE-ABI`, `LICENSE-MATRIX.md` | — | — | The licensing documents themselves. |
 
 ---
 
@@ -58,10 +65,12 @@ into the SPM table in the same commit that adds it to `Package.swift`.
 | Planned target | Expected track | Phase |
 |---|---|---|
 | `LingXiPlatform` (Darwin process, file, terminal, secure storage) | LCSAL-1.1 | 2 |
-| `LingXiPluginABI` (the C header plus the Core↔Host contract types) | open — see below | 2 |
-| `LingXiPluginHost` (the generic `dlopen` host process) | LCSAL-1.1 | 2 |
-| Official plugins under `Plugins/` | PolyForm Noncommercial 1.0.0 | 2 |
+| Further official plugins under `Plugins/` | PolyForm Noncommercial 1.0.0 | 2-3 |
 | Frontend protocol and TUI targets | PolyForm Noncommercial 1.0.0 | 4 |
+
+`LingXiPluginABI`, `LingXiPluginHost`, `LingXiPluginRuntime` and the first example plugin were
+declared in the SPM table during Phase 2, together with the `ContractTests` target that
+`Project-Conventions.md` §二 mandates.
 
 ### Official plugins versus third-party plugins
 

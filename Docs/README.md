@@ -35,7 +35,7 @@
 
 ## 状态
 
-**阶段 1（含 1.1 正确性修复与 1.2 收尾）已验收；阶段 2 已开工：内核 Hook 接缝已落地并有 L1 证据，插件装载/撤销/崩溃隔离的进程侧在制品尚未通过构建。**
+**阶段 1（含 1.1、1.2）已验收；阶段 2 最小动态插件闭环已实现并验收（114 tests，C/Swift 双语言插件、真进程与崩溃隔离），验收记录 `Validation/Phase-2.md`。**
 
 阶段 1 交付的是可运行事实，不是计划：
 
@@ -48,7 +48,7 @@
 Phase 1.1 修的是内核正确性，不新增功能、不加依赖（逐条对应 `Regression-Cases.md`）：同 Session 并发 Run 准入（LOOP-021）、stop reason 终态分类（LOOP-022）、阻塞流取消/超时竞争（LOOP-023）、assistant 文本落盘（LOOP-024）、恢复不重放写操作（LOOP-025）、全量重放重建（STORE-008）、事件日志尾行修复与回滚毒化（STORE-009）、begin 事务无孤立终态（STORE-010）、历史 User 降级（CTX-017）、预算引用行（CTX-018）、跨 Step usage 汇总（CACHE-007）、无 Provider 启动零日志（QA-013）。验收记录 `Validation/Phase-1.1.md` 含 89 tests 全绿 ×5、变异反例 11/11 RED、D3 前提验证与 CI run 记录。
 
 Phase 1.2 是进入阶段 2 前的最小收尾，只还 Phase 1.1 登记过的债（验收记录 `Validation/Phase-1.2.md`，反例 4/4 RED，CI run `39365903961` 全绿且构建零告警）：`endExecution` 已在四条终态路径接线、每 Run 释放一次（LOOP-026）；恢复入口收敛为 `KernelRecovery` 唯一（旧 `RunRegistry.recoverUnfinishedRuns` 删除）；同 Session 内条目 id 必须唯一，重复 TurnID 在任何持久化写入前被拒（LOOP-027）；测试 target 的 11 处冗余 `try` 告警清零。
-阶段 2 的真实进度：已完成的是内核侧生命周期 Hook（`Sources/LingXiKernel/Hooks.swift`，两个节点、类型化裁决、内核判定 fail-closed/fail-open、撤销即停止参与、注入受 CTX-001/CTX-018 双重校验），104 tests 全绿。未完成的是插件闭环本体——`.lxap` 装载、注册表、监督者八步撤销序列、崩溃归因与端到端契约测试目前是分支 `wip/phase2-plugin-host` 上的在制品，`@convention(c)` 无法按值传递状态结构体（需把 status 改为出参、入口返回 Int32，头文件与三处调用一起改）与一个重复初始化器声明尚未解决。范围记账见 `Decisions/ADR-0002`，许可轨道见 `Decisions/ADR-0001`。TUI 与插件市场仍未开始。已覆盖的回归条目在 `Regression-Cases.md` 里标为「已覆盖（阶段 1）」「已覆盖（阶段 1.1）」「已覆盖（阶段 1.2）」，未标的仍然是待办。
+阶段 2 的最小动态插件闭环已落地（验收记录 `Validation/Phase-2.md`）：固定 C ABI v1（标量状态 + 出参，`ABI-MANIFEST` 已按真机验证后冻结）、通用 Plugin Host（每插件一进程，`dlopen` + 单管双向 JSON）、Core 侧监管（独立 `plugins.json` 注册表 + 会话监管 + Hook 桥）、Swift 与 C 两个实验插件。114 tests 全绿；启用改写上下文、禁用即停止参与、卸载后路由/进程/注册表三空、插件崩溃只杀死自己的 Host。未实现且不声称：租约状态机、熔断退避、permissive/公证、security 类人工确认、插件工具能力、Swift 运行时唯一性检测。TUI 与插件市场仍未开始。已覆盖的回归条目在 `Regression-Cases.md` 里标为「已覆盖（阶段 1）」「已覆盖（阶段 1.1）」「已覆盖（阶段 1.2）」，未标的仍然是待办。
 
 已定的基线：
 

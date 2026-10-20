@@ -1,0 +1,36 @@
+LingXi plugin ABI manifest
+==========================
+
+ABI major: 1
+Entry symbol: LingXiPlugin_Init
+Entry signature: int32_t (*)(const LingXiHostAPI*, uint32_t hostABIMajor,
+                             const LingXiPluginAPI**, uint32_t* outABIMajor,
+                             LingXiStatus* outStatus)
+
+Frozen after the live load tests passed (see ContractTests):
+  PLG_015_boundaryStructLayoutIsPinned
+  PLG_015_cPluginUsesTheSameRuntimeAndABI
+  PLG_011_manifestAbiMajorMismatchIsRefused
+  IPC_001_livePipeRoundTrip
+  PLG_001_enableRewriteDisableReenableUninstall
+  PLG_017_signaturePolicyTiers
+  PLG_018_pluginCrashIsIsolated
+
+Layout (verified by MemoryLayout pins; offsets in bytes):
+  LingXiStatus      size 12   structSize@0  abiMajor@4  code@8
+  LingXiPluginAPI   size 64   structSize@0  abiMajor@4  describe@8
+                              start@16  stop@24  dispose@32  invoke@40
+                              cancel@48  free@56
+  LingXiHostAPI     size 24   structSize@0  abiMajor@4  log@8  emit@16
+
+Header: Sources/LingXiPluginABIC/include/lingxi_plugin_abi.h
+Header SHA-256: 648171026f5ad8bd54180951fff122d0deef0174c1c233f5e0a0af4ffbbcf5f6
+
+Rules frozen with this manifest:
+  - structSize then abiMajor lead every boundary struct; new fields append.
+  - Statuses are scalar-only and cross as an out-parameter; calls return int32_t.
+  - Reply and describe buffers are allocated by the callee and freed by the caller through the
+    table's free function.
+  - A major mismatch is a named hard failure; there is no compatibility path.
+
+To verify: shasum -a 256 Sources/LingXiPluginABIC/include/lingxi_plugin_abi.h

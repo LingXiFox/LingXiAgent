@@ -1,0 +1,122 @@
+import Foundation
+import LingXiKernel
+import LingXiPluginABI
+
+/// One plugin, one Host process. Owns the handshake, the invocation path, and the teardown that must
+/// leave no process and no route behind.
+public actor PluginSession {
+    public enum SessionState: String, Sendable {
+        case installed
+        case running
+        case failed
+        case disabled
+    }
+
+    public enum SessionError: Error, Equatable {
+        case notRunning
+        case handshake(String)
+        case hostFailed(String)
+    }
+
+    public let bundlePath: String
+    public let hostExecutableURL: URL
+    public private(set) var state: SessionState = .installed
+    public private(set) var capabilities: [DeclaredCapability] = []
+    public private(set) var processIdentifier: Int32?
+
+    private var process: PluginProcess?
+    private let clock: any MonotonicClock
+    private let timeout: Duration
+
+    public init(bundlePath: String, hostExecutableURL: URL, clock: any MonotonicClock = SystemMonotonicClock(), timeout: Duration = .seconds(5)) {
+        self.bundlePath = bundlePath
+        self.hostExecutableURL = hostExecutableURL
+        self.clock = clock
+        self.timeout = timeout
+    }
+
+    public var isRunning: Bool { state == .running && (process?.isRunning ?? false) }
+
+    public func enable(policy: SignaturePolicy, grantedPermissions: [String]) async throws {
+        guard state != .running else { return }
+        let process = PluginProcess(executableURL: hostExecutableURL, clock: clock)
+        do {
+            try process.start()
+        } catch {
+            state = .failed
+            throw SessionError.handshake("the host process could not start: \(error)")
+        }
+        self.process = process
+        processIdentifier = process.processIdentifier
+
+        var load = HostRequest(id: nil, method: .load)
+        load.bundlePath = bundlePath
+        load.policy = policy.rawValue
+        let loaded = try await send(load, process: process)
+
+        guard loaded.ok, let declared = loaded.capabilities else {
+            let reason = loaded.fault.map { "\($0.code): \($0.message)" } ?? "load refused without a fault"
+            process.terminate()
+            self.process = nil
+            state = .failed
+            throw SessionError.handshake(reason)
+        }
+        capabilities = declared
+
+        var start = HostRequest(id: nil, method: .start)
+        start.grantedPermissions = grantedPermissions
+        let started = try await send(start, process: process)
+        guard started.ok else {
+            let reason = started.fault.map { "\($0.code): \($0.message)" } ?? "start refused without a fault"
+            process.terminate()
+            self.process = nil
+            state = .failed
+            throw SessionError.handshake(reason)
+        }
+        state = .running
+    }
+
+    public func invoke(capability: String, payload: JSONValue) async throws -> JSONValue {
+        guard let process, state == .running else { throw SessionError.notRunning }
+        var request = HostRequest(id: nil, method: .invoke)
+        request.capability = capability
+        request.payload = payload
+        let reply = try await send(request, process: process)
+        guard reply.ok, let body = reply.payload else {
+            let reason = reply.fault.map { "\($0.code): \($0.message)" } ?? "invoke failed without a fault"
+            throw SessionError.hostFailed(reason)
+        }
+        return body
+    }
+
+    /// Stop, dispose, close the pipe and wait for the process to actually go away; a host that will
+    /// not exit is terminated. Nothing here leaves a background process behind.
+    public func disable() async {
+        guard let process else {
+            state = .disabled
+            return
+        }
+        if state == .running || state == .failed {
+            var stop = HostRequest(id: nil, method: .stop)
+            stop.id = nil
+            if process.isRunning {
+                _ = try? await process.send(stop, timeout: timeout)
+            }
+        }
+        process.terminate()
+        process.waitForExit(upTo: .seconds(2))
+        processIdentifier = nil
+        self.process = nil
+        capabilities = []
+        state = .disabled
+    }
+
+    private func send(_ request: HostRequest, process: PluginProcess) async throws -> HostReply {
+        do {
+            return try await process.send(request, timeout: timeout)
+        } catch {
+            state = .failed
+            throw SessionError.hostFailed("\(error)")
+        }
+    }
+}
