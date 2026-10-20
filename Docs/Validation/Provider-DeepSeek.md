@@ -1,6 +1,6 @@
 # Provider 验收记录：DeepSeek（Responses API）
 
-> **状态：离线验收通过，真实 API 录制待主人执行** —— 分支 `wip/phase3-deepseek-provider`，124 tests 全绿（104 内核 + 20 契约），零告警。离线回归使用手工 fixture；`Scripts/deepseek-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
+> **状态：离线与 CI 验收通过，真实 API 录制待主人执行** —— 合并提交 `7f3c3c0`，124 tests 全绿（104 内核 + 20 契约），CI run `39373895994` success，零告警。离线回归使用手工 fixture；`Scripts/deepseek-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
 
 ## 一、协议事实（2026-10-20 核对）
 
@@ -44,7 +44,20 @@ DEEPSEEK_API_KEY=... ./Scripts/deepseek-record.sh
 
 录制产物为归一化事件序列（无请求头、无凭据）。拿到后替换 `ContractTests/Fixtures/deepseek-responses-fixture.json`，复跑离线用例并提交。
 
-## 五、残余风险
+## 五、CI 记录
+
+| 项 | 值 |
+|---|---|
+| Run ID | `39373895994` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39373895994 |
+| head SHA | `7f3c3c0` |
+| Conclusion | success |
+| runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
+| `swift test` 汇总 | `Test run with 124 tests in 0 suites passed after 1.653 seconds.` |
+| live 用例 | `DEEPSEEK live Responses API smoke` **skipped**（无付费密钥时按设计跳过） |
+| 空核步骤 | success |
+
+## 六、残余风险
 
 1. **并行工具调用声明为 false**（保守）：一个响应内的多个 `function_call` 会按顺序结算；是否支持并行需真实录制验证后再放开。
 2. **推理 token / 缓存字段**按候选字段名解析，未用真实响应核对；映射为 nil 时保持「缺失 ≠ 0」。

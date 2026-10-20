@@ -139,7 +139,7 @@ Core 侧的注册表（`plugins.json`，独立于会话事件日志）是「是�
 
 ```bash
 swift build --build-tests        # 零告警
-swift test                       # 120 tests：104 内核 + 16 契约
+swift test                       # 124 tests：104 内核 + 20 契约
 
 # 空核启动：无 Provider 时启动、报状态、给出引导，不写事件日志
 DATA_DIR="$(mktemp -d)"
@@ -160,7 +160,7 @@ test ! -s "$DATA_DIR/events.jsonl"
 Core 退出只停进程，不改注册表；用户禁用才写 `enabled=false`。
 
 CI：`.github/workflows/ci.yml`，`macos-26` 单 job，执行构建、测试与空核启动检查；push `rewrite/2.0`、
-PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，120 tests 全绿。
+PR→`main`、`workflow_dispatch` 触发。最近一次：run `39373895994`，124 tests 全绿（Provider 离线用例在列，live 用例跳过）。
 
 ## 7. Provider 插件
 
