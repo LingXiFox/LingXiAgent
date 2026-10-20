@@ -5,6 +5,12 @@ import LingXiPluginRuntime
 import Testing
 
 private let deepSeekID = "site.lingxi.provider.deepseek"
+
+private struct RecordedDeepSeekCassette: Decodable {
+    let provider: String
+    let exchanges: [Exchange]
+    struct Exchange: Decodable { let events: [ProviderWireEvent] }
+}
 private let fixtureURL: URL = Bundle.module.url(forResource: "deepseek-responses-fixture", withExtension: "json", subdirectory: "Fixtures")!
 
 private final class ModelEventRecorder: @unchecked Sendable {
@@ -186,6 +192,25 @@ func DEEPSEEK_disableRemovesProviderRoute() async throws {
     await harness.coordinator.disable(bundleID: deepSeekID)
     #expect(await harness.coordinator.isRunning(bundleID: deepSeekID) == false)
     #expect(await waitUntil { kill(pid, 0) != 0 })
+}
+
+@Test("DEEPSEEK replay with recording enabled writes a real cassette file")
+func DEEPSEEK_recordingWritesCassette() async throws {
+    let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("deepseek-record-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: output) }
+    let harness = try await makeDeepSeekHarness(
+        grants: ["vcr=\(fixtureURL.path)", "record=\(output.path)"],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { await harness.coordinator.disable(bundleID: deepSeekID) } }
+
+    #expect((await harness.loop.run(deepSeekRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())).status == .completed)
+    let data = try Data(contentsOf: output)
+    let cassette = try JSONDecoder().decode(RecordedDeepSeekCassette.self, from: data)
+    #expect(cassette.provider == "deepseek")
+    #expect(cassette.exchanges.count == 1)
+    #expect(cassette.exchanges[0].events.contains { $0.type == "completed" })
 }
 
 // MARK: - real API (owner-run; never in CI)

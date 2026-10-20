@@ -1,6 +1,6 @@
 # Provider 验收记录：Xiaomi MiMo（Chat Completions）
 
-> **状态：离线与 CI 验收通过，真实 API 录制待主人执行** —— 合并提交 `0c0192a`，128 tests 全绿（104 内核 + 24 契约），CI run `39374459326` success，零告警。离线回归使用手工 fixture；`Scripts/mimo-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
+> **状态：离线与 CI 验收通过，真实 API 录制待主人执行** —— 合并提交 `0c0192a`，130 tests 全绿（104 内核 + 26 契约），CI run `39374459326` success，零告警。离线回归使用手工 fixture；`Scripts/mimo-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
 
 ## 一、协议事实（2026-10-20 核对）
 
@@ -34,9 +34,15 @@
 | usage 映射 | 首轮 `inputTokens == 11` |
 | 超时/取消无悬挂 | `MIMO_providerStreamCancellation`：慢速回放 + 150ms deadline → `deadlineExceeded`，Host 存活，退出后 PID 消失 |
 | 启停与路由撤销 | `MIMO_disableRemovesProviderRoute` |
+| 录制真的落盘且不夹带 fixture | `MIMO_recordingWritesCassette`（回放+录制只得到 1 个 exchange） |
 | 核心无厂商依赖 | `Sources/LingXiKernel`、`Sources/LingXiCoreHost` 无 MiMo 标识；L0 门禁通过 |
 
-并行稳定性：全套 128 tests 连跑 3 次全绿。期间发现握手超时在并行负载下过紧（含 codesign + dlopen），默认值由 5s 调整为 15s。
+并行稳定性：全套 130 tests 连跑 3 次全绿。
+
+**录制链路上的两个真 bug（首轮录制时暴露，已修复并回归）**：
+1. 纯录制模式没有创建 cassette store，`append` 被静默跳过，脚本却打印成功——现在录制输出有独立 store，脚本还会校验文件非空并扫描敏感文本。
+2. 回放与录制共用 store，录制文件把 fixture 中未消费的 exchange 一并写入（首轮产物出现 4 个 exchange 而非 1 个）——现在回放源与录制输出分离。
+3. 终态事件发出后内核立即结束 Run，落盘若放在其后会与调用方读取/关闭竞争——现在在**发出 `completed` 之前**同步写盘。期间发现握手超时在并行负载下过紧（含 codesign + dlopen），默认值由 5s 调整为 15s。
 
 ## 四、真实 API 与 cassette（待主人执行）
 

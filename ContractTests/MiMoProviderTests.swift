@@ -5,6 +5,12 @@ import LingXiPluginRuntime
 import Testing
 
 private let mimoID = "site.lingxi.provider.mimo"
+
+private struct RecordedMiMoCassette: Decodable {
+    let provider: String
+    let exchanges: [Exchange]
+    struct Exchange: Decodable { let events: [ProviderWireEvent] }
+}
 private let mimoFixtureURL: URL = Bundle.module.url(
     forResource: "mimo-chat-fixture", withExtension: "json", subdirectory: "Fixtures"
 )!
@@ -170,6 +176,25 @@ func MIMO_providerStreamCancellation() async throws {
     #expect(await harness.coordinator.isRunning(bundleID: mimoID))
     await harness.coordinator.disable(bundleID: mimoID)
     #expect(await waitUntil { kill(pid, 0) != 0 })
+}
+
+@Test("MIMO replay with recording enabled writes a real cassette file")
+func MIMO_recordingWritesCassette() async throws {
+    let output = FileManager.default.temporaryDirectory
+        .appendingPathComponent("mimo-record-\(UUID().uuidString).json")
+    defer { try? FileManager.default.removeItem(at: output) }
+    let harness = try await makeMiMoHarness(
+        grants: ["vcr=\(mimoFixtureURL.path)", "record=\(output.path)"],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
+
+    #expect((await harness.loop.run(mimoRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())).status == .completed)
+    let data = try Data(contentsOf: output)
+    let cassette = try JSONDecoder().decode(RecordedMiMoCassette.self, from: data)
+    #expect(cassette.provider == "mimo")
+    #expect(cassette.exchanges.count == 1)
+    #expect(cassette.exchanges[0].events.contains { $0.type == "completed" })
 }
 
 @Test("MIMO live smoke and optional cassette recording", .enabled(

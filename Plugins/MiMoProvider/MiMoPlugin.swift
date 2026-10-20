@@ -7,6 +7,8 @@ final class MiMoCore: @unchecked Sendable {
     private let lock = NSLock()
     private var tasks: [String: Task<Void, Never>] = [:]
     private var replay: MiMoCassetteStore?
+    private var recorderStore: MiMoCassetteStore?
+    private var replayMode = false
     private var recordPath: String?
     private var slowReplay = false
     private var hostAPI: UnsafePointer<LingXiHostAPI>?
@@ -30,7 +32,13 @@ final class MiMoCore: @unchecked Sendable {
             }
         }
         lock.lock()
+        // A recorder is a cassette store too: without this, record-only mode had nothing to append
+        // to and silently produced no file.
         replay = replayPath.map { MiMoCassetteStore(replayPath: $0) }
+        // Recording output starts empty: loading the replay fixture into it would copy the
+        // fixture's unconsumed exchanges into the recorded file.
+        recorderStore = recording != nil ? MiMoCassetteStore(replayPath: nil) : nil
+        replayMode = replayPath != nil
         recordPath = recording
         slowReplay = slow
         lock.unlock()
@@ -42,16 +50,22 @@ final class MiMoCore: @unchecked Sendable {
         let semaphore = DispatchSemaphore(value: 0)
         let outcome = StatusBox()
         let recorder = EventRecorder()
+        let digest = MiMoWire.digest(for: request)
         let emit: @Sendable (ProviderWireEvent) -> Void = { [weak self] event in
             recorder.append(event)
+            // Persist the cassette before the terminal reaches the kernel: the run returns as soon
+            // as it sees `completed`, so writing afterwards races the caller (and its shutdown).
+            if event.type == "completed", let self,
+               let path = self.recordingPath(), let store = self.recordingCassette() {
+                store.append(digest: digest, events: recorder.events, to: path)
+            }
             self?.emit(requestID: requestID, event: event)
         }
 
         let task = Task { [weak self] in
             defer { semaphore.signal() }
             guard let self else { return }
-            let digest = MiMoWire.digest(for: request)
-            if let replay = self.replayStore() {
+            if self.isReplayMode(), let replay = self.cassetteStore() {
                 if let events = replay.take(digest: digest) {
                     do {
                         try await MiMoTransport.replay(events: events, slow: self.isSlow(), emit: emit)
@@ -86,9 +100,6 @@ final class MiMoCore: @unchecked Sendable {
                     emit(.init(type: "failed", failureKind: "transport", message: "\(error)"))
                     outcome.set(.capabilityFailed)
                 }
-                if let path = self.recordingPath() {
-                    replay?.append(digest: digest, events: recorder.events, to: path)
-                }
             }
         }
 
@@ -109,8 +120,16 @@ final class MiMoCore: @unchecked Sendable {
         task?.cancel()
     }
 
-    private func replayStore() -> MiMoCassetteStore? {
+    private func isReplayMode() -> Bool {
+        lock.lock(); defer { lock.unlock() }; return replayMode
+    }
+
+    private func cassetteStore() -> MiMoCassetteStore? {
         lock.lock(); defer { lock.unlock() }; return replay
+    }
+
+    private func recordingCassette() -> MiMoCassetteStore? {
+        lock.lock(); defer { lock.unlock() }; return recorderStore
     }
 
     private func isSlow() -> Bool {

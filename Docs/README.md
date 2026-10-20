@@ -140,7 +140,7 @@ Core 侧的注册表（`plugins.json`，独立于会话事件日志）是「是�
 
 ```bash
 swift build --build-tests        # 零告警
-swift test                       # 128 tests：104 内核 + 24 契约
+swift test                       # 130 tests：104 内核 + 26 契约
 
 # 空核启动：无 Provider 时启动、报状态、给出引导，不写事件日志
 DATA_DIR="$(mktemp -d)"
