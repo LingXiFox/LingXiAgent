@@ -199,3 +199,25 @@ func CTX_017_previousUserTurnsAreDemoted() async {
     #expect(entries.map(\.segment) == [.history, .history, .currentUser])
     #expect(entries.filter { $0.segment.isMandatory }.map(\.id.rawValue) == ["turn-2"])
 }
+
+@Test("CTX-018 further evictions forced by the reference line still list every evicted id")
+func CTX_018_referenceListsAllEvictedIDs() throws {
+    let instructions = entry("i", .immutableInstructions, String(repeating: "i", count: 200))
+    let currentUser = entry("u", .currentUser, "now")
+    let h0 = entry("h0", .history, String(repeating: "x", count: 208))
+    let h1 = entry("h1", .history, "xxxx")
+    let h2 = entry("h2", .history, "yyyy")
+
+    let plan = try ContextBudgetPlanner().plan(
+        [instructions, currentUser, h0, h1, h2],
+        limits: BudgetLimits(preferredTokens: 100, hardTokens: 82)
+    )
+
+    let reference = try #require(plan.selected.first { $0.segment == .derivedPage })
+    let text = reference.renderedText
+    for evicted in plan.evicted {
+        #expect(text.contains(evicted.id.rawValue), "reference line must let the model locate \(evicted.id.rawValue)")
+    }
+    #expect(plan.estimatedTokens == plan.selected.reduce(0) { $0 + TokenEstimator().estimate($1) })
+    #expect(plan.estimatedTokens <= 82)
+}

@@ -77,16 +77,16 @@ public struct ContextBudgetPlanner: Sendable {
 
         var reference: ContextEntry?
         if keep.contains(false) {
-            let referenceEntry = makeReference(entries: entries, keep: keep)
-            let referenceTokens = estimator.estimate(referenceEntry)
-            if running + referenceTokens > limits.hardTokens {
-                // The reference line is part of the request too: make room for it instead of
-                // exceeding the hard limit, and fail closed if even the mandatory floor plus the
-                // reference cannot fit.
-                for index in candidates {
-                    if running + referenceTokens <= limits.hardTokens { break }
-                    evictUnit(at: index, entries: entries, keep: &keep, running: &running, perEntry: perEntry)
-                }
+            // The reference line is part of the request too. Evicting more history changes the
+            // reference text (it lists every evicted id), so recompute it after each extra eviction
+            // until the mandatory floor plus the reference fits under the hard limit.
+            var referenceEntry = makeReference(entries: entries, keep: keep)
+            var referenceTokens = estimator.estimate(referenceEntry)
+            while running + referenceTokens > limits.hardTokens {
+                guard let next = candidates.first(where: { keep[$0] }) else { break }
+                evictUnit(at: next, entries: entries, keep: &keep, running: &running, perEntry: perEntry)
+                referenceEntry = makeReference(entries: entries, keep: keep)
+                referenceTokens = estimator.estimate(referenceEntry)
             }
             guard running + referenceTokens <= limits.hardTokens else {
                 throw BudgetError.referenceExceedsHardLimit(
