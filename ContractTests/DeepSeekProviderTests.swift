@@ -207,6 +207,7 @@ func DEEPSEEK_recordingWritesCassette() async throws {
 
     #expect((await harness.loop.run(deepSeekRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())).status == .completed)
     let data = try Data(contentsOf: output)
+    #expect(!String(decoding: data, as: UTF8.self).contains("offline-test-credential"))
     let cassette = try JSONDecoder().decode(RecordedDeepSeekCassette.self, from: data)
     #expect(cassette.provider == "deepseek")
     #expect(cassette.exchanges.count == 1)

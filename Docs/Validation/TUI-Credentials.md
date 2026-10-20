@@ -34,3 +34,21 @@
   代码重建后可能需要 Keychain 重新授权；没有把 ACL 放宽到全部应用或可伪造的 identifier。
   发布版须使用稳定签名身份。参考 Apple [TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
   与 [SecAccessCreate](https://developer.apple.com/documentation/security/secaccesscreate(_:_:_:))。
+
+
+## 截图反馈后的 TUI 修复
+
+用户截图：`Snapzy_2026-10-20_20-19-08_263.png`。原重绘只在整帧末尾清除屏幕，较短的行不能擦除旧命令，
+且全量 reset 使背景回落到 Terminal profile。修复为绝对行坐标 + 每行清除、单元格裁剪、统一背景；
+增加居中首页/输入区、Ctrl-P 和斜杠命令选择器、模型/会话/插件选择器，以及独立认证面板。
+
+- `LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter 'AUTH_|TUI_00'`：9 项实际通过，0 跳过。
+- 新版 `swift test`：147 项中 140 实际通过、7 按门禁跳过，见 `.tmp/tui-redesign-all.log`。
+- `TUI_002_frameAndPickers` 逐帧确认隐藏输入无 `/auth mimo` 残留，Key 字符不进入渲染，30 行均被定位并清除；
+  同时覆盖模型键盘选择、中文/组合音标/emoji 长输入清除和 40×12 小终端。
+- 实际 PTY 帧已输出首页、命令面板和认证区的 PNG，已人工检查；这是终端数据渲染，不是 macOS Terminal 原生截图。
+- 独立测试 Keychain 命名空间下，真实 MiMo 上游对旧/更新后的无效 Key 均返回 HTTP 401；
+  移除后下一次请求因 `no credential was granted` 在发网前失败；前端/事件日志/注册表未出现测试 Key。
+- 初版凭据代码 `58a70a3` 的 macOS CI 已全通过：
+  [39420969190](https://github.com/LingXiFox/LingXiAgent/actions/runs/39420969190)。新版 UI 另行执行 CI。
+- 有效 Key 的真实 MiMo 成功响应仍待用户在隐藏输入中配置，不能拿 401 或 cassette 作为成功调用证据。

@@ -41,7 +41,7 @@ enum Key: Equatable {
     case left, right, up, down
     case pageUp, pageDown, home, end
     case escape, interrupt, endOfInput, clearLine
-    case unknown, pasteStart, pasteEnd
+    case unknown, pasteStart, pasteEnd, commandPalette
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -90,6 +90,7 @@ final class KeyParser {
                 }
             case 0x03: keys.append(.interrupt); index += 1
             case 0x04: keys.append(.endOfInput); index += 1
+            case 0x10: keys.append(.commandPalette); index += 1
             case 0x15: keys.append(.clearLine); index += 1
             case 0x0D, 0x0A: keys.append(.enter); index += 1
             case 0x7F, 0x08: keys.append(.backspace); index += 1
@@ -140,7 +141,13 @@ enum TextWidth {
     }
 
     static func width(_ text: String) -> Int {
-        text.unicodeScalars.reduce(0) { $0 + (isWide($1) ? 2 : 1) }
+        text.reduce(0) { total, character in
+            let cells = character.unicodeScalars.map { scalar -> Int in
+                if [.nonspacingMark, .enclosingMark, .format].contains(scalar.properties.generalCategory) { return 0 }
+                return isWide(scalar) || (0x1F1E6...0x1F1FF).contains(scalar.value) ? 2 : 1
+            }.max() ?? 0
+            return total + cells
+        }
     }
 
     /// Hard-wraps by display width, preserving existing newlines. Combining marks are counted as
@@ -152,7 +159,7 @@ enum TextWidth {
             var current = ""
             var currentWidth = 0
             for character in paragraph {
-                let cell = character.unicodeScalars.reduce(0) { $0 + (isWide($1) ? 2 : 1) }
+                let cell = Self.width(String(character))
                 if currentWidth + cell > width, !current.isEmpty {
                     lines.append(current)
                     current = String(character)

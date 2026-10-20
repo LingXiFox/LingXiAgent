@@ -146,6 +146,9 @@ private struct App {
     var running = false
     var cancelling = false
     var pending: [Int: Pending] = [:]
+    var feedback: Message?
+    var picker: Picker?
+    var completionIndex = 0
     var coreGone = false
     var secretInput: SecretInput?
     var authBusy = false
@@ -169,15 +172,15 @@ private struct App {
         if authBusy { return "正在处理凭据…" }
         if cancelling { return "正在取消…" }
         if running { return "生成中…  Esc 取消" }
-        return "Enter 发送  ·  /help 查看命令  ·  PgUp/PgDn 滚动  ·  Ctrl-C 退出"
+        return "Enter 发送    / 命令    Ctrl-P 命令面板    PgUp/PgDn 滚动    Ctrl-C 退出"
     }
 
     mutating func notice(_ text: String) {
-        messages.append(Message(role: .system, text: text))
+        feedback = Message(role: .system, text: text)
     }
 
     mutating func error(_ text: String) {
-        messages.append(Message(role: .error, text: text))
+        feedback = Message(role: .error, text: text)
     }
 }
 
@@ -218,7 +221,7 @@ InputReader { bytes in
 }.start()
 
 private let output = FileHandle.standardOutput
-output.write(Data("\u{1B}[?2004h\u{1B}[?1049h\u{1B}[?25l\u{1B}[2J\u{1B}[H".utf8))
+output.write(Data("\u{1B}[?2004h\u{1B}[?1049h\u{1B}[?25l\u{1B}[?7l\u{1B}[2J\u{1B}[H".utf8))
 output.write(Data(Theme.charcoal.bg.utf8))
 output.write(Data(Theme.cream.fg.utf8))
 
@@ -231,12 +234,14 @@ app.pending[helloID] = .hello
 func draw() {
     let size = Terminal.size()
     let renderer = Renderer(columns: size.columns, rows: size.rows)
-    var frame = renderer.frame(
+    let frame = renderer.frame(
         messages: app.messages, scrollFromBottom: app.scroll,
         input: app.secretInput == nil ? app.input : [], cursor: app.secretInput == nil ? app.cursor : 0,
-        header: app.header, status: app.status
+        header: app.header, status: app.status,
+        workspace: FileManager.default.currentDirectoryPath,
+        feedback: app.feedback, picker: app.picker ?? slashPicker(),
+        auth: app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
     )
-    frame = "\u{1B}[H" + frame + "\u{1B}[J"
     output.write(Data(frame.utf8))
     needsRender = false
 }
@@ -246,35 +251,8 @@ func shutdown() {
     app.secretInput = nil
     _ = client.send(.shutdown)
     client.stop()
-    output.write(Data((Theme.reset + "\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1049l").utf8))
+    output.write(Data(("\u{1B}[0m\u{1B}[?7h\u{1B}[?2004l\u{1B}[?25h\u{1B}[?1049l").utf8))
     Terminal.restore(original)
-}
-
-@MainActor
-func pluginReport(_ plugins: [PluginSummary]) -> String {
-    guard !plugins.isEmpty else { return "没有已安装的插件。" }
-    var lines = ["已安装插件："]
-    for (index, plugin) in plugins.enumerated() {
-        let state = plugin.running ? "运行中" : (plugin.enabled ? "已启用（未运行）" : "已禁用")
-        lines.append("\(index + 1). \(plugin.bundleID)  v\(plugin.version)  [\(state)]")
-        lines.append("   能力: \(plugin.capabilities.isEmpty ? "—" : plugin.capabilities.joined(separator: ", "))")
-        lines.append("   权限: \(plugin.permissions.isEmpty ? "—" : plugin.permissions.joined(separator: ", "))")
-    }
-    lines.append("")
-    lines.append("启用: /enable <id>   禁用: /disable <id>   重新启用: /enable <id>")
-    return lines.joined(separator: "\n")
-}
-
-@MainActor
-func sessionReport(_ sessions: [SessionSummary]) -> String {
-    guard !sessions.isEmpty else { return "还没有会话。直接输入消息即可开始。" }
-    var lines = ["会话："]
-    for (index, session) in sessions.enumerated() {
-        let marker = session.id == app.activeSession ? "→" : " "
-        lines.append("\(marker) \(index + 1). \(session.title)  (\(session.turns) 轮)  \(session.id)")
-    }
-    lines.append("切换: /switch <序号>   新会话: /new")
-    return lines.joined(separator: "\n")
 }
 
 @MainActor
@@ -292,12 +270,17 @@ func handleReply(_ reply: FrontendReply) {
         } else if !app.sessions.isEmpty {
             app.notice("欢迎回来。已有 \(app.sessions.count) 个会话，用 /sessions 查看、/switch <序号> 切换，或直接输入开始新对话。")
         } else {
-            app.notice("输入消息开始对话。用 /help 查看命令。首次使用请 /auth <provider> 配置 API Key。")
+            app.notice("首次使用：/auth 连接模型。已有 Key 只需配置一次。")
         }
     case .plugins:
-        app.notice(pluginReport(app.plugins))
+        app.picker = Picker(title: "插件", items: app.plugins.map {
+            MenuItem(title: $0.bundleID, detail: ($0.running ? "运行中 · Enter 禁用" : "已禁用 · Enter 启用")
+                + " · " + $0.capabilities.joined(separator: ", "), command: ($0.running ? "/disable " : "/enable ") + $0.bundleID)
+        })
     case .sessions:
-        app.notice(sessionReport(app.sessions))
+        app.picker = Picker(title: "切换会话", items: app.sessions.enumerated().map { index, session in
+            MenuItem(title: session.title, detail: "\(session.turns) 轮 · \(session.id)", command: "/switch \(index + 1)")
+        })
     case .history:
         if let history = reply.history {
             app.messages = history.map { entry in
@@ -331,7 +314,7 @@ func handleReply(_ reply: FrontendReply) {
                     app.notice("\(provider) 已配置（\(state.source)）。更新请用 /auth \(provider) update。")
                 } else {
                     app.secretInput = SecretInput(provider: provider, label: state.label)
-                    app.notice("请输入 \(state.label)。输入内容完全隐藏；Enter 保存，Esc 取消。请勿在命令后附加 Key。")
+                    app.feedback = nil
                 }
             } else {
                 let stateText = state.configured ? "已配置（\(state.source)）" : "未配置"
@@ -379,7 +362,6 @@ func handleEvent(_ event: FrontendEvent) {
     case "plugins.changed":
         if let plugins = event.plugins {
             app.plugins = plugins
-            app.notice(pluginReport(plugins))
         }
     case "models.changed":
         if let models = event.models {
@@ -427,24 +409,7 @@ func runCommand(_ raw: String) {
     let argument = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
     switch command {
     case "/help":
-        app.notice("""
-        命令：
-          /help              显示帮助
-          /sessions          列出会话
-          /switch <序号>     切换会话并载入历史
-          /new               开始新会话
-          /models            列出可用模型
-          /model <id>        切换模型
-          /auth <provider>   隐藏输入并保存 API Key
-          /auth <provider> update / remove / status
-                             更新 / 删除 / 查看设置状态
-          /plugins           查看插件、能力与权限
-          /enable <id>       启用/重新启用插件
-          /disable <id>      禁用插件
-          /clear             清屏（会话历史仍保留）
-          /quit              退出
-        快捷键：Enter 发送 · Esc 取消生成 · Ctrl-C 退出 · PgUp/PgDn 滚动
-        """)
+        app.picker = Picker(title: "命令", items: commandItems)
     case "/sessions":
         let id = client.send(.sessionsList); app.pending[id] = .sessions
     case "/switch":
@@ -461,9 +426,9 @@ func runCommand(_ raw: String) {
         app.messages = []
         app.notice("新会话。输入消息开始。")
     case "/models":
-        if app.models.isEmpty { app.error("没有可用模型。") } else {
-            app.notice("可用模型：\n" + app.models.map { $0 == app.model ? "→ \($0)" : "  \($0)" }.joined(separator: "\n"))
-        }
+        app.picker = Picker(title: "切换模型", items: app.models.map {
+            MenuItem(title: $0, detail: $0 == app.model ? "当前模型" : "Enter 使用此模型", command: "/model " + $0)
+        })
     case "/model":
         guard app.models.contains(argument) else { app.error("用法：/model <id>，可选：\(app.models.joined(separator: ", "))"); return }
         app.model = argument
@@ -479,6 +444,13 @@ func runCommand(_ raw: String) {
         app.notice("正在\(command == "/enable" ? "启用" : "禁用") \(argument)…")
     case "/auth":
         let fields = argument.split(whereSeparator: \.isWhitespace).map(String.init)
+        if fields.isEmpty {
+            let providers = Set(app.plugins.flatMap(\.capabilities).filter { $0.hasPrefix("provider.") }.map { String($0.dropFirst(9)) }).sorted()
+            app.picker = Picker(title: "连接模型", items: providers.map {
+                MenuItem(title: $0, detail: "配置 API Key · macOS Keychain", command: "/auth " + $0)
+            })
+            return
+        }
         guard (1...2).contains(fields.count),
               fields.count == 1 || ["update", "remove", "status"].contains(fields[1]) else {
             app.error("用法：/auth <provider> [update|remove|status]。Key 必须在专用隐藏输入中填写。")
@@ -499,6 +471,25 @@ func runCommand(_ raw: String) {
     default:
         app.error("未知命令：\(command)。用 /help 查看。")
     }
+}
+
+private let commandItems: [MenuItem] = [
+    .init(title: "连接模型", detail: "/auth · 安全设置 API Key", command: "/auth"),
+    .init(title: "切换模型", detail: "/models · 选择已启用的模型", command: "/models"),
+    .init(title: "切换会话", detail: "/sessions · 继续之前的对话", command: "/sessions"),
+    .init(title: "插件", detail: "/plugins · 启用或禁用插件", command: "/plugins"),
+    .init(title: "新建会话", detail: "/new · 开始新的对话", command: "/new"),
+    .init(title: "清屏", detail: "/clear · 保留会话历史", command: "/clear"),
+    .init(title: "退出", detail: "/quit · 关闭 TUI", command: "/quit"),
+]
+
+@MainActor
+func slashPicker() -> Picker? {
+    let query = String(app.input)
+    guard query.hasPrefix("/"), !query.contains(where: \.isWhitespace) else { return nil }
+    let items = commandItems.filter { $0.command.hasPrefix(query) }
+    guard !items.isEmpty else { return nil }
+    return Picker(title: "命令", items: items, selected: min(app.completionIndex, items.count - 1))
 }
 
 @MainActor
@@ -541,11 +532,38 @@ func handleKey(_ key: Key) {
         needsRender = true
         return
     }
+    if var picker = app.picker {
+        switch key {
+        case .character(let character): picker.query.append(character); picker.selected = 0
+        case .backspace: _ = picker.query.popLast(); picker.selected = 0
+        case .clearLine: picker.query = ""; picker.selected = 0
+        case .up: picker.selected = max(0, picker.selected - 1)
+        case .down: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 1)
+        case .enter:
+            app.picker = nil
+            if app.input.first == "/" { app.input = []; app.cursor = 0; app.completionIndex = 0 }
+            if picker.filtered.indices.contains(picker.selected) { runCommand(picker.filtered[picker.selected].command) }
+            needsRender = true
+            return
+        case .escape, .interrupt, .commandPalette: app.picker = nil; needsRender = true; return
+        default: break
+        }
+        app.picker = picker
+        needsRender = true
+        return
+    }
+    let completion = slashPicker()
     switch key {
     case .character(let character):
+        app.completionIndex = 0
         if app.cursor >= app.input.count { app.input.append(character) } else { app.input.insert(character, at: app.cursor) }
         app.cursor += 1
     case .enter:
+        if let completion, completion.items.indices.contains(completion.selected) {
+            app.input = []; app.cursor = 0; app.completionIndex = 0
+            runCommand(completion.items[completion.selected].command)
+            break
+        }
         let text = String(app.input)
         app.input = []
         app.cursor = 0
@@ -562,8 +580,11 @@ func handleKey(_ key: Key) {
     case .home: app.cursor = 0
     case .end: app.cursor = app.input.count
     case .clearLine: app.input = []; app.cursor = 0
-    case .up: app.scroll += 1
-    case .down: app.scroll = max(0, app.scroll - 1)
+    case .up:
+        if completion != nil { app.completionIndex = max(0, app.completionIndex - 1) } else { app.scroll += 1 }
+    case .down:
+        if let completion { app.completionIndex = min(completion.items.count - 1, app.completionIndex + 1) }
+        else { app.scroll = max(0, app.scroll - 1) }
     case .pageUp: app.scroll += 8
     case .pageDown: app.scroll = max(0, app.scroll - 8)
     case .escape:
@@ -583,7 +604,13 @@ func handleKey(_ key: Key) {
         }
     case .endOfInput:
         if app.input.isEmpty { shutdown(); exit(0) }
+    case .commandPalette:
+        app.picker = Picker(title: "命令", items: commandItems)
     case .tab:
+        if let completion, completion.items.indices.contains(completion.selected) {
+            app.input = Array(completion.items[completion.selected].command); app.cursor = app.input.count
+            break
+        }
         for _ in 0..<2 { app.input.insert(" ", at: app.cursor); app.cursor += 1 }
     case .unknown, .pasteStart, .pasteEnd:
         break

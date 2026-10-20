@@ -234,6 +234,7 @@ func MIMO_recordingWritesCassette() async throws {
 
     #expect((await harness.loop.run(mimoRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy())).status == .completed)
     let data = try Data(contentsOf: output)
+    #expect(!String(decoding: data, as: UTF8.self).contains("offline-test-credential"))
     let cassette = try JSONDecoder().decode(RecordedMiMoCassette.self, from: data)
     #expect(cassette.provider == "mimo")
     #expect(cassette.exchanges.count == 1)

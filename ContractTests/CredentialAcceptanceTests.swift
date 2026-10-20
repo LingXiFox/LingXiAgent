@@ -70,9 +70,9 @@ func AUTH_003_hiddenInputPTY() async throws {
     environment.removeValue(forKey: "MIMO_API_KEY")
     let first = try PTYProcess(environment: environment)
     defer { first.terminate() }
-    try #require(await first.waitFor("输入消息开始对话。用 /help"))
+    try #require(await first.waitFor("mimo-v2.6-flash"))
     first.write("/auth mimo\r")
-    try #require(await first.waitFor("请输入 MiMo API Key"))
+    try #require(await first.waitFor("MiMo API Key：隐藏输入中"))
     let key = "pty-first-sentinel-\(UUID().uuidString)"
     first.write(key + "\r")
     try #require(await first.waitFor("可立即发送新请求"))
@@ -82,11 +82,11 @@ func AUTH_003_hiddenInputPTY() async throws {
 
     let second = try PTYProcess(environment: environment)
     defer { second.terminate() }
-    try #require(await second.waitFor("输入消息开始对话。用 /help"))
+    try #require(await second.waitFor("mimo-v2.6-flash"))
     second.write("/auth mimo status\r")
     try #require(await second.waitFor("mimo：已配置（keychain）"))
     second.write("/auth mimo update\r")
-    try #require(await second.waitFor("请输入 MiMo API Key"))
+    try #require(await second.waitFor("MiMo API Key：隐藏输入中"))
     let newKey = "pty-updated-sentinel-\(UUID().uuidString)"
     second.write("\u{1B}[200~multiline-secret\nsecond-line\u{1B}[201~\r")
     try #require(await second.waitFor("Key 不能为空或包含空白"))

@@ -77,3 +77,16 @@ Core 根据已启用插件的认证声明授权；Keychain account 为 `bundleID
 SwiftPM ad-hoc Core 使用文件型 Keychain默认 ACL，仅信任创建项的 Core 身份，不信任 TUI 或 Host。
 同一构建重启可复用凭据；代码重建导致 cdhash 改变时可能触发 macOS 重新授权。发布版需要稳定签名身份，
 不能把 ACL 改为“所有应用”或仅验证可伪造的 identifier 来消除提示。
+
+
+## TUI 导航与屏幕绘制
+
+首页采用居中输入区；对话时输入区固定在底部。`/` 前缀显示命令候选，↑↓ 选择、Tab 补全、Enter 执行；
+Ctrl-P 打开可搜索命令面板。`/models`、`/sessions`、`/plugins` 与不带参数的 `/auth` 使用同一键盘选择方式。
+选择器内 Esc 返回，再输入新的斜杠命令。已有 `/auth <provider> [update|remove|status]` 用法保持可用。
+
+隐藏输入是独立认证面板，只把 label 和字符数传给 Renderer；Renderer 不接触 secret。
+每帧按终端实际列/行数裁剪，以绝对坐标逐行清除再绘制，使用固定背景，避免缩短输入后残留旧文本。
+TUI 会恢复退出时的自动换行、光标和背景状态。布局参考 OpenCode 的
+[home](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/home.tsx) 与
+[prompt](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/component/prompt/index.tsx)，实现沿用本项目 Swift 渲染器。
