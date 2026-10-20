@@ -52,6 +52,14 @@ Session
 
 **一个 Session 同时只允许一个 active Run**（D1）。多轮排队、优先级、后台任务编排不在内核——移到产品层/插件层。理由：1.x 该区域 Round 12–20 的绝大多数缺陷源于「队列 × 终态化 × 崩溃恢复」三者交叉，不是单点 bug（`Regression-Cases.md` 第 2 节经验 E-02）。内核保留两条硬约束：终态化只有一个赢家（LOOP-001），终态先落盘再改内存（STORE-001）；排队语义一旦引入就要重做这套证明，故不做。
 
+**标识的唯一性与清理责任（Phase 1.2 定界）**：三层标识各有明确的唯一性范围与失效行为，全部在**产生任何副作用之前**判定。
+
+| 标识 | 唯一性范围 | 重复时的行为 |
+|---|---|---|
+| `runID` | 全局（同一 registry 内） | 准入拒绝 `duplicateRun`，日志零新记录（LOOP-021） |
+| `turnID` | **Session 内**：用户条目 id 为 `turn-<turnID>`，而引用行与模型引用都按条目 id 指回原文，重复 id 会让引用产生歧义 | 准入后、任何持久化写入前拒绝并 `discard` 内存记录：日志零新记录、provider 零请求、条目仍只有一条。重试一轮必须换新 `turnID`（LOOP-027） |
+| `executionID` | 一次 Run 一个，跨该 Run 的全部 Step 共用 | 不存在重复问题；对应清理责任是**终态化后调用一次 `endExecution`**，覆盖完成/失败/取消/超时四条路径（LOOP-026） |
+
 Run 状态机：
 
 | 状态 | 进入条件 | 允许迁出 |
@@ -113,7 +121,7 @@ Run 状态机：
 4. **终态化**：未终态 Run 一律 `terminalize(failed)`：有未结算批次 → cause `.executionStateUnknown`；否则 cause `.runtimeFailure`；detail 含 "recovered after restart"。
 5. **恢复不继续执行**：被中断的 Run 不会被"接着跑完"，继续执行只能由下一次 Turn 重新发起。这比 1.x 的恢复口径更严格——1.x 在部分路径上允许只读工具补跑（LOOP-008），2.0 选择一律不执行：只读重跑的正确性依赖执行器与插件环境完整可用，而恢复阶段这两者尚未建立；宁可显式标未知，也不冒重复副作用的风险。
 
-阶段 1 有两个恢复入口：宿主使用的 `KernelRecovery.recover`（完整语义）与 `RunRegistry.recoverUnfinishedRuns`（旧入口，仅把未完成 Run 终态化，没有 `executionStateUnknown` 语义）。Phase 1.2 收敛到 `KernelRecovery`，避免两套恢复口径并存。
+恢复入口只有一个：`KernelRecovery.recover(log:)`（Phase 1.2 收口）。阶段 1 曾并存的 `RunRegistry.recoverUnfinishedRuns` 已删除——它只把未完成 Run 终态化，没有 `executionStateUnknown` 语义，两套口径并存会让"重启后到底谁说了算"含糊不清。LOOP-003 现在直接由 `KernelRecovery` 的全量重放承担，断言的是**新建对象**上的终态。
 
 同进程内的悬空批次也按同一套规则处理（`677d44e` 加固）：Run 在 call 条目落盘后、result 落盘前失败（例如 `batchStarted` append 失败）时，下一次 Run 在装配请求前按日志**确定性自愈**——`batchSettled` 已落盘 → 恢复结果条目；`batchStarted` 未 settled → 合成 `executionStateUnknown` 错误结果；call 条目存在但没有任何 batch 事件 → 合成 not started 错误结果。自愈只写内存、不追加日志；重启后由 `KernelRecovery` 从同一日志派生出等价历史（LOOP-025 加固）。两条污染路径因此都被封死：重复 callID 在持久化前拒绝，悬空批次在进程内下一次 Run 前自愈。
 
@@ -219,7 +227,7 @@ Run 状态机：
 
 内核不含任何端口的实现，因此"没有 Provider 时能启动、不能推理"是结构上的必然，不是配置上的开关。三个端口全部由插件经统一握手与能力注册流程提供（`Plugin-System-Design.md` 第四章）：内核看到的是 bundle id 命名空间下的能力标识，看不到厂商、进程方式或 ABI 细节。
 
-**阶段 1 未接线**：`endExecution` 清理路径尚未被内核调用。Phase 1.2 接入 Provider 插件前必须补上，否则 provider 的每个执行态没有清理（`Docs/Validation/Phase-1.1.md` 风险 8.1 第 1 条）。
+**`endExecution` 已接线（Phase 1.2，LOOP-026）**：Run 终态化之后调用一次 `endExecution(request.executionID)`，覆盖正常完成、provider 失败、取消、总超时四条路径。一次 Run 一个 executionID，跨多个 Step 共用，因此**每 Run 一次、不是每 Step 一次**。预检失败与准入被拒的 Run 从未发起执行，不调用（无状态可清）。
 
 ## 十二、决策与待决
 

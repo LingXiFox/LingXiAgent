@@ -191,9 +191,9 @@ CI 上的复跑结果（run `39361419757`，head SHA `719d3f1`，Swift 6.3.3 / X
 
 ### 8.1 后续阶段必须处理
 
-1. **Medium：`ModelProvider.endExecution(_:)` 内核从未调用**（`Model.swift:152`，`Kernel-Design.md` 第十一章）。Phase 1.2 接入 Provider 插件前必须接线，否则 provider 每个执行态没有清理。
+1. **Medium：`ModelProvider.endExecution(_:)` 内核从未调用**（`Model.swift:152`，`Kernel-Design.md` 第十一章）。Phase 1.2 接入 Provider 插件前必须接线，否则 provider 每个执行态没有清理。**→ 已在 Phase 1.2 接线关闭**：终态化后按 Run 调用一次，完成/失败/取消/超时四条路径与「跨 Step 只清一次」由 `LOOP_026_*` 六个用例钉住（`Regression-Cases.md` LOOP-026）。
 2. **Low-Med：恢复时追加 `runTerminal` 的持久化失败会直接抛出**（宿主 `exit 1`）——fail-closed 正确，但没有自动恢复/重试记录；恢复失败后的日志状态需要可诊断。
-3. **Low：两个恢复入口并存**：`RunRegistry.recoverUnfinishedRuns`（旧，LOOP-003 使用）与 `KernelRecovery.recover`（宿主使用）；旧入口没有 `executionStateUnknown` 语义，Phase 1.2 收敛到后者。
+3. **Low：两个恢复入口并存**：`RunRegistry.recoverUnfinishedRuns`（旧，LOOP-003 使用）与 `KernelRecovery.recover`（宿主使用）；旧入口没有 `executionStateUnknown` 语义，Phase 1.2 收敛到后者。**→ 已在 Phase 1.2 删除旧入口**：恢复入口只剩 `KernelRecovery`，LOOP-003 改为断言重放新建对象上的终态与二次重放的幂等。
 4. **Low：Provider 内部用 `CancellationError` 作为控制流时会被归类为 provider failure**（行为已按 Phase 1.1 修正）。已写入 `Provider-Plugin-Contract.md` 第三章第 8 条：provider 自身中止必须抛 `ModelFailure` 或交付 `.failed`，不得用 `CancellationError` 表达业务原因；Phase 2 实现时仍需测试覆盖。
 
 ### 8.2 已知限制（接受并记录）
@@ -202,7 +202,7 @@ CI 上的复跑结果（run `39361419757`，head SHA `719d3f1`，Swift 6.3.3 / X
 6. **尾部修复只支持"单个末尾坏行"**：连续多条坏尾按拒载处理（设计选择，宁可拒载不猜测）。
 7. **终态 vs 取消的同一瞬间竞争不可确定性测试**：策略为 first-wins，两个方向都有确定性用例；同一瞬间的物理竞争无法用单测证明。
 8. **`EventLogError.invalidMarker` 无测试**；begin rollback 失败会使日志不可用且无自动修复（fail-closed）。
-9. **`EntryID("turn-<turnID>")` 同 turn 重试会产生重复条目 id**（store 不去重）；当前阶段无重试路径，Phase 2 前需决定语义。
+9. **`EntryID("turn-<turnID>")` 同 turn 重试会产生重复条目 id**（store 不去重）；当前阶段无重试路径，Phase 2 前需决定语义。**→ 语义已在 Phase 1.2 定界**：条目 id 在 Session 内必须唯一（引用行按 id 指回原文，重复即歧义）；命中已记录 id 的 Run 在准入后、任何持久化写入前被拒并丢弃内存记录，重试一轮须换新 TurnID（`LOOP_027_duplicateTurnIDRejectedWithoutJournalWrites`，`Kernel-Design.md` 第三章标识表）。被拒绝的备选口径是「按 runID 生成条目 id 从而容忍重复」，那会把同一段用户输入静默写进历史两次并计入预算，本阶段不取。
 10. **预算 token 估算为启发式**（设计既有），只用于预算与限流预判，不进成本报告。
 11. **物理掉电/`fsync` 语义无法在单测层证明**：STORE-009 只覆盖可控坏尾行/坏中行；D3 结论的边界即止于此。
 12. **恢复不继续执行**：重启后未完成 Run 一律 `failed`，用户需重新发起 Turn。`LOOP-008` 原「只读补跑」口径已重新定界（`Kernel-Design.md` 第六章）；在线恢复（执行器与插件环境可用）推迟到阶段 3（PLG-014）。
@@ -211,7 +211,7 @@ CI 上的复跑结果（run `39361419757`，head SHA `719d3f1`，Swift 6.3.3 / X
 15. **Provider/插件/TUI 层不在范围**：本记录只覆盖内核；这些层的验收记录在阶段 2–4 补。
 16. **LOOP-023 的调度确定性**依靠注入时钟与 Gate，不依赖固定 sleep（QA-002）；若 CI 出现 flake，必须按 `Testing-and-Acceptance.md` 第八章记录并限期处理，禁止用 retry 掩盖。
 17. **Info：进程内自愈只写内存**，journal 中没有合成条目；重启后由 `KernelRecovery` 从同一日志重新派生相同历史（`LOOP_025_danglingBatchHealedInProcess` 与重放等价性测试覆盖）。这是设计选择，不是缺口。
-18. **测试 target 有 1 条编译告警（不动已冻结代码）**：`swift build --build-tests` 在 `Tests/LingXiKernelTests/GatesTests.swift:111` 报 `#UnnecessaryEffectMarker`——`#expect(try await runs.record(...))` 里的 `try` 是多余的（`record` 不抛错）。**内核与宿主 target 零告警**（本地对 `Sources/**` 强制重编复核：`swift build` 无任何 warning），CI 日志里唯一告警也来自这一行测试代码。`README.md` 的「`swift build` 无告警」指产品构建，不含测试 target，措辞成立。删除这个 `try` 是一行无行为变更的清理，但 `677d44e` 已作为验收代码基线冻结、CI 证据与之绑定，本阶段不为 cosmetics 再动基线；留到 Phase 1.2 随 `endExecution` 接线一并处理。
+18. **测试 target 的编译告警（本条初次记录有误，已更正并清零）**：本条初写时称「唯一告警来自 `GatesTests.swift:111`」，那是**核查方法错了**造成的低估——当时用 `grep warning | sort -u` 按文案去重，把 11 条文案相同的 `#UnnecessaryEffectMarker` 折叠成了 1 条。Phase 1.2 改用「按 `file:line:col` 取来源位置」重新统计，实测为 **11 处**：`ContextTests:126`、`DurabilityTests:33/75/96/117/118/119/221/461`、`LoopTests:489/773`，全部是 `#expect(try await …)` 套用了不抛错的调用（`runs.record`、`store.entries`、`registry.epoch`）。**内核与宿主 target 始终零告警**，`README.md` 的「`swift build` 无告警」指产品构建，措辞成立。Phase 1.2 已把这 11 处冗余 `try` 全部删除：`swift build --build-tests` 现为 **0 告警**，用例数与断言语义不变（96 tests 全绿）。教训记入口径：**告警计数必须按来源位置去重，不能按文案去重**。
 
 ## 九、复现步骤
 

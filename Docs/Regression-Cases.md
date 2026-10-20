@@ -5,6 +5,8 @@
 
 ## 修订记录
 
+- **Phase 1.2（2026-10-20，进入阶段 2 前的最小收尾）**：不新增功能、不加依赖、不动架构，只还 Phase 1.1 验收记录登记的四笔债。新增 2 条：**LOOP-026**（`endExecution` 已接线，四条终态路径各证一次 + 跨 Step 只释放一次 + 未启动的 Run 不调用）、**LOOP-027**（`turn-<turnID>` 条目 id 在 Session 内必须唯一，重复 TurnID 在 `runs.create` 之后、任何持久化写入之前被拒并 `discard` 内存记录，Session 后续新 Turn 正常可用；备选口径「按 runID 生成 id 容忍重复」被明确否掉，理由见 `Validation/Phase-1.2.md` §3.3）。既有口径收紧两处：**LOOP-003** 的恢复入口收敛为 `KernelRecovery` 唯一（删除 `RunRegistry.recoverUnfinishedRuns`，用例改为断言重放**新建**对象上的终态与二次重放幂等，原实现是复用旧 registry 冒充重启）；**Phase 1.1 风险 8.2 第 18 条**的告警计数更正为 11 处并按来源位置去重后全部删除，`swift build --build-tests` 归零告警（内核与宿主本就零告警）。**验收结果（2026-10-20，HEAD `8bc8774`）**：96 tests 全绿 ×5，反例 M1–M4 全部 RED（M3 专门证明「每 Run 一次」不是弱断言），空核启动仍零日志，两个独立验收文件 sha256 未变，证据见 `Docs/Validation/Phase-1.2.md`。
+
 - **Phase 0.1（2026-10-19）**：插件运行模型由"插件即子进程、作者自实现 IPC"改为"插件是固定 C ABI 动态库 + 每插件一个独立 Plugin Host 进程"。影响范围：`IPC-*` 组的适用对象变为 **Core↔Host 内部协议**（作者不再接触）；`PLG-*` 组语义不变，新增 PLG-015~019 覆盖 ABI、签名策略、fail-closed 与进程级隔离；新增 E-13~E-15 记录握手五套不一致、library validation 取舍、无 size/version 字段的前向兼容缺陷。
 - **Phase 1.1（2026-10-20，内核正确性收口）**：不新增功能、不加依赖、不重构架构，只修内核正确性并补验证。新增 12 条：**LOOP-021~025、STORE-008~010、CTX-017/018、CACHE-007、QA-013**（契约见 `Docs/Validation/Phase-1.1-contract.md`，验收记录见 `Docs/Validation/Phase-1.1.md`）。既有条目的硬约束不变，但证据扩展：LOOP-002 的"写失败回滚"扩展为日志修复状态机（STORE-009）；LOOP-003/LOOP-004 的重启与 begin 语义分别由 `KernelRecovery` 全量重放（STORE-008）与单事务（STORE-010）承担；LOOP-006/007 的取消语义扩展为阻塞流竞争（LOOP-023）。**恢复策略改为"只读重放 + 终态化，不恢复执行"**：`LOOP-008` 原"只读项补跑、继续下一步"的口径不再适用于内核重启恢复，重新定界为在线故障恢复（PLG-014）。**验收结果（2026-10-20，终态 HEAD `677d44e`；变异矩阵在代码基线 `70847ca` 复跑）**：89 tests 全绿 ×5，CI `macos-26` run `39361419757` success（同 89 tests，Swift 6.3.3），变异检验 11/11 RED（其中删除预算后协议复校验的覆盖缺口已由 `CTX_018_postBudgetValidationGatePresent` 结构性门禁关闭），证据见 `Docs/Validation/Phase-1.1.md`；新条目状态统一标为「已覆盖（阶段 1.1）」。终态分类补一条：Provider 自身抛出的 `CancellationError` 归 `.failed / .providerFailure`，不得冒充用户取消（LOOP-006 加固）。
 
@@ -50,7 +52,7 @@
 |---|---|---|---|---|---|---|
 | LOOP-001 | 同一 Run 并发触发取消终态化与完成终态化 | 只有一个赢家推进后续，另一次返回"未发生迁移"；幂等 | Round 12 *Single Terminalization Winner* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：`terminalize` 显式返回赢家与否，begin 失败不补写终态） |
 | LOOP-002 | 终态事件落盘失败 | 内存回滚到写之前，已追加事件被截断，不推进任何后续 | Round 19 *Root Terminal Durability* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：repairRequired/rollbackFailed 状态机，见 STORE-009） |
-| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：由 `KernelRecovery` 全量重放重建，见 STORE-008） |
+| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：由 `KernelRecovery` 全量重放重建，见 STORE-008；1.2 收口：旧入口 `RunRegistry.recoverUnfinishedRuns` 删除，恢复入口只剩 `KernelRecovery` 一个） |
 | LOOP-004 | 全流程事件序列 | `runCreated` 恰好一次；stop 后内核待答交互账本与快照均为空 | `4ec856a`、`stopClearsCorePendingInteractions` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：begin 三记录单事务，见 STORE-010） |
 | LOOP-005 | 一个批次内 [慢, 快, 失败] 三个工具 | 并行执行，结果按 Provider 给出顺序进入同一条 tool 消息，事件保序；批次内出现重复 callID 时**整批拒绝** | `AgentToolLoopTests.multiToolBatchExecutesInParallelAndSettlesInProviderOrder` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：`batchStarted` 意图先于任何副作用落盘） |
 | LOOP-006 | Provider 已投递失败的同时用户按 Esc | 终态保留真实故障原因，不改判为 cancelled；取消路径静默结束流，**严禁伪造失败事件**；Provider 自身抛出的 `CancellationError` 归 `.failed / .providerFailure`，不得冒充用户取消（只有用户取消/内核 deadline 产生 `cancelled`） | `f118d15`、`CancellationRaceTests` 场景 4（钉 cause 不只钉 status） | 1 | L1 | 已覆盖（阶段 1；1.1 加固：阻塞流下的终态优先级 + provider CancellationError 不冒充取消） |
@@ -73,6 +75,8 @@
 | LOOP-023 | Provider 流阻塞时的取消与总超时 | `stream()` 调用与流消费整体放进可竞争任务；取消/总超时先被观察到 → `cancelled / cancelledByUser` 或 `deadlineExceeded / deadlineExceeded`；迟到事件丢弃且不伪造 provider 失败；终态事件一旦被内核处理即胜出，之后取消不改写；已收到的 usage 部分照常汇总 | 1.x `CancellationRaceTests` 场景 4（LOOP-006）只覆盖非阻塞流；Phase 1.1 契约 §2.6 | 1 | L1 | 已覆盖（阶段 1.1） |
 | LOOP-024 | Assistant 文本落盘与跨 Turn 可见 | 工具轮：assistant 文本与工具调用写进**同一条** `entryRecorded`（`.assistantMessage`，unit=batchID；文本为空时用 `.toolCall`）；正常完成：最终文本写 `.text` 条目（role assistant、segment history）；`.maxTokens` 已产出文本同样写入，contentFilter/refusal 不写入；先事件落盘再进 store；后续 Turn 请求可见完整历史 | 阶段 1 只落工具调用、不落 assistant 文本；Phase 1.1 契约 §2.4 | 1 | L1 | 已覆盖（阶段 1.1） |
 | LOOP-025 | 崩溃恢复不重放写操作 | 恢复只读重放事件、重建内存对象；`batchStarted` 有而 `batchSettled` 缺 → 合成 `isError=true`、`effect=.unknown` 的结果（内容含 `executionStateUnknown` 与 verification 要求），Run 记入 `executionStateUnknownRunIDs`，**绝不重放**；恢复期间 ToolExecutor 调用 0 次、模型请求 0 次 | 1.x 恢复矩阵允许只读补跑（LOOP-008），2.0 取更严格口径；Phase 1.1 契约 §1.3 | 1 | L1 | 已覆盖（阶段 1.1） |
+| LOOP-026 | Run 终态后 provider 的执行态清理 | 内核在**每一条**到达过 loop 的终态路径上调用一次 `endExecution(executionID)`：正常完成、provider 失败、取消、总超时都要释放；一次 Run 只有一个 executionID，跨多个 Step 也只清理**一次**（不是每步一次）；准入被拒、预检失败等从未发起执行的 Run 不得调用（无状态可清）。缺此接线则 provider 的 continuation 状态永久泄漏（阶段 2 接真插件后是真缺陷） | `Phase-1.1.md` 风险 8.1 第 1 条；`Kernel-Design.md` 第十一章「阶段 1 未接线」 | 1.2 | L1 | 已覆盖（阶段 1.2） |
+| LOOP-027 | 同一 Session 复用已记录的 Turn ID | 用户条目 id `turn-<turnID>` 在 Session 内**必须唯一**：淘汰引用行与模型引用都按条目 id 指回原文，重复 id 会让引用产生歧义。命中已记录 id 的 Run 在 `runs.create` 准入**之后**、任何持久化写入**之前**被拒（`duplicateRun` 仍优先命中同 runID 重试路径），并 `discard` 内存记录：事件日志零新记录、provider 零请求、条目 id 计数仍为 1、Session 后续新 Turn 正常可用。重试一轮必须换新 TurnID | Phase 1.1 前未定义（`Phase-1.1.md` 风险 8.2 第 9 条）；阶段 1 实时路径与重放路径均不去重 | 1.2 | L1 | 已覆盖（阶段 1.2） |
 
 ### CTX 组 — 上下文装配、完整性、压缩
 

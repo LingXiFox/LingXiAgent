@@ -35,19 +35,20 @@
 
 ## 状态
 
-**Phase 0.1 架构修订已完成，阶段 1 最小内核已落地，Phase 1.1 内核正确性修复已验收（89 tests 本地全绿 ×5 + CI `macos-26` 全绿，代码基线 `677d44e`；验收记录：`Validation/Phase-1.1.md`）。**
+**Phase 0.1 架构修订已完成，阶段 1 最小内核已落地，Phase 1.1 内核正确性修复与 Phase 1.2 收尾均已验收（96 tests 全绿；代码基线 `8bc8774`；验收记录：`Validation/Phase-1.1.md`、`Validation/Phase-1.2.md`）。**
 
 阶段 1 交付的是可运行事实，不是计划：
 
 - `Sources/LingXiKernel`：Agent Loop、单上下文装配与校验、预算与水位压缩、执行状态与终态化、追加式事件日志与崩溃恢复、模型/工具端口与路由。零外部依赖，`swift build` 无告警。
 - `Sources/LingXiCoreHost`：可执行宿主。无 Provider 时正常启动、报告状态并给出配置引导，但不能推理——项目书 §七第 1 条已实测。
-- `Tests/LingXiKernelTests`：89 个用例（基线 30；Phase 1.1 新增 59），覆盖 L0 结构门禁（依赖方向、许可矩阵漂移、内核内无厂商名与无 `dlopen`）与 LOOP/CTX/STORE/PROV 各组回归；Phase 1.1 新增 `RecoveryAcceptanceTests`（STORE-008/009/010、LOOP-025）与 `ConversationAcceptanceTests`（LOOP-021~024、CTX-017/018、CACHE-007、QA-013）。许可漂移门禁做过反向验证（塞入未登记 target 会变红）。
+- `Tests/LingXiKernelTests`：96 个用例（基线 30；Phase 1.1 新增 59，Phase 1.2 新增 7），覆盖 L0 结构门禁（依赖方向、许可矩阵漂移、内核内无厂商名与无 `dlopen`）与 LOOP/CTX/STORE/PROV 各组回归；Phase 1.1 新增 `RecoveryAcceptanceTests`（STORE-008/009/010、LOOP-025）与 `ConversationAcceptanceTests`（LOOP-021~024、CTX-017/018、CACHE-007、QA-013）；Phase 1.2 新增 LOOP-026（`endExecution` 四条终态路径清理）与 LOOP-027（Session 内条目 id 唯一）。`swift build --build-tests` 零告警。许可漂移门禁做过反向验证（塞入未登记 target 会变红）。
 - `.github/workflows/ci.yml`：最小 macOS 26 CI：`swift build --build-tests` + `swift test`，外加一步空核启动检查（无 Provider 时只打印引导、不写事件日志，QA-013）；触发条件为 push `rewrite/2.0`、PR→`main`、`workflow_dispatch`。**首跑已 success**：run `39361419757`（`macos-26`，Swift 6.3.3 / Xcode 26.6.0，89 tests 全绿，证据见 `Validation/Phase-1.1.md` 第六节）。
 - `LICENSE-MATRIX.md` 已按 2.0 实际 target 重建。
 
 Phase 1.1 修的是内核正确性，不新增功能、不加依赖（逐条对应 `Regression-Cases.md`）：同 Session 并发 Run 准入（LOOP-021）、stop reason 终态分类（LOOP-022）、阻塞流取消/超时竞争（LOOP-023）、assistant 文本落盘（LOOP-024）、恢复不重放写操作（LOOP-025）、全量重放重建（STORE-008）、事件日志尾行修复与回滚毒化（STORE-009）、begin 事务无孤立终态（STORE-010）、历史 User 降级（CTX-017）、预算引用行（CTX-018）、跨 Step usage 汇总（CACHE-007）、无 Provider 启动零日志（QA-013）。验收记录 `Validation/Phase-1.1.md` 含 89 tests 全绿 ×5、变异反例 11/11 RED、D3 前提验证与 CI run 记录。
 
-已覆盖的回归条目在 `Regression-Cases.md` 里标为「已覆盖（阶段 1）」；Phase 1.1 条目已标为「已覆盖（阶段 1.1）」，未标的仍然是待办。Provider 插件、Plugin Host、TUI、插件市场均未开始，符合阶段 1 范围纪律。
+Phase 1.2 是进入阶段 2 前的最小收尾，只还 Phase 1.1 登记过的债（验收记录 `Validation/Phase-1.2.md`，反例 4/4 RED）：`endExecution` 已在四条终态路径接线、每 Run 释放一次（LOOP-026）；恢复入口收敛为 `KernelRecovery` 唯一（旧 `RunRegistry.recoverUnfinishedRuns` 删除）；同 Session 内条目 id 必须唯一，重复 TurnID 在任何持久化写入前被拒（LOOP-027）；测试 target 的 11 处冗余 `try` 告警清零。
+Provider 插件、Plugin Host、TUI、插件市场均未开始，符合阶段 1 范围纪律。已覆盖的回归条目在 `Regression-Cases.md` 里标为「已覆盖（阶段 1）」「已覆盖（阶段 1.1）」「已覆盖（阶段 1.2）」，未标的仍然是待办。
 
 已定的基线：
 
