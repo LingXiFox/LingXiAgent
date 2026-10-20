@@ -108,7 +108,7 @@ func QA_013_emptyCoreDoesNotPolluteJournal() async throws {
     // A core without a provider must not write a meaningless failed run into the journal.
     #expect(await log.recordCount == 0)
     #expect(try await log.events().isEmpty)
-    #expect(try await runs.record(request.runID) == nil)
+    #expect(await runs.record(request.runID) == nil)
     #expect(await store.sessionIDs().isEmpty)
 }
 

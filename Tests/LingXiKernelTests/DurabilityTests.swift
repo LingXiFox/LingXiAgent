@@ -30,7 +30,7 @@ func LOOP_001_singleTerminalizationWinner() async throws {
 
     #expect(first)
     #expect(!second)
-    #expect(try await runs.record(runID)?.status == .completed)
+    #expect(await runs.record(runID)?.status == .completed)
 }
 
 @Test("LOOP-001 concurrent terminalization attempts produce exactly one winner")
@@ -72,7 +72,7 @@ func LOOP_002_terminalWriteFailureRollsBack() async throws {
     let result = await loop.run(request, policy: LoopPolicy())
 
     #expect(!result.terminalCommitted)
-    #expect(try await runs.record(request.runID)?.status == .running)
+    #expect(await runs.record(request.runID)?.status == .running)
     #expect(sink.lineCount == 3)
 }
 
@@ -93,7 +93,7 @@ func STORE_010_beginFailureLeavesNoOrphanTerminal() async throws {
     // The begin transaction is rolled back completely: no runCreated and, crucially, no runTerminal
     // for a run that never existed in the journal.
     #expect(sink.lineCount == 0)
-    #expect(try await runs.record(request.runID) == nil)
+    #expect(await runs.record(request.runID) == nil)
 
     // The in-memory record is discarded, and the journal is still usable for the next attempt.
     sink.failOnAppendCount = nil
@@ -106,22 +106,28 @@ func STORE_010_beginFailureLeavesNoOrphanTerminal() async throws {
 @Test("LOOP-003 a started run without a terminal record is failed on restart, never re-run")
 func LOOP_003_crashRecovery() async throws {
     let log = try DurableEventLog(sink: MemorySink())
-    let runs = RunRegistry()
     let runID = newRunID("orphan")
-    try await runs.create(id: runID, sessionID: "s", turnID: "t")
+    // The journal stops right after runStarted: this is the crash shape recovery must decide about.
     try await log.append(.runCreated(runID, "s", "t"))
     try await log.append(.runStarted(runID))
-    try await runs.markRunning(runID)
 
-    let recovered = try await runs.recoverUnfinishedRuns(via: log)
+    let recovered = try await KernelRecovery.recover(log: log)
 
-    #expect(recovered == [runID])
-    #expect(try await runs.record(runID)?.status == .failed)
-    #expect(try await runs.record(runID)?.cause == .runtimeFailure)
-    #expect(try await runs.recoverUnfinishedRuns(via: log).isEmpty)
+    #expect(recovered.report.failedRunIDs == [runID])
+    #expect(await recovered.runs.record(runID)?.status == .failed)
+    #expect(await recovered.runs.record(runID)?.cause == .runtimeFailure)
+    #expect(await recovered.runs.record(runID)?.detail == "recovered after restart")
+
+    // Recovery is the only entry point, and it always builds fresh objects: a second replay of the
+    // now-terminalized journal has nothing left to decide (STORE-008).
+    let again = try await KernelRecovery.recover(log: log)
+    #expect(again.report.failedRunIDs.isEmpty)
+    #expect(await again.runs.openRunIDs.isEmpty)
 
     let events = try await log.events()
-    #expect(events.contains { if case .runTerminal = $0 { true } else { false } })
+    #expect(events.contains {
+        if case .runTerminal(let id, .failed, .runtimeFailure) = $0 { id == runID } else { false }
+    })
 }
 
 @Test("LOOP-004 runCreated is recorded exactly once per run")
@@ -178,8 +184,9 @@ func STORE_001_fileJournalRoundTrip() async throws {
     #expect(assistantEntry.role == .assistant)
 
     // Nothing was left mid-flight, so a restart must not fail any run.
-    let freshRuns = RunRegistry()
-    #expect(try await freshRuns.recoverUnfinishedRuns(via: reopenedLog).isEmpty)
+    let replayed = try await KernelRecovery.recover(log: reopenedLog)
+    #expect(replayed.report.failedRunIDs.isEmpty)
+    #expect(await replayed.runs.openRunIDs.isEmpty)
 }
 
 @Test("STORE-001 entries reach the store only after their record was written")
@@ -211,7 +218,7 @@ func STORE_001_durableBeforeMemory() async throws {
         recorded.map(\.id.rawValue)
             == ["turn-persist", "call-run-persist-batch1", "result-run-persist-batch1", "assistant-run-persist"]
     )
-    #expect(try await store.entries(for: runRequest("persist").sessionID).count == 4)
+    #expect(await store.entries(for: runRequest("persist").sessionID).count == 4)
 }
 
 @Test("STORE-008 replay rebuilds fresh registries from the journal")
@@ -451,6 +458,6 @@ func STORE_010_beginRollbackFailureIsReported() async throws {
     // The failure is reported instead of hidden, and still no orphan runTerminal is written.
     #expect(result.detail?.contains("journal rollback failed") == true)
     #expect(sink.lineCount == 1)
-    #expect(try await runs.record(request.runID) == nil)
+    #expect(await runs.record(request.runID) == nil)
     #expect(await log.isUsable == false)
 }

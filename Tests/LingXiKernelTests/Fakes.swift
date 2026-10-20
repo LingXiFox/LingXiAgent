@@ -89,6 +89,25 @@ final class ScriptedProvider: ModelProvider, @unchecked Sendable {
         return recorded.indices.contains(index) ? recorded[index] : nil
     }
 
+    private var ended: [ExecutionID] = []
+
+    /// LOOP-026: every terminal path must release the provider's per-execution state.
+    var endedExecutions: [ExecutionID] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ended
+    }
+
+    func endExecution(_ executionID: ExecutionID) async {
+        appendEnded(executionID)
+    }
+
+    private func appendEnded(_ executionID: ExecutionID) {
+        lock.lock()
+        ended.append(executionID)
+        lock.unlock()
+    }
+
     private func takeScript(for request: ModelRequest) -> (index: Int, events: [ModelEvent]) {
         lock.lock()
         defer { lock.unlock() }
@@ -351,6 +370,25 @@ final class BlockingStreamProvider: ModelProvider, @unchecked Sendable {
     private func record(_ request: ModelRequest) {
         lock.lock()
         recorded.append(request)
+        lock.unlock()
+    }
+
+    private var ended: [ExecutionID] = []
+
+    /// LOOP-026: every terminal path must release the provider's per-execution state.
+    var endedExecutions: [ExecutionID] {
+        lock.lock()
+        defer { lock.unlock() }
+        return ended
+    }
+
+    func endExecution(_ executionID: ExecutionID) async {
+        markEnded(executionID)
+    }
+
+    private func markEnded(_ executionID: ExecutionID) {
+        lock.lock()
+        ended.append(executionID)
         lock.unlock()
     }
 

@@ -486,7 +486,7 @@ func QA_013_modelNotOfferedGuidance() async throws {
     #expect(result.detail?.contains("No active provider offers model missing-model") == true)
     #expect(!result.terminalCommitted)
     #expect(await log.recordCount == 0)
-    #expect(try await runs.record(request.runID) == nil)
+    #expect(await runs.record(request.runID) == nil)
     #expect(await store.sessionIDs().isEmpty)
 }
 
@@ -635,4 +635,151 @@ func LOOP_025_danglingBatchHealedInProcess() async throws {
     // The request that reached the provider already contained the healed pairing.
     let sent = try #require(provider.request(at: 0))
     #expect(sent.entries.contains { $0.unit == batchID.rawValue && !$0.payload.toolOutcomes.isEmpty })
+}
+
+@Test("LOOP-026 a completed run releases the provider execution state")
+func LOOP_026_endExecutionAfterCompletedRun() async throws {
+    let provider = ScriptedProvider(scripts: [completed("done")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+    let request = runRequest("end-ok")
+
+    let result = await loop.run(request, policy: LoopPolicy())
+
+    #expect(result.status == .completed)
+    #expect(provider.endedExecutions == [request.executionID])
+}
+
+@Test("LOOP-026 a provider failure releases the execution state with the cause intact")
+func LOOP_026_endExecutionAfterProviderFailure() async throws {
+    let provider = ScriptedProvider(scripts: [[.started, .failed(ModelFailure(kind: .rateLimited, message: "429"))]])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+    let request = runRequest("end-failure")
+
+    let result = await loop.run(request, policy: LoopPolicy())
+
+    #expect(result.status == .failed)
+    #expect(result.cause == .providerFailure)
+    #expect(provider.endedExecutions == [request.executionID])
+}
+
+@Test("LOOP-026 cancelling a blocked stream releases the execution state")
+func LOOP_026_endExecutionAfterCancellation() async throws {
+    let provider = BlockingStreamProvider(terminalEvents: [.failed(ModelFailure(kind: .transport, message: "late"))])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: try DurableEventLog(sink: MemorySink()))
+    let request = runRequest("end-cancel")
+    let task = Task { await loop.run(request, policy: LoopPolicy()) }
+
+    #expect(await provider.arrival.wait())
+    task.cancel()
+    let result = await task.value
+    provider.release.fire()
+
+    #expect(result.status == .cancelled)
+    #expect(result.cause == .cancelledByUser)
+    #expect(provider.endedExecutions == [request.executionID])
+}
+
+@Test("LOOP-026 an overall deadline releases the execution state")
+func LOOP_026_endExecutionAfterDeadline() async throws {
+    let clock = ManualClock()
+    let provider = BlockingStreamProvider(terminalEvents: [.completed(.stop)])
+    let loop = await makeLoop(
+        provider: provider, executor: RecordingExecutor(),
+        log: try DurableEventLog(sink: MemorySink()), clock: clock
+    )
+    let request = runRequest("end-deadline")
+    let task = Task { await loop.run(request, policy: LoopPolicy(overallTimeout: .seconds(10))) }
+
+    #expect(await provider.arrival.wait())
+    #expect(await clock.sleepStarted.wait())
+    clock.advance(.seconds(11))
+    let result = await task.value
+    provider.release.fire()
+
+    #expect(result.status == .deadlineExceeded)
+    #expect(provider.endedExecutions == [request.executionID])
+}
+
+@Test("LOOP-026 a multi-step run releases its execution once, not once per step")
+func LOOP_026_endExecutionFiresOnceAcrossSteps() async throws {
+    let registry = ToolRegistry()
+    try await registerEchoTool(registry)
+    let provider = ScriptedProvider(scripts: [toolBatch([makeCall("c1")]), toolBatch([makeCall("c2")]), completed("done")])
+    let loop = await makeLoop(
+        provider: provider, executor: RecordingExecutor(), registry: registry,
+        log: try DurableEventLog(sink: MemorySink())
+    )
+    let request = runRequest("end-multi-step")
+
+    let result = await loop.run(request, policy: LoopPolicy())
+
+    #expect(result.status == .completed)
+    #expect(result.steps == 3)
+    #expect(provider.requestCount == 3)
+    // One run is one execution: three model requests, a single release.
+    #expect(provider.endedExecutions == [request.executionID])
+}
+
+@Test("LOOP-026 a run rejected at admission never started an execution to release")
+func LOOP_026_noEndExecutionWhenRunNeverStarted() async throws {
+    let sink = MemorySink()
+    let log = try DurableEventLog(sink: sink)
+    let provider = ScriptedProvider(scripts: [completed("one"), completed("two")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: log)
+    let request = runRequest("end-rejected")
+
+    #expect((await loop.run(request, policy: LoopPolicy())).status == .completed)
+    let endedBefore = provider.endedExecutions.count
+    let recordsBefore = sink.lineCount
+
+    let second = await loop.run(request, policy: LoopPolicy())
+    #expect(second.status == .failed)
+    #expect(second.detail?.contains("duplicateRun") == true)
+    #expect(provider.endedExecutions.count == endedBefore)
+    #expect(sink.lineCount == recordsBefore)
+}
+
+@Test("LOOP-027 reusing a recorded turn id is rejected without journal writes")
+func LOOP_027_duplicateTurnIDRejectedWithoutJournalWrites() async throws {
+    let sink = MemorySink()
+    let log = try DurableEventLog(sink: sink)
+    let runs = RunRegistry()
+    let store = SessionStore()
+    let provider = ScriptedProvider(scripts: [completed("first"), completed("later")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), log: log, runs: runs, store: store)
+    let session = SessionID("session-dup-turn")
+
+    let first = RunRequest(
+        sessionID: session, turnID: "turn-1", runID: "run-dup-turn-1",
+        executionID: "exec-1", model: "test-model", prompt: "one"
+    )
+    #expect((await loop.run(first, policy: LoopPolicy())).status == .completed)
+    let recordsAfterFirst = sink.lineCount
+
+    // Same session, same turn id, a fresh run id: admission would allow it, the entry id must not.
+    let second = RunRequest(
+        sessionID: session, turnID: "turn-1", runID: "run-dup-turn-2",
+        executionID: "exec-2", model: "test-model", prompt: "one again"
+    )
+    let result = await loop.run(second, policy: LoopPolicy())
+
+    #expect(result.status == .failed)
+    #expect(result.cause == .runtimeFailure)
+    #expect(result.detail?.contains("already recorded") == true)
+    #expect(!result.terminalCommitted)
+    // Rejected before any durable write and before the provider was asked for anything.
+    #expect(sink.lineCount == recordsAfterFirst)
+    #expect(provider.requestCount == 1)
+    #expect(await runs.record(second.runID) == nil)
+    #expect(await store.entries(for: session).filter { $0.id == EntryID("turn-turn-1") }.count == 1)
+    #expect(await runs.openRunIDs.isEmpty)
+
+    // The session stays usable: a new turn id runs normally.
+    let third = RunRequest(
+        sessionID: session, turnID: "turn-2", runID: "run-dup-turn-3",
+        executionID: "exec-3", model: "test-model", prompt: "two"
+    )
+    let thirdResult = await loop.run(third, policy: LoopPolicy())
+    #expect(thirdResult.status == .completed)
+    #expect(await store.entries(for: session).filter { $0.segment.isMandatory }.map(\.id.rawValue) == ["turn-turn-2"])
 }

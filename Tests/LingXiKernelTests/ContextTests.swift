@@ -123,7 +123,7 @@ func CTX_002_appendOnlyManifest() async throws {
 
     let manifest = await registry.manifest()
     #expect(manifest.map(\.name) == ["a", "b"])
-    #expect(try await registry.epoch == 2)
+    #expect(await registry.epoch == 2)
 }
 
 @Test("the kernel keeps the instruction entry at the head of every request")

@@ -125,10 +125,23 @@ public actor AgentLoop {
             return rejectedResult(request, cause: .runtimeFailure, detail: "\(error)")
         }
 
+        // The user entry id must stay unique inside its session: the eviction reference line and any
+        // citation the model makes both point at entry ids, so a second run for the same Turn would
+        // make them ambiguous. Retrying a Turn means minting a new TurnID (LOOP-027).
+        let userEntryID = EntryID("turn-\(request.turnID.rawValue)")
+        if await store.entries(for: request.sessionID).contains(where: { $0.id == userEntryID }) {
+            await runs.discard(request.runID)
+            return rejectedResult(
+                request,
+                cause: .runtimeFailure,
+                detail: "turn \(request.turnID.rawValue) is already recorded in session \(request.sessionID.rawValue): entry id \(userEntryID.rawValue) would be duplicated"
+            )
+        }
+
         // The run exists in the journal only when this transaction committed. On failure the marker
         // is rolled back and the in-memory record discarded: no orphan terminal record is written.
         let userEntry = ContextEntry(
-            id: EntryID("turn-\(request.turnID.rawValue)"),
+            id: userEntryID,
             segment: .currentUser,
             role: .user,
             payload: .text(request.prompt)
@@ -170,6 +183,12 @@ public actor AgentLoop {
         }
 
         let committed = await commit(request, outcome: outcome)
+        // Release the provider's per-execution state on every path that reached the loop: completion,
+        // provider failure, cancellation and deadline all end here. Without this the provider keeps
+        // continuation state for a run that will never produce another event (LOOP-026).
+        if let provider = try? await router.resolve(model: request.model) {
+            await provider.endExecution(request.executionID)
+        }
         return RunResult(
             runID: request.runID,
             status: committed.status,

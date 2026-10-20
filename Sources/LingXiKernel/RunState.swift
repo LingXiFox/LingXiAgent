@@ -155,22 +155,6 @@ public actor RunRegistry {
         return true
     }
 
-    /// A run that was started but never terminalized is failed on restart and never re-queued:
-    /// replaying side effects is worse than reporting an unknown outcome (LOOP-003).
-    @discardableResult
-    public func recoverUnfinishedRuns(via log: DurableEventLog) async throws -> [RunID] {
-        var recovered: [RunID] = []
-        for id in openRunIDs {
-            do {
-                _ = try await terminalize(id, status: .failed, cause: .runtimeFailure, detail: "recovered after restart", via: log)
-                recovered.append(id)
-            } catch TerminalizationError.durabilityFailed {
-                continue
-            }
-        }
-        return recovered
-    }
-
     /// Journal replay hook: installs a record exactly as the journal says it was. Recovery owns this
     /// path and always builds a fresh registry, never reusing live state.
     func restore(id: RunID, sessionID: SessionID, turnID: TurnID, status: RunStatus, cause: TerminalCause, detail: String?) {
