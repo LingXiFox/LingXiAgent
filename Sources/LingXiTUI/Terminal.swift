@@ -41,7 +41,7 @@ enum Key: Equatable {
     case left, right, up, down
     case pageUp, pageDown, home, end
     case escape, interrupt, endOfInput, clearLine
-    case unknown, pasteStart, pasteEnd, commandPalette
+    case unknown, pasteStart, pasteEnd, commandPalette, newline, toggleThinking
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -81,9 +81,13 @@ final class KeyParser {
                     case "3~": keys.append(.delete)
                     case "5~": keys.append(.pageUp)
                     case "6~": keys.append(.pageDown)
+                    case "13;2u", "13;3u", "27;2;13~": keys.append(.newline)
                     default: keys.append(.unknown)
                     }
                     index = end + 1
+                } else if pending[index + 1] == 0x0D {
+                    keys.append(.newline)
+                    index += 2
                 } else {
                     keys.append(.escape)
                     index += 1
@@ -91,8 +95,10 @@ final class KeyParser {
             case 0x03: keys.append(.interrupt); index += 1
             case 0x04: keys.append(.endOfInput); index += 1
             case 0x10: keys.append(.commandPalette); index += 1
+            case 0x14: keys.append(.toggleThinking); index += 1
             case 0x15: keys.append(.clearLine); index += 1
-            case 0x0D, 0x0A: keys.append(.enter); index += 1
+            case 0x0D: keys.append(.enter); index += 1
+            case 0x0A: keys.append(.newline); index += 1
             case 0x7F, 0x08: keys.append(.backspace); index += 1
             case 0x09: keys.append(.tab); index += 1
             case 0x00...0x1F:
@@ -150,8 +156,7 @@ enum TextWidth {
         }
     }
 
-    /// Hard-wraps by display width, preserving existing newlines. Combining marks are counted as
-    /// zero width is not attempted; text arrives pre-composed from the IME.
+    /// Hard-wraps by grapheme display width, preserving existing newlines.
     static func wrap(_ text: String, width: Int) -> [String] {
         guard width > 0 else { return [text] }
         var lines: [String] = []

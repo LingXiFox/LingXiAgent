@@ -174,7 +174,8 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
 - capability `provider.deepseek`，模型 `deepseek-flash`，`POST https://api.deepseek.com/responses`。
 - 插件把 SSE 事件归一化为文本增量、推理增量、工具调用增量/完成、usage、终态与失败；
   Runtime 再映射为内核的 `ModelEvent`，因此内核不认识任何厂商事件名。
-- 凭据由 Core 从 `<data>/credentials.json`（能力 id → 环境变量名）解析，按次注入 invoke 载荷；
+- 凭据由 Core 按次从 macOS Keychain 获取并注入 invoke 载荷；`<data>/credentials.json` 仅保存能力 id → 环境变量名，
+  只有显式选择环境源才使用该映射；TUI 通过 `/auth <provider>` 的专用隐藏输入设置，不返回保存的值。
   Host 进程环境仍是 allow-list，密钥不落日志、不进 cassette。
 - 离线回归用脱敏 cassette（`vcr=<path>` 授权），真实 API 冒烟与录制由 `Scripts/deepseek-*.sh` 提供，
   CI 不依赖付费密钥。
@@ -189,7 +190,8 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
-- **TUI**：真实 PTY 中完成中文输入、流式回复、插件面板与干净退出；Core 常驻服务、协议见 `Docs/Frontend-Protocol.md`，一键打包 `Scripts/tui-setup.sh`。
+- **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器与 Keychain 认证；
+  真实 PTY 覆盖连续会话、草稿、隐藏输入与干净退出。快捷键及协议见 `Frontend-Protocol.md`，一键打包 `Scripts/tui-setup.sh`。
 - **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。模型路由按插件归属，启停/崩溃只影响所属插件（ADR-0004）。MiMo 已完成真实 API 录制（`mimo-chat-live.json`，离线按 digest 重放）；DeepSeek 等候真实录制。详见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
 
 尚未实现（技术待办，按建议顺序）：

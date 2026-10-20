@@ -75,3 +75,29 @@ QA-002 的反例已实测：恢复旧阻塞轮询后用例在 10.028 秒失败�
 CI `39424745991` 的轮询回归已通过，但暴露 `PLG_018_pluginCrashIsIsolated` 的提前断言：
 Host 退出与协调器异步移除 Hook 并非同一时刻。已改为等待 Hook 实际移除，仍按原 deadline 超时失败，
 不以 Host 已退出代替清理结果；生产代码没有为此改变。
+
+## 继续对标 OpenCode v2：编辑与会话
+
+参考 v2 分支的 [prompt](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/component/prompt/index.tsx)
+与 [session](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/session/index.tsx) 的交互分层，
+沿用现有 Swift 渲染器，不增加依赖、不改变 Kernel、Core 协议或 Plugin Host。
+
+- 多行编辑、Ctrl-J 换行、独立序列的 Shift/Alt-Enter；输入区最多显示 6 行，随光标滚动。
+- 带括号粘贴仅插入文字；CRLF/CR/LF 统一为换行。选择器粘贴只过滤，不能触发确认。
+- 本进程最多 100 条聊天输入召回并保留原草稿；命令和隐藏凭据不进入召回。
+- 思考与正式回答按到达顺序显示，默认折叠，Ctrl-T 展开；无持久化的推理不伪造历史。
+- 修复丢弃 `chat.send` 会话 ID 导致每轮新建会话的问题；生成中保留草稿并限制切换会话。
+- 调整用户消息底色、回答标识、会话标题与输入区信息层次；单行区域不允许原始换行破坏行定位。
+
+本机全量 `LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 swift test`：
+149 项中 147 实际通过、2 项有效凭据真实上游 smoke 按门禁跳过，零告警；
+证据 `.tmp/tui-v2-final-tests.log`。AUTH-003 额外断言凭据不能被 ↑ 召回。
+
+`TUI_003_editorAndSessionContinuity` 跨真实 PTY、Core 与 MiMo 回放：混合换行粘贴、行内编辑、草稿保留、
+历史往返、思考展开/收起、连续两轮、重启后的单会话两轮历史全部通过。
+临时注回丢弃会话 ID 的旧行为，该用例在“2 轮”断言失败（9.085 秒），见
+`.tmp/tui-v2-session-counterexample.log`；已恢复修复版本后执行上述全量回归。
+Trivy 对 `Sources/`、`ContractTests/` 的 secret scan 均无发现。
+
+有效 Key 的真实 MiMo 成功调用仍未复验；本轮模型输出使用 cassette。
+原生 Terminal 窗口的手工验收未执行；PTY 渲染预览不作为原生窗口截图。

@@ -119,7 +119,8 @@ private enum Pending {
     case hello
     case plugins
     case sessions
-    case history
+    case history(String)
+    case chat(String)
     case enable(String)
     case disable(String)
     case auth(String, String)
@@ -153,7 +154,32 @@ private struct App {
     var secretInput: SecretInput?
     var authBusy = false
     var pasting = false
+    var pastedText: [Character] = []
     var discardInputBatch = false
+    var showThinking = false
+    // Chat prompts only, bounded to this process. Commands and hidden input never enter recall.
+    var promptHistory: [String] = []
+    var historyIndex: Int?
+    var historyDraft: [Character] = []
+
+    mutating func insert(_ text: String) {
+        let prefix = String(input.prefix(cursor)) + text
+        input = Array(prefix + String(input.dropFirst(cursor)))
+        cursor = min(prefix.count, input.count)
+        historyIndex = nil
+    }
+
+    mutating func recall(_ direction: Int) {
+        guard !promptHistory.isEmpty else { return }
+        if historyIndex == nil {
+            guard direction < 0 else { return }
+            historyDraft = input
+        }
+        let next = min(promptHistory.count, max(0, (historyIndex ?? promptHistory.count) + direction))
+        input = next == promptHistory.count ? historyDraft : Array(promptHistory[next])
+        cursor = input.count
+        historyIndex = next == promptHistory.count ? nil : next
+    }
 
     var sessionTitle: String {
         guard let activeSession else { return "新会话" }
@@ -163,7 +189,7 @@ private struct App {
     var header: String {
         let modelName = model ?? "无模型"
         let pluginCount = plugins.filter(\.running).count
-        return "\(modelName)  ·  \(sessionTitle)  ·  插件 \(pluginCount)"
+        return "\(modelName)  ·  插件 \(pluginCount)"
     }
 
     var status: String {
@@ -172,7 +198,8 @@ private struct App {
         if authBusy { return "正在处理凭据…" }
         if cancelling { return "正在取消…" }
         if running { return "生成中…  Esc 取消" }
-        return "Enter 发送    / 命令    Ctrl-P 命令面板    PgUp/PgDn 滚动    Ctrl-C 退出"
+        if scroll > 0 { return "已向上滚动    PgUp/PgDn 翻页    End 回到底部    Ctrl-T 展开/收起思考" }
+        return "Enter 发送    Ctrl-J 换行    ↑↓ 历史    Ctrl-P 命令    Ctrl-T 思考    PgUp 滚动"
     }
 
     mutating func notice(_ text: String) {
@@ -239,8 +266,10 @@ func draw() {
         input: app.secretInput == nil ? app.input : [], cursor: app.secretInput == nil ? app.cursor : 0,
         header: app.header, status: app.status,
         workspace: FileManager.default.currentDirectoryPath,
+        sessionTitle: app.sessionTitle,
         feedback: app.feedback, picker: app.picker ?? slashPicker(),
-        auth: app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
+        auth: app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) },
+        showThinking: app.showThinking
     )
     output.write(Data(frame.utf8))
     needsRender = false
@@ -281,7 +310,19 @@ func handleReply(_ reply: FrontendReply) {
         app.picker = Picker(title: "切换会话", items: app.sessions.enumerated().map { index, session in
             MenuItem(title: session.title, detail: "\(session.turns) 轮 · \(session.id)", command: "/switch \(index + 1)")
         })
-    case .history:
+    case .chat(let text):
+        if reply.ok {
+            app.activeSession = reply.sessionID
+            app.runID = reply.runID
+        } else {
+            app.running = false
+            if app.messages.last?.role == .user { app.messages.removeLast() }
+            if app.input.isEmpty { app.input = Array(text); app.cursor = app.input.count }
+            app.error(reply.error ?? "发送失败")
+        }
+    case .history(let sessionID):
+        guard app.activeSession == sessionID else { return }
+        app.scroll = 0
         if let history = reply.history {
             app.messages = history.map { entry in
                 switch entry.kind {
@@ -332,28 +373,31 @@ func handleReply(_ reply: FrontendReply) {
 @MainActor
 func handleEvent(_ event: FrontendEvent) {
     switch event.event {
-    case "delta":
-        guard let delta = event.delta else { break }
-        if let last = app.messages.indices.last, app.messages[last].role == .assistant, app.messages[last].streaming {
+    case "delta", "reasoning":
+        guard app.running, event.runID == app.runID else { break }
+        let role: Role = event.event == "reasoning" ? .reasoning : .assistant
+        guard let delta = role == .reasoning ? event.reasoning : event.delta else { break }
+        if let last = app.messages.indices.last, app.messages[last].role == role, app.messages[last].streaming {
             app.messages[last].text += delta
         } else {
-            app.messages.append(Message(role: .assistant, text: delta, streaming: true))
+            if let last = app.messages.indices.last { app.messages[last].streaming = false }
+            app.messages.append(Message(role: role, text: delta, streaming: true))
         }
-        app.scroll = 0
     case "run.state":
         if let status = event.status, status == "running" {
             app.running = true
             app.cancelling = false
             app.runID = event.runID
+            app.activeSession = event.sessionID
         }
     case "run.terminal":
+        guard event.runID == app.runID else { break }
         app.running = false
         app.cancelling = false
         app.runID = nil
-        if let last = app.messages.indices.last, app.messages[last].streaming {
-            app.messages[last].streaming = false
-        }
+        for index in app.messages.indices { app.messages[index].streaming = false }
         if let sessions = event.sessions { app.sessions = sessions }
+        app.feedback = nil
         if event.status != "completed" {
             let cause = event.cause ?? "unknown"
             let detail = event.detail.map { " — \($0)" } ?? ""
@@ -397,9 +441,15 @@ func submit(_ text: String) {
         return
     }
     app.messages.append(Message(role: .user, text: trimmed))
+    if app.promptHistory.last != trimmed { app.promptHistory.append(trimmed) }
+    if app.promptHistory.count > 100 { app.promptHistory.removeFirst() }
+    app.historyIndex = nil
+    app.historyDraft = []
+    app.feedback = nil
     app.scroll = 0
+    app.running = true
     let id = client.send(.chatSend, sessionID: app.activeSession, model: model, text: trimmed)
-    app.pending[id] = nil
+    app.pending[id] = .chat(trimmed)
 }
 
 @MainActor
@@ -407,6 +457,10 @@ func runCommand(_ raw: String) {
     let parts = raw.split(separator: " ", maxSplits: 1).map(String.init)
     let command = parts[0]
     let argument = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespaces) : ""
+    if app.running, ["/switch", "/new", "/clear"].contains(command) {
+        app.notice("请先按 Esc 取消当前生成，再切换或清理会话。")
+        return
+    }
     switch command {
     case "/help":
         app.picker = Picker(title: "命令", items: commandItems)
@@ -420,10 +474,11 @@ func runCommand(_ raw: String) {
         let session = app.sessions[index - 1]
         app.activeSession = session.id
         let id = client.send(.sessionHistory, sessionID: session.id)
-        app.pending[id] = .history
+        app.pending[id] = .history(session.id)
     case "/new":
         app.activeSession = nil
         app.messages = []
+        app.scroll = 0
         app.notice("新会话。输入消息开始。")
     case "/models":
         app.picker = Picker(title: "切换模型", items: app.models.map {
@@ -465,6 +520,8 @@ func runCommand(_ raw: String) {
         app.messages = []
         app.scroll = 0
         app.notice("已清屏。会话历史仍保留；/new 开新会话。")
+    case "/thinking":
+        app.showThinking.toggle()
     case "/quit", "/exit":
         shutdown()
         exit(0)
@@ -480,6 +537,7 @@ private let commandItems: [MenuItem] = [
     .init(title: "插件", detail: "/plugins · 启用或禁用插件", command: "/plugins"),
     .init(title: "新建会话", detail: "/new · 开始新的对话", command: "/new"),
     .init(title: "清屏", detail: "/clear · 保留会话历史", command: "/clear"),
+    .init(title: "展开 / 收起思考", detail: "/thinking · Ctrl-T", command: "/thinking"),
     .init(title: "退出", detail: "/quit · 关闭 TUI", command: "/quit"),
 ]
 
@@ -494,8 +552,21 @@ func slashPicker() -> Picker? {
 
 @MainActor
 func handleKey(_ key: Key) {
-    if key == .pasteStart { app.pasting = true; return }
-    if key == .pasteEnd { app.pasting = false; return }
+    if key == .pasteStart { app.pasting = true; app.pastedText = []; return }
+    if key == .pasteEnd {
+        if app.pasting, !app.authBusy, !app.discardInputBatch, app.secretInput == nil {
+            let text = String(app.pastedText).replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+            if app.picker != nil {
+                app.picker?.query += text.replacingOccurrences(of: "\n", with: " ")
+                app.picker?.selected = 0
+            } else { app.insert(text) }
+        }
+        app.pasting = false
+        app.pastedText = []
+        needsRender = true
+        return
+    }
     if app.discardInputBatch { return }
     if app.authBusy {
         if key == .interrupt { shutdown(); exit(0) }
@@ -511,6 +582,8 @@ func handleKey(_ key: Key) {
         case .clearLine:
             app.secretInput?.characters = []
             app.secretInput?.invalidPaste = false
+        case .newline:
+            app.secretInput?.invalidPaste = true
         case .enter:
             if app.pasting { app.secretInput?.invalidPaste = true; break }
             guard let input = app.secretInput, !input.characters.isEmpty, !input.invalidPaste else {
@@ -527,6 +600,18 @@ func handleKey(_ key: Key) {
             app.secretInput = nil
             app.discardInputBatch = true
             app.notice("已取消凭据输入。")
+        default: break
+        }
+        needsRender = true
+        return
+    }
+    // Bracketed paste is text, never an action, even inside a picker.
+    if app.pasting {
+        switch key {
+        case .character(let character): app.pastedText.append(character)
+        case .enter: app.pastedText.append("\r")
+        case .newline: app.pastedText.append("\n")
+        case .tab: app.pastedText += [" ", " "]
         default: break
         }
         needsRender = true
@@ -556,9 +641,14 @@ func handleKey(_ key: Key) {
     switch key {
     case .character(let character):
         app.completionIndex = 0
-        if app.cursor >= app.input.count { app.input.append(character) } else { app.input.insert(character, at: app.cursor) }
-        app.cursor += 1
+        app.insert(String(character))
+    case .newline:
+        app.insert("\n")
     case .enter:
+        if app.running, !String(app.input).trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
+            app.notice("仍在生成中；草稿已保留，按 Esc 取消。")
+            break
+        }
         if let completion, completion.items.indices.contains(completion.selected) {
             app.input = []; app.cursor = 0; app.completionIndex = 0
             runCommand(completion.items[completion.selected].command)
@@ -577,14 +667,18 @@ func handleKey(_ key: Key) {
         app.input.remove(at: app.cursor)
     case .left: app.cursor = max(0, app.cursor - 1)
     case .right: app.cursor = min(app.input.count, app.cursor + 1)
-    case .home: app.cursor = 0
-    case .end: app.cursor = app.input.count
-    case .clearLine: app.input = []; app.cursor = 0
+    case .home:
+        app.cursor = (app.input[..<app.cursor].lastIndex(of: "\n").map { $0 + 1 }) ?? 0
+    case .end:
+        if app.scroll > 0 { app.scroll = 0 }
+        else { app.cursor = app.input[app.cursor...].firstIndex(of: "\n") ?? app.input.count }
+    case .clearLine: app.input = []; app.cursor = 0; app.historyIndex = nil
     case .up:
-        if completion != nil { app.completionIndex = max(0, app.completionIndex - 1) } else { app.scroll += 1 }
+        if completion != nil { app.completionIndex = max(0, app.completionIndex - 1) }
+        else { moveInputVertically(-1) }
     case .down:
         if let completion { app.completionIndex = min(completion.items.count - 1, app.completionIndex + 1) }
-        else { app.scroll = max(0, app.scroll - 1) }
+        else { moveInputVertically(1) }
     case .pageUp: app.scroll += 8
     case .pageDown: app.scroll = max(0, app.scroll - 8)
     case .escape:
@@ -592,7 +686,7 @@ func handleKey(_ key: Key) {
             _ = client.send(.runCancel, runID: runID)
             app.cancelling = true
         } else {
-            app.input = []; app.cursor = 0
+            app.input = []; app.cursor = 0; app.historyIndex = nil
         }
     case .interrupt:
         if app.running, let runID = app.runID {
@@ -606,6 +700,7 @@ func handleKey(_ key: Key) {
         if app.input.isEmpty { shutdown(); exit(0) }
     case .commandPalette:
         app.picker = Picker(title: "命令", items: commandItems)
+    case .toggleThinking: app.showThinking.toggle()
     case .tab:
         if let completion, completion.items.indices.contains(completion.selected) {
             app.input = Array(completion.items[completion.selected].command); app.cursor = app.input.count
@@ -616,6 +711,22 @@ func handleKey(_ key: Key) {
         break
     }
     needsRender = true
+}
+
+@MainActor
+func moveInputVertically(_ direction: Int) {
+    let start = (app.input[..<app.cursor].lastIndex(of: "\n").map { $0 + 1 }) ?? 0
+    let end = app.input[app.cursor...].firstIndex(of: "\n") ?? app.input.count
+    let column = app.cursor - start
+    if direction < 0, start > 0 {
+        let previous = (app.input[..<(start - 1)].lastIndex(of: "\n").map { $0 + 1 }) ?? 0
+        app.cursor = min(previous + column, start - 1)
+    } else if direction > 0, end < app.input.count {
+        let nextEnd = app.input[(end + 1)...].firstIndex(of: "\n") ?? app.input.count
+        app.cursor = min(end + 1 + column, nextEnd)
+    } else {
+        app.recall(direction)
+    }
 }
 
 // MARK: - loop

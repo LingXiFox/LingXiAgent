@@ -17,7 +17,7 @@ enum Theme {
     static let reset = "\u{1B}[0m" + charcoal.bg + cream.fg
 }
 
-enum Role: Equatable { case user, assistant, tool, system, error }
+enum Role: Equatable { case user, assistant, reasoning, tool, system, error }
 struct Message {
     var role: Role
     var text: String
@@ -56,12 +56,14 @@ struct Renderer {
     private var contentWidth: Int { max(1, min(96, width - 8)) }
 
     func frame(messages: [Message], scrollFromBottom: Int, input: [Character], cursor: Int,
-               header: String, status: String, workspace: String, feedback: Message?,
-               picker: Picker?, auth: AuthPrompt?) -> String {
+               header: String, status: String, workspace: String, sessionTitle: String, feedback: Message?,
+               picker: Picker?, auth: AuthPrompt?, showThinking: Bool) -> String {
         var screen = [String](repeating: "", count: height)
         let home = messages.isEmpty
         let left = max(0, (width - contentWidth) / 2)
-        screen[0] = "  " + Theme.fox.fg + "lingxi" + Theme.reset + "  " + Theme.dim.fg + clean(workspace)
+        let location = URL(fileURLWithPath: workspace).lastPathComponent
+        screen[0] = "  " + Theme.fox.fg + "lingxi" + Theme.reset + "  "
+            + (home ? "" : clean(sessionTitle) + "  ·  ") + Theme.dim.fg + clean(location)
         if height > 2 {
             screen[height - 1] = "  " + Theme.dim.fg + fit("\(status)", limit: width - 4)
         }
@@ -84,8 +86,16 @@ struct Renderer {
             }
             placePanel(panel, width: panelWidth, into: &screen)
         } else {
-            let composerRow = home ? max(3, min(height - 8, height / 2)) : max(1, height - 7)
-            if home, height >= 16 {
+            let panelWidth = home ? min(76, contentWidth) : contentWidth
+            let editor = renderInput(input, cursor: cursor, limit: max(1, panelWidth - 5))
+            let maxLines = max(1, min(6, height - 10))
+            let startLine = max(0, min(editor.cursorRow - maxLines + 1, editor.lines.count - maxLines))
+            let entries = input.isEmpty ? [Theme.dim.fg + "输入消息，或按 / 选择命令"]
+                : Array(editor.lines.dropFirst(startLine).prefix(maxLines))
+            let composerHeight = entries.count + 3
+            let composerRow = home ? max(1, min(height - composerHeight - 3, height / 2))
+                : max(1, height - composerHeight - 3)
+            if home, height >= 16, composerRow >= 7 {
                 let logoRow = max(2, composerRow - 5)
                 screen[logoRow] = centered(Theme.cream.fg + "L I N G X I", cells: 11)
                 screen[logoRow + 2] = centered(Theme.dim.fg + "灵犀 · 2.0", cells: 11)
@@ -93,7 +103,7 @@ struct Renderer {
                 var body: [String] = []
                 for message in messages {
                     if !body.isEmpty { body.append("") }
-                    body += render(message)
+                    body += render(message, showThinking: showThinking)
                 }
                 let available = max(0, composerRow - 3)
                 let end = max(0, body.count - min(max(0, scrollFromBottom), max(0, body.count - available)))
@@ -102,25 +112,18 @@ struct Renderer {
                     screen[2 + offset] = String(repeating: " ", count: left) + line
                 }
             }
-            let panelWidth = home ? min(76, contentWidth) : contentWidth
             let composerLeft = max(0, (width - panelWidth) / 2)
             let rail = Theme.fox.fg + "┃" + Theme.charcoalRaised.bg + Theme.cream.fg
-            let entry = input.isEmpty
-                ? Theme.dim.fg + "输入消息，或按 / 选择命令"
-                : renderInput(input, cursor: cursor, limit: max(1, panelWidth - 5))
-            let panel = [
-                rail + String(repeating: " ", count: max(0, panelWidth - 1)),
-                rail + "  " + fit(entry, limit: panelWidth - 4),
-                rail,
-                rail + "  " + Theme.dim.fg + fit(clean(header), limit: panelWidth - 4),
-            ]
+            let lineCount = editor.lines.count > 1 ? "  ·  \(editor.lines.count) 行" : ""
+            let panel = [rail] + entries.map { rail + "  " + fit($0, limit: panelWidth - 4) }
+                + [rail, rail + "  " + Theme.dim.fg + fit(clean(header) + lineCount, limit: panelWidth - 4)]
             for (offset, line) in panel.enumerated() where composerRow + offset < height - 1 {
                 screen[composerRow + offset] = String(repeating: " ", count: composerLeft) + paddedPanel(line, cells: panelWidth)
             }
             if let feedback {
-                let available = max(0, height - composerRow - 6)
+                let available = max(0, height - composerRow - composerHeight - 2)
                 for (offset, line) in TextWidth.wrap(clean(feedback.text), width: panelWidth).prefix(available).enumerated() {
-                    screen[composerRow + 5 + offset] = String(repeating: " ", count: composerLeft)
+                    screen[composerRow + composerHeight + 1 + offset] = String(repeating: " ", count: composerLeft)
                         + (feedback.role == .error ? Theme.error.fg : Theme.dim.fg) + line
                 }
             }
@@ -177,13 +180,19 @@ struct Renderer {
         return clipped + Theme.charcoalRaised.bg + String(repeating: " ", count: max(0, cells - visibleWidth(clipped))) + Theme.reset
     }
 
-    private func render(_ message: Message) -> [String] {
+    private func render(_ message: Message, showThinking: Bool) -> [String] {
         let text = clean(message.text)
         switch message.role {
         case .user:
-            return [Theme.dim.fg + "你"] + TextWidth.wrap(text, width: contentWidth).map { Theme.cream.fg + $0 }
+            return [Theme.dim.fg + "你"] + TextWidth.wrap(text, width: max(1, contentWidth - 4)).map {
+                paddedPanel(Theme.charcoalRaised.bg + Theme.dim.fg + "┃ " + Theme.cream.fg + $0, cells: contentWidth)
+            }
         case .assistant:
-            return [Theme.fox.fg + "灵犀"] + markdownLines(text, width: contentWidth, streaming: message.streaming)
+            return [Theme.fox.fg + "◆ 灵犀"] + markdownLines(text, width: contentWidth, streaming: message.streaming)
+        case .reasoning:
+            let label = message.streaming ? "思考中…" : "思考"
+            return [Theme.dim.fg + (showThinking ? "▾ " : "▸ ") + label + "  ·  Ctrl-T"]
+                + (showThinking ? TextWidth.wrap(text, width: max(1, contentWidth - 2)).map { Theme.dim.fg + "│ " + $0 } : [])
         case .tool:
             return TextWidth.wrap("· " + text, width: contentWidth).map { Theme.dim.fg + $0 }
         case .system, .error:
@@ -258,18 +267,27 @@ struct Renderer {
         return result + Theme.cream.fg
     }
 
-    private func renderInput(_ input: [Character], cursor: Int, limit: Int) -> String {
+    private func renderInput(_ input: [Character], cursor: Int, limit: Int) -> (lines: [String], cursorRow: Int) {
         let index = min(max(0, cursor), input.count)
-        var start = 0
-        while start < index, TextWidth.width(String(input[start..<index])) >= limit { start += 1 }
-        var text = ""
-        for position in start..<input.count {
-            if position == index { text += "\u{1B}[7m" }
-            text += String(input[position])
-            if position == index { text += "\u{1B}[27m" }
+        var lines = [""]
+        var cells = 0
+        var cursorRow = 0
+        for position in 0...input.count {
+            if position == input.count, position != index { break }
+            let character: Character = position < input.count ? input[position] : " "
+            let newline = character == "\n"
+            let cell = newline ? 1 : TextWidth.width(String(character))
+            if !newline, cells + cell > limit, cells > 0 { lines.append(""); cells = 0 }
+            if position == index {
+                cursorRow = lines.count - 1
+                lines[lines.count - 1] += "\u{1B}[7m" + (newline ? " " : String(character)) + "\u{1B}[27m"
+            } else if !newline, position < input.count {
+                lines[lines.count - 1].append(character)
+            }
+            if newline { lines.append(""); cells = 0 }
+            else { cells += cell }
         }
-        if index == input.count { text += "\u{1B}[7m \u{1B}[27m" }
-        return text
+        return (lines, cursorRow)
     }
 
     private func clean(_ text: String) -> String {
@@ -293,9 +311,10 @@ struct Renderer {
                 if character == "m" { escape = false }
                 continue
             }
-            let count = TextWidth.width(String(character))
+            let printable = character.isNewline ? " " : String(character)
+            let count = TextWidth.width(printable)
             guard cells + count <= max(0, limit) else { break }
-            output.append(character)
+            output += printable
             cells += count
         }
         return output

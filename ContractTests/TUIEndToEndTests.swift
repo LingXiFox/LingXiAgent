@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LingXiFrontendProtocol
 import LingXiKernel
 import LingXiPluginABI
 import LingXiPluginRuntime
@@ -82,17 +83,92 @@ final class PTYProcess: @unchecked Sendable {
     var status: Int32? { process.isRunning ? nil : process.terminationStatus }
 }
 
-func seedTUI(_ directory: URL) async throws {
+func seedTUI(_ directory: URL, turns: Int = 1, slow: Bool = false) async throws {
     let bundle = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
         dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
     )
-    let cassette = Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")!
+    var cassette = Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")!
+    if turns > 1 {
+        var fixture = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: cassette)) as? [String: Any])
+        let exchanges = try #require(fixture["exchanges"] as? [[String: Any]])
+        fixture["exchanges"] = Array(repeating: exchanges, count: turns).flatMap { $0 }
+        cassette = directory.appendingPathComponent("tui-cassette.json")
+        try JSONSerialization.data(withJSONObject: fixture).write(to: cassette)
+    }
     let registry = try PluginRegistry(configURL: directory.appendingPathComponent("plugins.json"))
     try await registry.upsert(.init(
         bundleID: "site.lingxi.provider.mimo", version: "1.0.0", bundlePath: bundle.url.path,
-        enabled: true, grants: ["vcr=\(cassette.path)"]
+        enabled: true, grants: ["vcr=\(cassette.path)"] + (slow ? ["fault.slow"] : [])
     ))
+}
+
+@Test("TUI-003 multiline paste stays a draft, reasoning toggles, and follow-up prompts reuse the session", .enabled(if: ProcessInfo.processInfo.environment["LINGXI_RUN_TUI_PTY_TEST"] == "1"))
+func TUI_003_editorAndSessionContinuity() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tui-editor-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedTUI(directory, turns: 2, slow: true)
+    var environment = ProcessInfo.processInfo.environment
+    environment["LINGXI_DATA_DIR"] = directory.path
+    environment["LINGXI_PLUGIN_POLICY"] = "development"
+    environment["LINGXI_CORE_HOST"] = builtProduct("LingXiCoreHost").path
+    environment["LINGXI_KEYCHAIN_SERVICE"] = "site.lingxi.credentials.test.\(UUID().uuidString)"
+    environment.removeValue(forKey: "LINGXI_CREDENTIAL_SOURCE")
+    environment.removeValue(forKey: "MIMO_API_KEY")
+    let tui = try PTYProcess(environment: environment)
+    defer { tui.terminate() }
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") })
+
+    // Mixed terminal newlines normalize once; none may submit or invoke the pasted command.
+    let prompt = "第一行 e\u{301}🙂\n/quit\n第三行"
+    tui.write("\u{1B}[200~第一行 e\u{301}🙂\r\n/quit\n第三行\u{1B}[201~")
+    try #require(await waitUntil { tui.screenText.contains("3 行") && tui.screenText.contains("第三行") })
+    #expect(tui.screenText.contains("L I N G X I"))
+    #expect(tui.isRunning)
+    #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("events.jsonl").path))
+    // Edit the previous logical line using real cursor keys, then undo that insertion.
+    tui.write("\u{1B}[A\u{1B}[H!\u{7F}\u{1B}[B\u{1B}[F")
+    tui.write("\r")
+    try #require(await waitUntil { tui.screenText.contains("生成中") })
+    tui.write("后续草稿\r")
+    try #require(await waitUntil { tui.screenText.contains("草稿已保留") })
+    try #require(await waitUntil { tui.screenText.contains("pong") && !tui.screenText.contains("生成中") })
+    #expect(!tui.screenText.contains("Simple request."))
+    tui.write("\u{14}")
+    try #require(await waitUntil { tui.screenText.contains("Simple request.") })
+    tui.write("\u{14}")
+    try #require(await waitUntil { !tui.screenText.contains("Simple request.") })
+
+    // Prompt recall restores an unsent draft on the way back down.
+    tui.write("\u{1B}[A")
+    try #require(await waitUntil { tui.screenText.contains("3 行") })
+    tui.write("\u{1B}[B")
+    try #require(await waitUntil { tui.screenText.contains("后续草稿") })
+    tui.write("\u{15}第二轮\u{0A}继续\u{1B}[13;2u测试")
+    try #require(await waitUntil { tui.screenText.contains("3 行") && tui.screenText.contains("测试") })
+    tui.write("\r")
+    try #require(await waitUntil { tui.screenText.components(separatedBy: "pong").count == 3 && !tui.screenText.contains("生成中") })
+    tui.write("/sessions\r")
+    try #require(await waitUntil { tui.screenText.contains("2 轮") && tui.screenText.contains("esc 关闭") })
+    // A title containing newlines must never write a raw LF into a cell-addressed row.
+    #expect(!tui.latestFrame.contains("\n"))
+    tui.write("\u{1B}")
+    try #require(await waitUntil { !tui.screenText.contains("esc 关闭") })
+    tui.write("/quit\r")
+    try #require(await waitUntil { !tui.isRunning })
+    #expect(tui.status == 0)
+
+    // Verify the durable Core state after a fresh process starts, rather than trusting the label.
+    let core = try ProtocolCore(dataDirectory: directory)
+    defer { core.terminate() }
+    let hello = try #require(await core.waitReply(core.send(.hello)))
+    let sessions = try #require(hello.sessions)
+    #expect(sessions.count == 1)
+    #expect(sessions.first?.turns == 2)
+    let session = try #require(sessions.first)
+    let history = try #require(await core.waitReply(core.send(.sessionHistory, sessionID: session.id)))
+    #expect(history.history?.filter { $0.role == "user" }.map(\.text) == [prompt, "第二轮\n继续\n测试"])
 }
 
 @Test("TUI-001 the real TUI chats with MiMo over a PTY, shows plugins and exits cleanly", .enabled(if: ProcessInfo.processInfo.environment["LINGXI_RUN_TUI_PTY_TEST"] == "1"))
@@ -174,6 +250,9 @@ func TUI_002_frameAndPickers() async throws {
 
     tui.write("\u{10}切换模型\r")
     try #require(await waitUntil { tui.screenText.contains("mimo-v2.6-pro") && tui.screenText.contains("esc 关闭") })
+    tui.write("\u{1B}[200~pro\r\u{1B}[201~")
+    try #require(await waitUntil { tui.screenText.contains("› pro ") })
+    #expect(tui.screenText.contains("esc 关闭"))
     tui.write("\u{1B}[B\r")
     try #require(await waitUntil { tui.screenText.contains("模型已切换为 mimo-v2.6-pro") })
     #expect(!tui.screenText.contains("esc 关闭"))
