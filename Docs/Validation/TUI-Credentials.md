@@ -52,3 +52,21 @@
 - 初版凭据代码 `58a70a3` 的 macOS CI 已全通过：
   [39420969190](https://github.com/LingXiFox/LingXiAgent/actions/runs/39420969190)。新版 UI 另行执行 CI。
 - 有效 Key 的真实 MiMo 成功响应仍待用户在隐藏输入中配置，不能拿 401 或 cassette 作为成功调用证据。
+
+
+## macOS CI 调度问题
+
+新版首轮 CI `39423513585` 未通过：`LOOP_023_disableDuringInFlightProviderRequest` 等待 `inFlightRequestCount > 0`
+超时。CI 的 SwiftPM 将全部 147 项放在同一个测试进程，本机 Swift 6.4 分为三个进程。
+公共 `waitUntil` 在 async 循环里调用 `usleep`，对同步条件的轮询可独占协作线程，阻止被观察的 Task 启动。
+已把 deadline 轮询间隔改为可挂起的 Task.sleep；保留条件与截止时间，不扩大超时、不跳过测试。
+对应 QA-002。修复后重新执行本机和远端验证，首轮失败仍保留为失败证据。
+
+
+QA-002 的反例已实测：恢复旧阻塞轮询后用例在 10.028 秒失败，异步轮询版本在 0.027 秒通过。
+随后全量启用 PTY/Keychain 的压力运行发现 TUI-002 的 5 秒启动断言短于实际插件 30 秒握手预算；
+只把两处进程启动检查对齐该已有预算，输入/状态/重绘断言仍保留原截止时间。
+
+
+最终本机全量运行 `LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 swift test`：
+148 项中 146 实际通过，仅 2 项有效凭据上游 smoke 按门禁跳过；见 `.tmp/tui-final-complete.log`。

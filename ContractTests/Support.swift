@@ -162,7 +162,8 @@ func waitUntil(timeout: Duration = .seconds(5), _ condition: () async -> Bool) a
     )
     while Date() < deadline {
         if await condition() { return true }
-        usleep(10_000)
+        // Deadline polling must suspend; blocking a cooperative worker can starve the task being observed.
+        try? await Task.sleep(for: .milliseconds(10))
     }
     return await condition()
 }

@@ -152,7 +152,8 @@ func TUI_002_frameAndPickers() async throws {
     environment.removeValue(forKey: "LINGXI_CREDENTIAL_SOURCE")
     let tui = try PTYProcess(environment: environment)
     defer { tui.terminate() }
-    try #require(await waitUntil { tui.screenText.contains("mimo-v2.6-flash") })
+    // Core boot includes the existing 30-second plugin handshake.
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") })
     #expect(tui.screenText.contains("L I N G X I"))
 
     tui.write("/auth mimo")
@@ -194,7 +195,7 @@ func TUI_002_frameAndPickers() async throws {
     // A separate small PTY checks that row addressing never relies on an 80-column fallback.
     let narrow = try PTYProcess(environment: environment, columns: 40, rows: 12)
     defer { narrow.terminate() }
-    try #require(await waitUntil { narrow.screenText.contains("mimo-v2.6-flash") })
+    try #require(await waitUntil(timeout: .seconds(30)) { narrow.screenText.contains("mimo-v2.6-flash") })
     #expect(narrow.latestFrame.components(separatedBy: "\u{1B}[2K").count == 13)
     narrow.write("/quit\r")
     #expect(await waitUntil { !narrow.isRunning })
