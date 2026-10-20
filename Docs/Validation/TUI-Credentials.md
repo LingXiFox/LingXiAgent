@@ -70,3 +70,8 @@ QA-002 的反例已实测：恢复旧阻塞轮询后用例在 10.028 秒失败�
 
 最终本机全量运行 `LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 swift test`：
 148 项中 146 实际通过，仅 2 项有效凭据上游 smoke 按门禁跳过；见 `.tmp/tui-final-complete.log`。
+
+
+CI `39424745991` 的轮询回归已通过，但暴露 `PLG_018_pluginCrashIsIsolated` 的提前断言：
+Host 退出与协调器异步移除 Hook 并非同一时刻。已改为等待 Hook 实际移除，仍按原 deadline 超时失败，
+不以 Host 已退出代替清理结果；生产代码没有为此改变。

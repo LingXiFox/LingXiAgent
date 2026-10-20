@@ -191,7 +191,7 @@ func PLG_018_pluginCrashIsIsolated() async throws {
     #expect(await coordinator.isRunning(bundleID: swiftPluginID))
     #expect(await pipeline.mountedHandlerIDs.contains("\(swiftPluginID).contextProbe"))
     // The dead plugin's route is cleaned up as part of crash handling, not left dangling.
-    #expect(await pipeline.mountedHandlerIDs.contains("\(cPluginID).cProbe") == false)
+    #expect(await waitUntil { await pipeline.mountedHandlerIDs.contains("\(cPluginID).cProbe") == false })
 
     // The registry recorded the failure so a restart does not revive it; disable is idempotent.
     try await coordinator.disable(bundleID: cPluginID)
