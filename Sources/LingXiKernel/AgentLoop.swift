@@ -148,6 +148,11 @@ public actor AgentLoop {
             return rejectedResult(request, cause: .runtimeFailure, detail: detail)
         }
         await store.append(userEntry, to: request.sessionID)
+        // A failed run may have persisted its tool-call entry but not its result. Repair the
+        // pairing before the next request so one failed Run cannot poison the whole session. The
+        // healing is memory-only and deterministic: a restart re-derives the same entries from the
+        // journal (KernelRecovery applies the same rules).
+        await healDanglingToolBatches(for: request.sessionID)
 
         let outcome: (RunStatus, TerminalCause, String?)
         do {
@@ -309,6 +314,69 @@ public actor AgentLoop {
         }
     }
 
+    /// Deterministic in-process healing for a call entry whose result never landed. Writes memory
+    /// only: the journal still says exactly what happened, so replay after a restart rebuilds the
+    /// same history.
+    private func healDanglingToolBatches(for sessionID: SessionID) async {
+        let entries = await store.entries(for: sessionID)
+        let resultUnits = Set(entries.filter { !$0.payload.toolOutcomes.isEmpty }.compactMap(\.unit))
+        var missing: [(callEntry: ContextEntry, unit: String)] = []
+        for entry in entries where !entry.payload.toolCalls.isEmpty {
+            guard let unit = entry.unit, !resultUnits.contains(unit) else { continue }
+            missing.append((entry, unit))
+        }
+        guard !missing.isEmpty else { return }
+
+        let events = (try? await log.events()) ?? []
+        var startedBatches: Set<BatchID> = []
+        var settledOutcomes: [BatchID: [ToolOutcome]] = [:]
+        for event in events {
+            switch event {
+            case .batchStarted(_, let batchID, _):
+                startedBatches.insert(batchID)
+            case .batchSettled(_, let batchID, let outcomes):
+                settledOutcomes[batchID] = outcomes
+            default:
+                break
+            }
+        }
+
+        var healed = entries
+        for (callEntry, unit) in missing {
+            let batchID = BatchID(unit)
+            let resultEntry: ContextEntry
+            if let outcomes = settledOutcomes[batchID] {
+                resultEntry = ContextEntry(
+                    id: EntryID("result-\(unit)"),
+                    segment: .history,
+                    role: .tool,
+                    payload: .toolResult(outcomes: outcomes),
+                    unit: unit
+                )
+            } else {
+                let note = startedBatches.contains(batchID)
+                    ? "executionStateUnknown: the batch may have partially executed before the run failed; verificationRequired before retrying"
+                    : "batch was not started; no side effect occurred; safe to retry"
+                let outcomes = callEntry.payload.toolCalls.map {
+                    ToolOutcome(callID: $0.callID, content: note, isError: true, effect: .unknown)
+                }
+                resultEntry = ContextEntry(
+                    id: EntryID("result-\(unit)"),
+                    segment: .history,
+                    role: .tool,
+                    payload: .toolResult(outcomes: outcomes),
+                    unit: unit
+                )
+            }
+            if let index = healed.firstIndex(where: { $0.id == callEntry.id }) {
+                healed.insert(resultEntry, at: index + 1)
+            } else {
+                healed.append(resultEntry)
+            }
+        }
+        await store.replace(healed, for: sessionID)
+    }
+
     private func assemble(_ request: RunRequest) async throws -> [ContextEntry] {
         var entries: [ContextEntry] = [
             ContextEntry(id: "instructions", segment: .immutableInstructions, role: .system, payload: .text(instructions))
@@ -412,6 +480,15 @@ public actor AgentLoop {
         state: inout LoopState,
         allowParallel: Bool
     ) async throws {
+        // Validate the batch before anything becomes durable: a duplicate call id would make the
+        // call entry itself an invalid request forever.
+        var seenCallIDs: Set<ToolCallID> = []
+        for call in calls {
+            guard seenCallIDs.insert(call.callID).inserted else {
+                throw ToolBatchError.duplicateCallID(call.callID)
+            }
+        }
+
         let batchID = BatchID("\(request.runID.rawValue)-batch\(state.steps)")
         let callEntry: ContextEntry
         if text.isEmpty {

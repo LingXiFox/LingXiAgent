@@ -551,3 +551,88 @@ func LOOP_006_providerCancellationIsProviderFailure() async throws {
     #expect(result.detail?.contains("CancellationError") == true)
     #expect(result.terminalCommitted)
 }
+
+@Test("LOOP-005 a duplicate tool call id never poisons the session history")
+func LOOP_005_duplicateCallIDDoesNotPoisonHistory() async throws {
+    let registry = ToolRegistry()
+    try await registerEchoTool(registry)
+    let store = SessionStore()
+    let log = try DurableEventLog(sink: MemorySink())
+    let duplicated: [ModelEvent] = [
+        .started,
+        .toolCallStarted(ToolCallStart(callID: "dup", toolName: "echo")),
+        .toolCallCompleted(makeCall("dup")),
+        .toolCallCompleted(makeCall("dup")),
+        .completed(.toolCalls),
+    ]
+    let provider = ScriptedProvider(scripts: [duplicated, completed("recovered")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), registry: registry, log: log, store: store)
+    let session = SessionID("session-duplicate-call")
+
+    let first = RunRequest(
+        sessionID: session, turnID: "turn-1", runID: "run-dup-1",
+        executionID: "exec-1", model: "test-model", prompt: "first"
+    )
+    let firstResult = await loop.run(first, policy: LoopPolicy())
+    #expect(firstResult.status == .failed)
+    #expect(firstResult.cause == .streamProtocolViolation)
+
+    // The invalid batch must not be persisted: only the user entry remains.
+    let entriesAfterFirst = await store.entries(for: session)
+    #expect(entriesAfterFirst.count == 1)
+    #expect(entriesAfterFirst.allSatisfy { $0.payload.toolCalls.isEmpty })
+
+    // The session is still usable for the next turn.
+    let second = RunRequest(
+        sessionID: session, turnID: "turn-2", runID: "run-dup-2",
+        executionID: "exec-2", model: "test-model", prompt: "second"
+    )
+    let secondResult = await loop.run(second, policy: LoopPolicy())
+    #expect(secondResult.status == .completed)
+    #expect(secondResult.assistantText == "recovered")
+}
+
+@Test("LOOP-025 an in-process dangling tool batch is healed before the next request")
+func LOOP_025_danglingBatchHealedInProcess() async throws {
+    let registry = ToolRegistry()
+    try await registerEchoTool(registry)
+    let log = try DurableEventLog(sink: MemorySink())
+    let store = SessionStore()
+    let session = SessionID("session-heal")
+    let batchID = BatchID("ghost-run-batch1")
+    let call = makeCall("c1")
+    // Simulate a run that persisted its call entry and durable dispatch intent but died before the
+    // result (the same crash image KernelRecovery heals on restart).
+    let callEntry = ContextEntry(
+        id: EntryID("call-ghost-run-batch1"),
+        segment: .history,
+        role: .assistant,
+        payload: .toolCall(requests: [call]),
+        unit: batchID.rawValue
+    )
+    await store.append(callEntry, to: session)
+    try await log.append(.batchStarted(RunID("ghost-run"), batchID, [call]))
+
+    let provider = ScriptedProvider(scripts: [completed("recovered")])
+    let loop = await makeLoop(provider: provider, executor: RecordingExecutor(), registry: registry, log: log, store: store)
+    let request = RunRequest(
+        sessionID: session, turnID: "turn-heal", runID: "run-heal",
+        executionID: "exec-heal", model: "test-model", prompt: "next"
+    )
+
+    let result = await loop.run(request, policy: LoopPolicy())
+    #expect(result.status == .completed)
+
+    let entries = await store.entries(for: session)
+    let healedResult = try #require(entries.first { $0.unit == batchID.rawValue && !$0.payload.toolOutcomes.isEmpty })
+    #expect(healedResult.role == .tool)
+    #expect(healedResult.payload.toolOutcomes.first?.isError == true)
+    #expect(healedResult.payload.toolOutcomes.first?.content.contains("executionStateUnknown") == true)
+    try ContextRequestValidator.validate(
+        [ContextEntry(id: "instructions", segment: .immutableInstructions, role: .system, payload: .text("sys"))] + entries,
+        placement: .immediatelyAfterCall
+    )
+    // The request that reached the provider already contained the healed pairing.
+    let sent = try #require(provider.request(at: 0))
+    #expect(sent.entries.contains { $0.unit == batchID.rawValue && !$0.payload.toolOutcomes.isEmpty })
+}
