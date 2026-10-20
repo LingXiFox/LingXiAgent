@@ -91,6 +91,15 @@ public final class PluginProcess: @unchecked Sendable {
         }
     }
 
+    /// Drains the bounded notification queue (plugin → host → core events).
+    public func drainNotices() -> [String] {
+        lock.lock()
+        let drained = notices
+        notices.removeAll()
+        lock.unlock()
+        return drained
+    }
+
     public var currentTermination: Termination? {
         lock.lock(); defer { lock.unlock() }; return terminated
     }
@@ -198,7 +207,10 @@ public final class PluginProcess: @unchecked Sendable {
         }
         // A frame with no id is a notification (capabilities.changed and friends).
         lock.lock()
+        // Bounded, drop-oldest: a plugin that emits faster than the Core consumes must not grow the
+        // parent without limit. The cap is the backpressure signal the provider path will surface.
         notices.append(String(decoding: line, as: UTF8.self))
+        if notices.count > 256 { notices.removeFirst(notices.count - 256) }
         lock.unlock()
     }
 

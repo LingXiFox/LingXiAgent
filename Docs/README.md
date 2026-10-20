@@ -35,7 +35,7 @@
 
 ## 状态
 
-**阶段 1（含 1.1、1.2）已验收；阶段 2 最小动态插件闭环已实现并验收（114 tests，C/Swift 双语言插件、真进程与崩溃隔离），验收记录 `Validation/Phase-2.md`。**
+**阶段 1（含 1.1、1.2）已验收；阶段 2 最小动态插件闭环与 Phase 2.1（产品接线、安全边界、取消传播）已实现并验收（120 tests），验收记录 `Validation/Phase-2.md`、`Validation/Phase-2.1.md`。`LingXiCoreHost` 启动时恢复已启用插件并把 Hook 管线接到真实 AgentLoop；默认签名策略为 restricted。**
 
 阶段 1 交付的是可运行事实，不是计划：
 

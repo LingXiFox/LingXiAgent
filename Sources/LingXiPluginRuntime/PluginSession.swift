@@ -27,12 +27,20 @@ public actor PluginSession {
     private var process: PluginProcess?
     private let clock: any MonotonicClock
     private let timeout: Duration
+    private let handshakeTimeout: Duration
 
-    public init(bundlePath: String, hostExecutableURL: URL, clock: any MonotonicClock = SystemMonotonicClock(), timeout: Duration = .seconds(5)) {
+    public init(
+        bundlePath: String,
+        hostExecutableURL: URL,
+        clock: any MonotonicClock = SystemMonotonicClock(),
+        timeout: Duration = .seconds(5),
+        handshakeTimeout: Duration = .seconds(5)
+    ) {
         self.bundlePath = bundlePath
         self.hostExecutableURL = hostExecutableURL
         self.clock = clock
         self.timeout = timeout
+        self.handshakeTimeout = handshakeTimeout
     }
 
     public var isRunning: Bool { state == .running && (process?.isRunning ?? false) }
@@ -52,7 +60,7 @@ public actor PluginSession {
         var load = HostRequest(id: nil, method: .load)
         load.bundlePath = bundlePath
         load.policy = policy.rawValue
-        let loaded = try await send(load, process: process)
+        let loaded = try await send(load, process: process, timeout: handshakeTimeout)
 
         guard loaded.ok, let declared = loaded.capabilities else {
             let reason = loaded.fault.map { "\($0.code): \($0.message)" } ?? "load refused without a fault"
@@ -65,7 +73,7 @@ public actor PluginSession {
 
         var start = HostRequest(id: nil, method: .start)
         start.grantedPermissions = grantedPermissions
-        let started = try await send(start, process: process)
+        let started = try await send(start, process: process, timeout: handshakeTimeout)
         guard started.ok else {
             let reason = started.fault.map { "\($0.code): \($0.message)" } ?? "start refused without a fault"
             process.terminate()
@@ -76,17 +84,36 @@ public actor PluginSession {
         state = .running
     }
 
-    public func invoke(capability: String, payload: JSONValue) async throws -> JSONValue {
+    public func invoke(capability: String, payload: JSONValue, requestID: String) async throws -> JSONValue {
         guard let process, state == .running else { throw SessionError.notRunning }
         var request = HostRequest(id: nil, method: .invoke)
         request.capability = capability
         request.payload = payload
+        request.requestID = requestID
         let reply = try await send(request, process: process)
         guard reply.ok, let body = reply.payload else {
             let reason = reply.fault.map { "\($0.code): \($0.message)" } ?? "invoke failed without a fault"
             throw SessionError.hostFailed(reason)
         }
         return body
+    }
+
+    /// Names one in-flight call and asks the host to interrupt it. The host forwards the id to the
+    /// plugin's `cancel`, so a running provider request can actually stop.
+    /// Liveness check used by supervision and by the cancellation test: if this returns promptly
+    /// while an invocation is running, the host is not blocked by that invocation.
+    public func ping(timeout: Duration = .seconds(1)) async -> Bool {
+        guard let process, state == .running else { return false }
+        var request = HostRequest(id: nil, method: .ping)
+        request.id = nil
+        return (try? await process.send(request, timeout: timeout))?.ok ?? false
+    }
+
+    public func cancel(requestID: String, timeout: Duration = .seconds(1)) async {
+        guard let process, state == .running else { return }
+        var request = HostRequest(id: nil, method: .cancel)
+        request.requestID = requestID
+        _ = try? await process.send(request, timeout: timeout)
     }
 
     /// Stop, dispose, close the pipe and wait for the process to actually go away; a host that will
@@ -111,9 +138,20 @@ public actor PluginSession {
         state = .disabled
     }
 
-    private func send(_ request: HostRequest, process: PluginProcess) async throws -> HostReply {
+    private func send(_ request: HostRequest, process: PluginProcess, timeout: Duration? = nil) async throws -> HostReply {
         do {
-            return try await process.send(request, timeout: timeout)
+            return try await process.send(request, timeout: timeout ?? self.timeout)
+        } catch let error as PluginProcess.PluginProcessError {
+            // A missed deadline or a caller cancellation is one call's problem; a dead host is the
+            // session's. Only the latter changes the state, so a timeout does not masquerade as a
+            // crashed plugin.
+            if case .exited = error {
+                state = .failed
+            } else if let requestID = request.requestID {
+                // Do not leave the plugin computing a result nobody will read.
+                await cancel(requestID: requestID)
+            }
+            throw SessionError.hostFailed("\(error)")
         } catch {
             state = .failed
             throw SessionError.hostFailed("\(error)")

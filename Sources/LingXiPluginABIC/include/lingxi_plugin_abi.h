@@ -51,7 +51,8 @@ typedef enum {
     LX_UNRESPONSIVE = 6,
     LX_CRASHED = 7,
     LX_METHOD_NOT_IMPLEMENTED = 8,
-    LX_NOT_STARTED = 9
+    LX_NOT_STARTED = 9,
+    LX_CANCELLED = 10
 } LingXiStatusCode;
 
 /* Scalar-only: no pointers, so the struct is C-representable everywhere. */
@@ -69,7 +70,9 @@ typedef struct {
     int32_t (*start)(const uint8_t* grantedJson, uint32_t grantedLength, LingXiStatus* outStatus);
     int32_t (*stop)(void);
     int32_t (*dispose)(void);
-    int32_t (*invoke)(const char* capability,
+    /* requestID lets cancel(target) name one in-flight call; the plugin must not retain it. */
+    int32_t (*invoke)(const char* requestID,
+                      const char* capability,
                       const uint8_t* payload, uint32_t payloadLength,
                       uint8_t** outReply, uint32_t* outReplyLength,
                       LingXiStatus* outStatus);

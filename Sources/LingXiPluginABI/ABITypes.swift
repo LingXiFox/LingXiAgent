@@ -21,6 +21,7 @@ public enum ABIStatusCode: Int32, Sendable, Codable {
     case crashed = 7
     case methodNotImplemented = 8
     case notStarted = 9
+    case cancelled = 10
 }
 
 public extension LingXiStatus {

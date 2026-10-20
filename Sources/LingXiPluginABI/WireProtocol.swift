@@ -60,6 +60,7 @@ public enum HostMethod: String, Codable, Sendable {
     case cancel
     case stop
     case ping
+    case diagnostics
 }
 
 public struct HostRequest: Codable, Sendable {

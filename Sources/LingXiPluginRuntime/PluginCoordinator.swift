@@ -30,7 +30,7 @@ public actor PluginCoordinator {
     @discardableResult
     public func enable(
         bundleID: String,
-        policy: SignaturePolicy = .development,
+        policy: SignaturePolicy = .restricted,
         grantedPermissions: [String] = []
     ) async throws -> Loaded {
         guard let entry = await registry.entry(bundleID) else {
@@ -73,6 +73,22 @@ public actor PluginCoordinator {
                 bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath, enabled: false
             ))
         }
+    }
+
+    /// Process shutdown: tear the hosts down without touching the registry. Exiting the Core is not
+    /// the user disabling a plugin, and flipping `enabled` here would mean a restart never restores
+    /// anything.
+    public func shutdown() async {
+        for (_, handlerIDs) in handlerIDs {
+            for handlerID in handlerIDs {
+                _ = await pipeline.uninstall(handlerID: handlerID)
+            }
+        }
+        handlerIDs.removeAll()
+        for (_, session) in sessions {
+            await session.disable()
+        }
+        sessions.removeAll()
     }
 
     public func uninstall(bundleID: String) async throws {

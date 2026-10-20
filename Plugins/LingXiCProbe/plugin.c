@@ -4,6 +4,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int32_t emit_bytes(const char *text, uint8_t **out, uint32_t *outLength) {
     size_t length = strlen(text);
@@ -23,6 +24,8 @@ static int32_t probe_describe(uint8_t **out, uint32_t *outLength) {
 }
 
 static int crash_on_next_invocation = 0;
+static volatile int slow_mode = 0;
+static volatile int cancelled_flag = 0;
 
 static int32_t probe_start(const uint8_t *granted, uint32_t grantedLength, LingXiStatus *status) {
     /* test-only fault injection: the host passes the granted set at start */
@@ -31,6 +34,7 @@ static int32_t probe_start(const uint8_t *granted, uint32_t grantedLength, LingX
         uint32_t copy = grantedLength < sizeof(probe) - 1 ? grantedLength : (uint32_t)(sizeof(probe) - 1);
         memcpy(probe, granted, copy);
         if (strstr(probe, "fault.crash") != NULL) { crash_on_next_invocation = 1; }
+        if (strstr(probe, "fault.slow") != NULL) { slow_mode = 1; }
     }
     status->code = LX_OK;
     return 0;
@@ -39,12 +43,20 @@ static int32_t probe_start(const uint8_t *granted, uint32_t grantedLength, LingX
 static int32_t probe_stop(void) { return 0; }
 static int32_t probe_dispose(void) { return 0; }
 
-static int32_t probe_invoke(const char *capability,
+static int32_t probe_invoke(const char *requestID,
+                            const char *capability,
                             const uint8_t *payload, uint32_t payloadLength,
                             uint8_t **outReply, uint32_t *outReplyLength,
                             LingXiStatus *status) {
     (void)payload;
     (void)payloadLength;
+    (void)requestID;
+    if (slow_mode) {
+        for (int waited = 0; waited < 2000; waited += 20) {
+            if (cancelled_flag) { cancelled_flag = 0; status->code = LX_CANCELLED; return -1; }
+            usleep(20000);
+        }
+    }
     if (crash_on_next_invocation) {
         crash_on_next_invocation = 0;
         abort(); /* the plugin dies inside its host, exactly as a segfault would */
@@ -64,6 +76,12 @@ static int32_t probe_invoke(const char *capability,
     return 0;
 }
 
+static int32_t probe_cancel(const char *requestID) {
+    (void)requestID;
+    cancelled_flag = 1;
+    return 0;
+}
+
 static void probe_free(void *buffer) { free(buffer); }
 
 static const LingXiPluginAPI probe_api = {
@@ -74,7 +92,7 @@ static const LingXiPluginAPI probe_api = {
     probe_stop,
     probe_dispose,
     probe_invoke,
-    NULL,
+    probe_cancel,
     probe_free
 };
 

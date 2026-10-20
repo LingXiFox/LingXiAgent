@@ -6,6 +6,11 @@ Entry symbol: LingXiPlugin_Init
 Entry signature: int32_t (*)(const LingXiHostAPI*, uint32_t hostABIMajor,
                              const LingXiPluginAPI**, uint32_t* outABIMajor,
                              LingXiStatus* outStatus)
+Invoke signature: int32_t (*)(const char* requestID, const char* capability,
+                              const uint8_t* payload, uint32_t length,
+                              uint8_t** outReply, uint32_t* outReplyLength,
+                              LingXiStatus* outStatus)
+Status codes: 0..10 (10 = LX_CANCELLED)
 
 Frozen after the live load tests passed (see ContractTests):
   PLG_015_boundaryStructLayoutIsPinned
@@ -15,6 +20,11 @@ Frozen after the live load tests passed (see ContractTests):
   PLG_001_enableRewriteDisableReenableUninstall
   PLG_017_signaturePolicyTiers
   PLG_018_pluginCrashIsIsolated
+  PLG_019_swiftRuntimeIsNotEmbedded
+  PLG_008_environmentSentinelDoesNotLeak
+  LOOP_023_inFlightCancellation
+  LOOP_023_timeoutCancelsInHost
+  PLG_001_coreHostRestoresPluginAcrossRestart
 
 Layout (verified by MemoryLayout pins; offsets in bytes):
   LingXiStatus      size 12   structSize@0  abiMajor@4  code@8
@@ -24,7 +34,11 @@ Layout (verified by MemoryLayout pins; offsets in bytes):
   LingXiHostAPI     size 24   structSize@0  abiMajor@4  log@8  emit@16
 
 Header: Sources/LingXiPluginABIC/include/lingxi_plugin_abi.h
-Header SHA-256: 648171026f5ad8bd54180951fff122d0deef0174c1c233f5e0a0af4ffbbcf5f6
+Header SHA-256: 4ea407f612b471bf4b4f30218ab373c08ba4e6641d544294cdc98bf52a0c7c74
+
+Revision: 2 (2026-10-20). Adds an explicit request id to `invoke` so cancellation can name one
+in-flight call, and the LX_CANCELLED status. Re-frozen after the cancellation tests passed; the
+first revision never shipped.
 
 Rules frozen with this manifest:
   - structSize then abiMajor lead every boundary struct; new fields append.

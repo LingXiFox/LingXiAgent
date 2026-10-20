@@ -20,7 +20,7 @@ let package = Package(
         // The Swift half: Core-Host wire types. Deliberately depended on by the host and the runtime,
         // never by the kernel, which keeps its own ports instead (L0).
         .target(name: "LingXiPluginABI", dependencies: ["LingXiPluginABIC"]),
-        .executableTarget(name: "LingXiCoreHost", dependencies: ["LingXiKernel"]),
+        .executableTarget(name: "LingXiCoreHost", dependencies: ["LingXiKernel", "LingXiPluginRuntime", "LingXiPluginABI"]),
         .executableTarget(name: "LingXiPluginHost", dependencies: ["LingXiPluginABI"]),
         .target(name: "LingXiPluginRuntime", dependencies: ["LingXiKernel", "LingXiPluginABI"]),
         // Official plugin sources live under Plugins/, one directory per plugin (Project-Conventions §二).

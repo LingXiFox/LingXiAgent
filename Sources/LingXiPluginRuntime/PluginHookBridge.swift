@@ -41,9 +41,16 @@ public struct PluginHookBridge: ContextHook {
             },
             toolNames: invocation.tools.map(\.name)
         )
+        let requestID = UUID().uuidString
         do {
             let payload = try JSONValue.encode(wire)
-            let reply = try await session.invoke(capability: capabilityID, payload: payload)
+            let reply = try await withTaskCancellationHandler {
+                try await session.invoke(capability: capabilityID, payload: payload, requestID: requestID)
+            } onCancel: {
+                // The run was cancelled or hit its deadline: tell the host, which forwards the id to
+                // the plugin. Without that the call would run to completion behind a dead Run.
+                Task { await session.cancel(requestID: requestID) }
+            }
             let verdict = try reply.decode(HookWireVerdict.self)
             return Self.map(verdict, onto: invocation.entries)
         } catch {

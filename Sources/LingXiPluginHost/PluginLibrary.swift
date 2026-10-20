@@ -93,14 +93,16 @@ final class PluginLibrary {
         }
     }
 
-    func invoke(capability: String, payload: [UInt8]) throws -> [UInt8] {
+    func invoke(capability: String, requestID: String, payload: [UInt8]) throws -> [UInt8] {
         guard let invoke = table.pointee.invoke else { throw LibraryFailure.missingTableField("invoke") }
         var buffer: UnsafeMutablePointer<UInt8>?
         var length: UInt32 = 0
         var status = LingXiStatus.make()
         let code = capability.withCString { name in
-            payload.withUnsafeBufferPointer { bytes in
-                invoke(name, bytes.baseAddress, UInt32(bytes.count), &buffer, &length, &status)
+            requestID.withCString { identifier in
+                payload.withUnsafeBufferPointer { bytes in
+                    invoke(identifier, name, bytes.baseAddress, UInt32(bytes.count), &buffer, &length, &status)
+                }
             }
         }
         defer { PluginLibrary.release(table, buffer) }
@@ -108,6 +110,11 @@ final class PluginLibrary {
             throw LibraryFailure.callFailed("invoke \(capability) failed [\(status.statusCode)]")
         }
         return LingXiBuffer.copyBytes(buffer, length: length)
+    }
+
+    func cancel(requestID: String) -> Int32 {
+        guard let cancel = table.pointee.cancel else { return -1 }
+        return requestID.withCString { cancel($0) }
     }
 
     func stop() { table.pointee.stop?() }

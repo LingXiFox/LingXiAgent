@@ -4,44 +4,120 @@ import LingXiPluginABI
 /// The generic plugin host: one process, one plugin, `dlopen` plus the fixed C ABI on one side and
 /// newline-delimited JSON with the Core on the other. It ships with no plugin code and no vendor
 /// knowledge (Plugin-System-Design.md §一).
+///
+/// Invocations run off the read loop, so a `cancel` frame is handled while a call is still in
+/// flight. Without that, one slow provider request would make the host deaf to everything.
 final class HostAgent {
     private var library: PluginLibrary?
     private let hostAPI: UnsafePointer<LingXiHostAPI>
     private let output = FileHandle.standardOutput
-    private let outputLock = NSLock()
+    private static let outputLock = NSLock()
+    private let stateLock = NSLock()
+    private var pending: Set<String> = []
+    private var cancelled: Set<String> = []
+    /// Plugin calls are serialized; the read loop stays free, which is what makes cancel work.
+    private let invocationQueue = DispatchQueue(label: "site.lingxi.plugin-host.invoke")
 
     init() {
         hostAPI = HostAgent.makeHostAPI()
     }
 
-    func handle(_ request: HostRequest) -> HostReply {
-        var reply = HostReply(id: request.id, ok: true)
+    /// Returns a reply for immediate methods; `invoke` and `cancel` complete asynchronously.
+    func handle(_ request: HostRequest) {
+        pendingReply = HostReply(id: request.id, ok: true)
         do {
             switch request.method {
-            case .load: try load(request, into: &reply)
-            case .start: try start(request, into: &reply)
-            case .invoke: try invoke(request, into: &reply)
-            case .cancel: try cancel(request, into: &reply)
-            case .stop: try stop(into: &reply)
-            case .ping: reply.payload = .object(["alive": .bool(library != nil)])
+            case .invoke:
+                try beginInvoke(request)
+                return
+            case .cancel:
+                let identifier = request.requestID ?? ""
+                stateLock.lock()
+                cancelled.insert(identifier)
+                stateLock.unlock()
+                _ = library?.cancel(requestID: identifier)
+                reply(HostReply(id: request.id, ok: true), payload: .object(["cancelled": .string(identifier)]))
+                return
+            case .load: try load(request, into: &pendingReply)
+            case .start: try start(request, into: &pendingReply)
+            case .stop: try stop(into: &pendingReply)
+            case .diagnostics: try diagnostics(into: &pendingReply)
+            case .ping: pendingReply.payload = .object(["alive": .bool(library != nil)])
             }
+            reply(pendingReply)
         } catch let fault as HostFault {
-            reply = HostReply(id: request.id, ok: false)
-            reply.fault = fault
+            reply(HostReply(id: request.id, ok: false), fault: fault)
         } catch {
-            reply = HostReply(id: request.id, ok: false)
-            reply.fault = HostFault(code: "capabilityFailed", domain: "host", message: "\(error)")
+            reply(HostReply(id: request.id, ok: false), fault: HostFault(code: "capabilityFailed", domain: "host", message: "\(error)"))
         }
-        return reply
     }
 
-    /// The parent closed its write handle: this process ends the session and quits. Teardown happens
-    /// here too, so an abrupt Core exit cannot leave the plugin loaded.
+    private var pendingReply = HostReply(id: nil, ok: true)
+
     func shutdownDueToEndOfInput() {
+        cancelAllPending()
         library?.stop()
         library?.dispose()
         library?.close()
         library = nil
+    }
+
+    // MARK: - methods
+
+    private func beginInvoke(_ request: HostRequest) throws {
+        guard let library else {
+            throw HostFault(code: "protocolViolation", domain: "host", message: "invocation before the handshake completed")
+        }
+        guard let capability = request.capability, let requestID = request.requestID else {
+            throw HostFault(code: "protocolViolation", domain: "host", message: "invoke needs a capability and a requestID")
+        }
+        stateLock.lock()
+        pending.insert(requestID)
+        stateLock.unlock()
+
+        let payload = (try? JSONEncoder().encode(request.payload ?? .null)) ?? Data()
+        let replyID = request.id
+        invocationQueue.async { [weak self] in
+            guard let self else { return }
+            let result: Result<JSONValue, HostFault>
+            do {
+                let bytes = try library.invoke(capability: capability, requestID: requestID, payload: Array(payload))
+                result = .success(try JSONValue(data: Data(bytes)))
+            } catch let failure as LibraryFailure {
+                let code = self.wasCancelled(requestID) ? "cancelled" : "capabilityFailed"
+                result = .failure(HostFault(code: code, domain: "plugin", message: failure.description))
+            } catch {
+                result = .failure(HostFault(code: "capabilityFailed", domain: "plugin", message: "\(error)"))
+            }
+            self.finishInvoke(requestID: requestID, replyID: replyID, result: result)
+        }
+    }
+
+    private func finishInvoke(requestID: String, replyID: Int?, result: Result<JSONValue, HostFault>) {
+        stateLock.lock()
+        pending.remove(requestID)
+        cancelled.remove(requestID)
+        stateLock.unlock()
+        switch result {
+        case .success(let payload):
+            reply(HostReply(id: replyID, ok: true), payload: payload)
+        case .failure(let fault):
+            reply(HostReply(id: replyID, ok: false), fault: fault)
+        }
+    }
+
+    private func wasCancelled(_ requestID: String) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return cancelled.contains(requestID)
+    }
+
+    private func cancelAllPending() {
+        stateLock.lock()
+        let ids = pending
+        cancelled.formUnion(ids)
+        stateLock.unlock()
+        for id in ids { _ = library?.cancel(requestID: id) }
     }
 
     private func load(_ request: HostRequest, into reply: inout HostReply) throws {
@@ -71,8 +147,15 @@ final class HostAgent {
             opened.close()
             throw HostFault(code: "abiViolation", domain: "abi", message: "plugin ABI major \(opened.abiMajor) is not \(LingXiABI.major)")
         }
-        // The manifest and the exported table must agree; a mismatch is a packaging error, and
-        // guessing which one is authoritative is how silent downgrades start (PLG-011).
+        // Identity cannot drift from the bundle that carries it: a plugin claiming another id would
+        // receive the other plugin's grants.
+        guard manifest.bundleID == opened.bundleID else {
+            opened.close()
+            throw HostFault(
+                code: "protocolViolation", domain: "manifest",
+                message: "manifest id \(manifest.bundleID) does not match the plugin identity \(opened.bundleID)"
+            )
+        }
         guard manifest.abiMajor == opened.abiMajor else {
             opened.close()
             throw HostFault(
@@ -80,8 +163,6 @@ final class HostAgent {
                 message: "manifest declares ABI major \(manifest.abiMajor) but the plugin table says \(opened.abiMajor)"
             )
         }
-        // Declared capabilities in the manifest and in the table must agree; a plugin that describes
-        // something it never declared is a protocol violation, not a surprise to tolerate.
         guard Set(manifest.capabilities) == Set(opened.identity.hooks.map { "hook.\($0.id)" }) else {
             opened.close()
             throw HostFault(code: "protocolViolation", domain: "host", message: "declared capabilities differ from the plugin identity")
@@ -109,24 +190,14 @@ final class HostAgent {
         reply.payload = .object(["started": .bool(true)])
     }
 
-    private func invoke(_ request: HostRequest, into reply: inout HostReply) throws {
-        guard let library else {
-            throw HostFault(code: "protocolViolation", domain: "host", message: "invocation before the handshake completed")
-        }
-        guard let capability = request.capability else {
-            throw HostFault(code: "protocolViolation", domain: "host", message: "invoke needs a capability")
-        }
-        let payload = (try? JSONEncoder().encode(request.payload ?? .null)) ?? Data()
-        let bytes = try library.invoke(capability: capability, payload: Array(payload))
-        reply.payload = try JSONValue(data: Data(bytes))
-    }
-
-    private func cancel(_ request: HostRequest, into reply: inout HostReply) throws {
-        guard let library, let requestID = request.requestID else {
-            throw HostFault(code: "protocolViolation", domain: "host", message: "cancel needs requestID")
-        }
-        _ = library   // forwarding cancellation is the plugin table's business once invoke is async
-        reply.payload = .object(["cancelled": .string(requestID)])
+    /// Diagnostics never exposes values, only the names present in this process environment. The
+    /// tripwire test uses it to prove a passphrase or API key never crossed the process boundary.
+    private func diagnostics(into reply: inout HostReply) throws {
+        let keys = ProcessInfo.processInfo.environment.keys.sorted()
+        reply.payload = .object([
+            "environment": .array(keys.map { .string($0) }),
+            "pid": .number(Double(ProcessInfo.processInfo.processIdentifier)),
+        ])
     }
 
     private func stop(into reply: inout HostReply) throws {
@@ -134,6 +205,7 @@ final class HostAgent {
             reply.payload = .object(["stopped": .bool(false)])
             return
         }
+        cancelAllPending()
         library.stop()
         library.dispose()
         library.close()
@@ -141,9 +213,28 @@ final class HostAgent {
         reply.payload = .object(["stopped": .bool(true)])
     }
 
+    // MARK: - output
+
+    private func reply(_ header: HostReply, payload: JSONValue) {
+        var copy = header
+        copy.payload = payload
+        reply(copy)
+    }
+
+    private func reply(_ header: HostReply, fault: HostFault) {
+        var copy = header
+        copy.fault = fault
+        reply(copy)
+    }
+
+    private func reply(_ reply: HostReply) {
+        guard let data = try? JSONEncoder().encode(reply) else { return }
+        write(line: String(decoding: data, as: UTF8.self))
+    }
+
     func write(line: String) {
-        outputLock.lock()
-        defer { outputLock.unlock() }
+        HostAgent.outputLock.lock()
+        defer { HostAgent.outputLock.unlock() }
         output.write(Data((line + "\n").utf8))
     }
 
@@ -152,7 +243,6 @@ final class HostAgent {
         allocated.initialize(to: LingXiHostAPI(
             structSize: UInt32(MemoryLayout<LingXiHostAPI>.size),
             abiMajor: LingXiABI.major,
-            
             log: { level, text, length in
                 let message = LingXiBuffer.copyString(text, length: length)
                 FileHandle.standardError.write(Data("[plugin log \(level)] \(message)\n".utf8))
@@ -161,7 +251,9 @@ final class HostAgent {
                 let name = event.map { String(cString: $0) } ?? "event"
                 let body = LingXiBuffer.copyString(payload, length: length)
                 let line = "{\"event\":\"\(name)\",\"payload\":\(body.isEmpty ? "null" : body)}"
+                HostAgent.outputLock.lock()
                 FileHandle.standardOutput.write(Data((line + "\n").utf8))
+                HostAgent.outputLock.unlock()
             }
         ))
         return UnsafePointer(allocated)
@@ -208,10 +300,7 @@ while true {
             agent.write(line: "{\"ok\":false,\"fault\":{\"code\":\"protocolViolation\",\"domain\":\"frame\",\"message\":\"undecodable frame\"}}")
             continue
         }
-        FileHandle.standardError.write(Data("host: handling \(request.method.rawValue) id=\(request.id ?? -1)\n".utf8))
-        let reply = agent.handle(request)
-        let data = (try? JSONEncoder().encode(reply)) ?? Data()
-        agent.write(line: String(decoding: data, as: UTF8.self))
+        agent.handle(request)
     }
 }
 

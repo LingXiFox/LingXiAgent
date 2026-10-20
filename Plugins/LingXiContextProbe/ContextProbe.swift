@@ -37,9 +37,28 @@ private let describeImpl: @convention(c) (
     return emit(json(identity), out: out, length: outLength) ? 0 : -1
 }
 
+/// Test-only cancellation state: a request id is cancellable while its invocation is in flight.
+private final class CancellationRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled: Set<String> = []
+    private var slow = false
+
+    func markSlow(_ value: Bool) { lock.lock(); slow = value; lock.unlock() }
+    var isSlow: Bool { lock.lock(); defer { lock.unlock() }; return slow }
+    func cancel(_ id: String) { lock.lock(); cancelled.insert(id); lock.unlock() }
+    func consume(_ id: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return cancelled.remove(id) != nil
+    }
+}
+
+private let registry = CancellationRegistry()
+
 private let startImpl: @convention(c) (
     UnsafePointer<UInt8>?, UInt32, UnsafeMutablePointer<LingXiStatus>?
-) -> Int32 = { _, _, outStatus in
+) -> Int32 = { granted, length, outStatus in
+    let grantedText = LingXiBuffer.copyString(granted, length: length)
+    registry.markSlow(grantedText.contains("fault.slow"))
     outStatus?.pointee = .make()
     return 0
 }
@@ -48,13 +67,27 @@ private let stopImpl: @convention(c) () -> Int32 = { 0 }
 private let disposeImpl: @convention(c) () -> Int32 = { 0 }
 
 private let invokeImpl: @convention(c) (
-    UnsafePointer<CChar>?, UnsafePointer<UInt8>?, UInt32,
+    UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<UInt8>?, UInt32,
     UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, UnsafeMutablePointer<UInt32>?,
     UnsafeMutablePointer<LingXiStatus>?
-) -> Int32 = { capability, payload, payloadLength, out, outLength, outStatus in
+) -> Int32 = { requestID, capability, payload, payloadLength, out, outLength, outStatus in
     guard let capability, String(cString: capability) == "hook.\(hookIdentifier)" else {
         outStatus?.pointee = .make(.methodNotImplemented)
         return -1
+    }
+    let identifier = requestID.map { String(cString: $0) } ?? ""
+    if registry.isSlow {
+        // A deliberately slow call, cancellable in 20ms steps: the host must stay responsive and a
+        // cancel must be observed promptly rather than waiting the call out.
+        var waited = 0
+        while waited < 2_000 {
+            if registry.consume(identifier) {
+                outStatus?.pointee = .make(.cancelled)
+                return -1
+            }
+            usleep(20_000)
+            waited += 20
+        }
     }
     let bytes = LingXiBuffer.copyBytes(payload, length: payloadLength)
     guard let invocation = try? HookWire.decode(HookWireInvocation.self, from: bytes) else {
@@ -76,7 +109,11 @@ private let invokeImpl: @convention(c) (
     return 0
 }
 
-private let cancelImpl: @convention(c) (UnsafePointer<CChar>?) -> Int32 = { _ in 0 }
+private let cancelImpl: @convention(c) (UnsafePointer<CChar>?) -> Int32 = { identifier in
+    guard let identifier else { return -1 }
+    registry.cancel(String(cString: identifier))
+    return 0
+}
 
 private let freeImpl: @convention(c) (UnsafeMutableRawPointer?) -> Void = { LingXiBuffer.release($0) }
 
