@@ -38,7 +38,7 @@ public actor PluginSession {
         hostExecutableURL: URL,
         clock: any MonotonicClock = SystemMonotonicClock(),
         timeout: Duration = .seconds(10),
-        handshakeTimeout: Duration = .seconds(15)
+        handshakeTimeout: Duration = .seconds(30)
     ) {
         self.bundlePath = bundlePath
         self.hostExecutableURL = hostExecutableURL

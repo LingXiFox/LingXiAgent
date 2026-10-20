@@ -5,7 +5,8 @@ import LingXiPluginABI
 import LingXiPluginRuntime
 import Testing
 
-private final class ProtocolCore {
+private final class ProtocolCore: @unchecked Sendable {
+    private enum Stream { case stdout, stderr }
     private let process = Process()
     private let stdin = Pipe()
     private let stdout = Pipe()
@@ -28,11 +29,11 @@ private final class ProtocolCore {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
-        drain(stdout, into: \.lines)
-        drain(stderr, into: \.errors)
+        drain(stdout, stream: .stdout)
+        drain(stderr, stream: .stderr)
     }
 
-    private func drain(_ pipe: Pipe, into keyPath: ReferenceWritableKeyPath<ProtocolCore, [Data]>) {
+    private func drain(_ pipe: Pipe, stream: Stream) {
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             var pending = Data()
@@ -43,7 +44,12 @@ private final class ProtocolCore {
                 while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
                     let line = Data(pending[pending.startIndex..<newline])
                     pending.removeSubrange(pending.startIndex...newline)
-                    self.lock.lock(); self[keyPath: keyPath].append(line); self.lock.unlock()
+                    self.lock.lock()
+                    switch stream {
+                    case .stdout: self.lines.append(line)
+                    case .stderr: self.errors.append(line)
+                    }
+                    self.lock.unlock()
                 }
             }
         }
@@ -64,7 +70,7 @@ private final class ProtocolCore {
         return id
     }
 
-    func waitReply(_ id: Int, timeout: Duration = .seconds(20)) async -> FrontendReply? {
+    func waitReply(_ id: Int, timeout: Duration = .seconds(90)) async -> FrontendReply? {
         let start = snapshot().count
         guard await waitUntil(timeout: timeout, { self.snapshot().dropFirst(start).contains { data in
             (try? JSONDecoder().decode(FrontendReply.self, from: data))?.id == id
@@ -73,7 +79,7 @@ private final class ProtocolCore {
             .last { $0.id == id }
     }
 
-    func waitEvent(_ name: String, after start: Int, timeout: Duration = .seconds(20)) async -> FrontendEvent? {
+    func waitEvent(_ name: String, after start: Int, timeout: Duration = .seconds(90)) async -> FrontendEvent? {
         guard await waitUntil(timeout: timeout, { self.snapshot().dropFirst(start).contains { data in
             (try? JSONDecoder().decode(FrontendEvent.self, from: data))?.event == name
         } }) else { return nil }

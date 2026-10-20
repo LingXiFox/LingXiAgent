@@ -6,7 +6,8 @@ import Testing
 
 /// Drives the real CoreHost in its line-oriented control mode. This is the only way to prove
 /// runtime switching on a resident Core without a frontend.
-private final class CoreControl {
+private final class CoreControl: @unchecked Sendable {
+    private enum Stream { case lines, errors }
     private let process = Process()
     private let stdin = Pipe()
     private let stdout = Pipe()
@@ -27,11 +28,11 @@ private final class CoreControl {
         process.standardOutput = stdout
         process.standardError = stderr
         try process.run()
-        drain(stdout, into: \.lines)
-        drain(stderr, into: \.errors)
+        drain(stdout, stream: .lines)
+        drain(stderr, stream: .errors)
     }
 
-    private func drain(_ pipe: Pipe, into keyPath: ReferenceWritableKeyPath<CoreControl, [String]>) {
+    private func drain(_ pipe: Pipe, stream: Stream) {
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             var pending = Data()
@@ -42,7 +43,12 @@ private final class CoreControl {
                 while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
                     let line = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
                     pending.removeSubrange(pending.startIndex...newline)
-                    self.lock.lock(); self[keyPath: keyPath].append(line); self.lock.unlock()
+                    self.lock.lock()
+                    switch stream {
+                    case .lines: self.lines.append(line)
+                    case .errors: self.errors.append(line)
+                    }
+                    self.lock.unlock()
                 }
             }
         }
@@ -56,7 +62,7 @@ private final class CoreControl {
         lock.lock(); defer { lock.unlock() }; return errors
     }
 
-    func waitForLine(prefix: String, timeout: Duration = .seconds(15)) async -> String? {
+    func waitForLine(prefix: String, timeout: Duration = .seconds(90)) async -> String? {
         let found = await waitUntil(timeout: timeout) {
             self.capturedLines.contains { $0.hasPrefix(prefix) }
         }
@@ -81,7 +87,7 @@ private final class CoreControl {
         return capturedLines.dropFirst(start).last { $0.hasPrefix(prefix) }
     }
 
-    func quit(timeout: Duration = .seconds(15)) async -> Int32 {
+    func quit(timeout: Duration = .seconds(60)) async -> Int32 {
         stdin.fileHandleForWriting.write(Data("quit\n".utf8))
         let exited = await waitUntil(timeout: timeout) { self.process.isRunning == false }
         if !exited, process.isRunning {

@@ -7,7 +7,7 @@ import LingXiPluginABI
 ///
 /// Invocations run off the read loop, so a `cancel` frame is handled while a call is still in
 /// flight. Without that, one slow provider request would make the host deaf to everything.
-final class HostAgent {
+final class HostAgent: @unchecked Sendable {
     private var library: PluginLibrary?
     private let hostAPI: UnsafePointer<LingXiHostAPI>
     private let output = FileHandle.standardOutput
@@ -265,7 +265,13 @@ final class HostAgent {
 
     /// The host's own Team ID, used by the restricted tier. An unsigned local build reports no team,
     /// which is exactly why development mode exists.
-    private static func ownTeamID() -> String? {
+    private static let cachedTeamID: String? = computeOwnTeamID()
+
+    /// The host's Team ID does not change during its lifetime; codesign is expensive under load, so
+    /// it is resolved once per process instead of once per plugin load.
+    private static func ownTeamID() -> String? { cachedTeamID }
+
+    private static func computeOwnTeamID() -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
         process.arguments = ["-dvvv", Bundle.main.executablePath ?? "/dev/null"]

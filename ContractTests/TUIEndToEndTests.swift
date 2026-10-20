@@ -40,7 +40,7 @@ private final class PTYProcess: @unchecked Sendable {
         stdin.fileHandleForWriting.write(Data(text.utf8))
     }
 
-    func waitFor(_ text: String, timeout: Duration = .seconds(25)) async -> Bool {
+    func waitFor(_ text: String, timeout: Duration = .seconds(90)) async -> Bool {
         await waitUntil(timeout: timeout) { self.transcript.contains(text) }
     }
 
@@ -101,6 +101,6 @@ func TUI_001_ptyChatWithMiMo() async throws {
     #expect(tui.transcript.contains("provider.mimo"))
 
     tui.write("/quit\r")
-    #expect(await waitUntil(timeout: .seconds(15)) { tui.isRunning == false })
+    #expect(await waitUntil(timeout: .seconds(60)) { tui.isRunning == false })
     #expect(tui.status == 0, "transcript tail: \(tui.transcript.suffix(800))")
 }

@@ -26,7 +26,7 @@ enum LibraryFailure: Error, CustomStringConvertible {
 
 /// One loaded plugin inside this Host process. The function table is the only way in and out, and
 /// nothing here knows what the plugin does.
-final class PluginLibrary {
+final class PluginLibrary: @unchecked Sendable {
     let abiMajor: UInt32
     let identity: PluginIdentity
 
@@ -117,8 +117,8 @@ final class PluginLibrary {
         return requestID.withCString { cancel($0) }
     }
 
-    func stop() { table.pointee.stop?() }
-    func dispose() { table.pointee.dispose?() }
+    func stop() { _ = table.pointee.stop?() }
+    func dispose() { _ = table.pointee.dispose?() }
 
     /// Only ever called with no invocation in flight (ABI rule 6).
     func close() { dlclose(handle) }
