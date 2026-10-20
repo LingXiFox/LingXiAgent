@@ -1,6 +1,6 @@
 # Provider 验收记录：Xiaomi MiMo（Chat Completions）
 
-> **状态：离线验收通过，真实 API 录制待主人执行** —— 分支 `wip/phase3-mimo-provider`，128 tests 全绿（104 内核 + 24 契约），零告警。离线回归使用手工 fixture；`Scripts/mimo-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
+> **状态：离线与 CI 验收通过，真实 API 录制待主人执行** —— 合并提交 `0c0192a`，128 tests 全绿（104 内核 + 24 契约），CI run `39374459326` success，零告警。离线回归使用手工 fixture；`Scripts/mimo-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
 
 ## 一、协议事实（2026-10-20 核对）
 
@@ -50,7 +50,20 @@ MIMO_API_KEY=... ./Scripts/mimo-record.sh
 
 产物为归一化事件序列（无请求头、无凭据）。拿到后替换 `ContractTests/Fixtures/mimo-chat-fixture.json`，复跑离线用例并提交。
 
-## 五、残余风险
+## 五、CI 记录
+
+| 项 | 值 |
+|---|---|
+| Run ID | `39374459326` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39374459326 |
+| head SHA | `0c0192a` |
+| Conclusion | success |
+| runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
+| `swift test` 汇总 | `Test run with 128 tests in 0 suites passed after 2.230 seconds.` |
+| live 用例 | DeepSeek 与 MiMo 的 live smoke 均 **skipped**（无付费密钥时按设计跳过） |
+| 空核步骤 | success |
+
+## 六、残余风险
 
 1. **模型 id 与可用性**以实际调用为准：第三方资料显示 `mimo-v2.6-flash` / `mimo-v2.6-pro`；若 400，错误体会完整回传到 Run detail，便于校正。
 2. **并行工具调用声明为 false**（保守）；同一响应的多个调用按 index 顺序结算。
