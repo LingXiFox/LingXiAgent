@@ -441,7 +441,8 @@ func makeLoop(
     log: DurableEventLog,
     runs: RunRegistry = RunRegistry(),
     store: SessionStore = SessionStore(),
-    clock: any MonotonicClock = ManualClock()
+    clock: any MonotonicClock = ManualClock(),
+    hooks: HookPipeline = HookPipeline()
 ) async -> AgentLoop {
     let router = ModelRouter()
     await router.register(provider: provider, id: "test.provider", models: ["test-model"])
@@ -453,6 +454,7 @@ func makeLoop(
         runs: runs,
         store: store,
         clock: clock,
+        hooks: hooks,
         instructions: "instructions"
     )
 }

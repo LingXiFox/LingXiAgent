@@ -40,6 +40,9 @@ public enum TerminalCause: String, Sendable, Codable {
     case executionStateUnknown
     /// A second Run for the same Session was rejected while one was still active (LOOP-021).
     case concurrentRunRejected
+    /// A lifecycle hook denied the request, or a security-class hook failed and denial is its
+    /// failure policy. Nothing reached the provider (PLG-006, PLG-016).
+    case hookDenied
 }
 
 public struct RunRecord: Sendable {

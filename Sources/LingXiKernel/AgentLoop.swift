@@ -53,6 +53,8 @@ private struct LoopState {
     var usage: ModelUsage?
     var lastToolCall: String?
     var lastObservation: String?
+    /// Transform-class hooks that failed were skipped; the run still reports why (PLG-006).
+    var hookDiagnostics: [String] = []
 }
 
 private enum StepOutcome: Sendable {
@@ -73,6 +75,7 @@ public actor AgentLoop {
     private let store: SessionStore
     private let clock: any MonotonicClock
     private let instructions: String
+    private let hooks: HookPipeline
     private let planner = ContextBudgetPlanner()
 
     public init(
@@ -83,6 +86,7 @@ public actor AgentLoop {
         runs: RunRegistry,
         store: SessionStore,
         clock: any MonotonicClock = SystemMonotonicClock(),
+        hooks: HookPipeline = HookPipeline(),
         instructions: String
     ) {
         self.router = router
@@ -92,6 +96,7 @@ public actor AgentLoop {
         self.runs = runs
         self.store = store
         self.clock = clock
+        self.hooks = hooks
         self.instructions = instructions
     }
 
@@ -189,11 +194,17 @@ public actor AgentLoop {
         if let provider = try? await router.resolve(model: request.model) {
             await provider.endExecution(request.executionID)
         }
+        // Skipped transform hooks are reported, never silently swallowed (PLG-006).
+        var detail = committed.detail
+        if !state.hookDiagnostics.isEmpty {
+            let notes = state.hookDiagnostics.joined(separator: "; ")
+            detail = detail.map { "\($0) hookDiagnostics=[\(notes)]" } ?? "hookDiagnostics=[\(notes)]"
+        }
         return RunResult(
             runID: request.runID,
             status: committed.status,
             cause: committed.cause,
-            detail: committed.detail,
+            detail: detail,
             steps: state.steps,
             assistantText: state.assistantText,
             toolOutcomes: state.toolOutcomeCount,
@@ -242,8 +253,28 @@ public actor AgentLoop {
 
             let provider = try await router.resolve(model: request.model)
             let capabilities = provider.capabilities
-            let requestEntries = try await assemble(request)
-            try ContextRequestValidator.validate(requestEntries, placement: capabilities.toolResultPlacement)
+            let assembled = try await assemble(request)
+            let manifest = await toolRegistry.manifest()
+
+            // Context preparation hooks see the assembled history before validation. A denial here
+            // stops the run before anything reaches the provider (PLG-006: the node must be able to
+            // change execution, not just report).
+            let requestEntries: [ContextEntry]
+            switch await hooks.apply(
+                .contextPrepare, base: assembled, sessionID: request.sessionID,
+                runID: request.runID, model: request.model, tools: manifest
+            ) {
+            case .denied(let reason, let handlerID):
+                return (.failed, .hookDenied, "context preparation denied by hook \(handlerID): \(reason)")
+            case .allowed(let entries, let notes):
+                state.hookDiagnostics.append(contentsOf: notes)
+                requestEntries = entries
+            }
+            do {
+                try ContextRequestValidator.validate(requestEntries, placement: capabilities.toolResultPlacement)
+            } catch {
+                return (.failed, .streamProtocolViolation, "context preparation hook produced an invalid request: \(error)")
+            }
 
             let plan: BudgetPlan
             do {
@@ -263,7 +294,25 @@ public actor AgentLoop {
                 return (.failed, .streamProtocolViolation, "budget plan violates the request protocol: \(error)")
             }
 
-            let manifest = await toolRegistry.manifest()
+            // The last seam before the wire. It runs after budgeting so a rewrite is still held to
+            // the same protocol and size rules as the planner's output.
+            let selected: [ContextEntry]
+            switch await hooks.apply(
+                .beforeModelRequest, base: plan.selected, sessionID: request.sessionID,
+                runID: request.runID, model: request.model, tools: manifest
+            ) {
+            case .denied(let reason, let handlerID):
+                return (.failed, .hookDenied, "model request denied by hook \(handlerID): \(reason)")
+            case .allowed(let entries, let notes):
+                state.hookDiagnostics.append(contentsOf: notes)
+                selected = entries
+            }
+            do {
+                try ContextRequestValidator.validate(selected, placement: capabilities.toolResultPlacement)
+            } catch {
+                return (.failed, .streamProtocolViolation, "hook rewrite violates the request protocol: \(error)")
+            }
+
             let step = await consumeStream(
                 provider: provider,
                 modelRequest: ModelRequest(
@@ -271,7 +320,7 @@ public actor AgentLoop {
                     continuationOf: state.steps == 1 ? nil : RequestID("\(request.runID.rawValue)-step\(state.steps - 1)"),
                     executionID: request.executionID,
                     model: request.model,
-                    entries: plan.selected,
+                    entries: selected,
                     tools: manifest,
                     overallTimeout: policy.overallTimeout
                 ),
