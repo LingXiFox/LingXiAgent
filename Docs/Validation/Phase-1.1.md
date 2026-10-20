@@ -2,7 +2,7 @@
 
 > **状态：DRAFT —— 内核、测试与变异审计已收口（HEAD `677d44e`，89 tests 全绿 ×5；变异 11/11 RED 明细已归档），等待 CI run 记录后转「已验收」。**
 > 本文件里的 `TODO(lead)` 是显式占位，禁止用估计值或伪造的 CI 结果代替实测。
-> 依据：`.tmp/phase-1.1-contract.md`（冻结稿 v1）；判定口径：`Docs/Testing-and-Acceptance.md`（实测数字 + trace 顺序 + 反例，缺一不算通过）。
+> 依据：`Docs/Validation/Phase-1.1-contract.md`（冻结稿 v1，原稿在 gitignored 的 `.tmp/`，已按字节归档，sha256 `bee6f2d8f41eadaae1908c4e7a24c23daf464896aeed8d7789fc8e4c5ac9cf48`）；判定口径：`Docs/Testing-and-Acceptance.md`（实测数字 + trace 顺序 + 反例，缺一不算通过）。
 
 ## 一、范围与基线
 
