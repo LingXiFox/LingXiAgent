@@ -71,11 +71,12 @@ private final class ProtocolCore: @unchecked Sendable {
     }
 
     func waitReply(_ id: Int, timeout: Duration = .seconds(90)) async -> FrontendReply? {
-        let start = snapshot().count
-        guard await waitUntil(timeout: timeout, { self.snapshot().dropFirst(start).contains { data in
+        // Reply ids are unique, so the whole buffer is safe to search: a fast reply must not be
+        // missed because it arrived before the cursor was taken.
+        guard await waitUntil(timeout: timeout, { self.snapshot().contains { data in
             (try? JSONDecoder().decode(FrontendReply.self, from: data))?.id == id
         } }) else { return nil }
-        return snapshot().dropFirst(start).compactMap { try? JSONDecoder().decode(FrontendReply.self, from: $0) }
+        return snapshot().compactMap { try? JSONDecoder().decode(FrontendReply.self, from: $0) }
             .last { $0.id == id }
     }
 

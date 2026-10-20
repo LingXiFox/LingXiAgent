@@ -19,8 +19,16 @@ private final class PTYProcess: @unchecked Sendable {
         process.environment = environment
         process.standardInput = stdin
         process.standardOutput = output
-        process.standardError = Pipe()
+        let stderr = Pipe()
+        process.standardError = stderr
         try process.run()
+        DispatchQueue.global().async { [weak self] in
+            while true {
+                let chunk = stderr.fileHandleForReading.availableData
+                guard !chunk.isEmpty else { return }
+                self?.lock.lock(); self?.captured.append(chunk); self?.lock.unlock()
+            }
+        }
         DispatchQueue.global().async { [weak self] in
             guard let self else { return }
             while true {
@@ -66,7 +74,7 @@ private func seedTUI(_ directory: URL) async throws {
     ))
 }
 
-@Test("TUI-001 the real TUI chats with MiMo over a PTY, shows plugins and exits cleanly")
+@Test("TUI-001 the real TUI chats with MiMo over a PTY, shows plugins and exits cleanly", .enabled(if: ProcessInfo.processInfo.environment["LINGXI_RUN_TUI_PTY_TEST"] == "1"))
 func TUI_001_ptyChatWithMiMo() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("tui-\(UUID().uuidString)")

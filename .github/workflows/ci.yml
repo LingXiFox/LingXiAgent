@@ -59,6 +59,12 @@ jobs:
         timeout-minutes: 15
         run: swift test
 
+      - name: TUI end-to-end in a PTY
+        # The PTY test spawns the whole process tree; run it alone so it does not compete with the
+        # other process-heavy contract tests for the runner.
+        timeout-minutes: 10
+        run: LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter TUI_001_ptyChatWithMiMo
+
       - name: Empty core starts without a provider and writes no journal records
         # QA-013: with no provider plugin the host must start, report guidance, and write nothing.
         # A fresh data directory must stay clean — an empty journal is the whole point of the
