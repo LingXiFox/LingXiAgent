@@ -1,7 +1,7 @@
 # Phase 1.1 验收记录：内核正确性收口
 
-> **状态：DRAFT —— 内核、测试与变异审计已收口（HEAD `677d44e`，89 tests 全绿 ×5；变异 11/11 RED 明细已归档），等待 CI run 记录后转「已验收」。**
-> 本文件里的 `TODO(lead)` 是显式占位，禁止用估计值或伪造的 CI 结果代替实测。
+> **状态：已验收 —— 内核、测试与变异审计已收口（代码 HEAD `677d44e`，89 tests 全绿 ×5；变异 11/11 RED 明细已归档）；CI run `39361419757` 在 `macos-26` 上 success（第六节），空核启动检查在 CI 与本地双双通过（第七节）。**
+> Phase 1.1 的关键正确性问题全部验收通过，可进入 Phase 2。残余风险见第八节，其中第 1 条（`endExecution` 未接线）必须在 Phase 1.2 接入 Provider 插件前处理。
 > 依据：`Docs/Validation/Phase-1.1-contract.md`（冻结稿 v1，原稿在 gitignored 的 `.tmp/`，已按字节归档，sha256 `bee6f2d8f41eadaae1908c4e7a24c23daf464896aeed8d7789fc8e4c5ac9cf48`）；判定口径：`Docs/Testing-and-Acceptance.md`（实测数字 + trace 顺序 + 反例，缺一不算通过）。
 
 ## 一、范围与基线
@@ -9,7 +9,8 @@
 | 项 | 值 |
 |---|---|
 | 基线 commit | `cd9fed3`（分支 `rewrite/2.0`） |
-| 最终代码/测试 HEAD | `677d44e`（`fix(kernel): heal a dangling tool batch in-process and never persist duplicate calls`；代码与测试文件与 HEAD 一致，Docs 变更待 Lead 提交） |
+| 最终代码/测试 HEAD | `677d44e`（`fix(kernel): heal a dangling tool batch in-process and never persist duplicate calls`）；其后的 `34c834a`（Docs + `.github/workflows/ci.yml`）与 `719d3f1`（契约归档）为纯文档/CI 提交，未改动 `Sources/**` 与 `Tests/**` |
+| CI head SHA（实跑提交） | `719d3f16aed4d5340e51759b33314ad13b12d04c`（远端 `origin/rewrite/2.0`，由 `cd9fed3` fast-forward 10 个提交） |
 | 基线测试数 | 30（契约 §0） |
 | 范围 | 内核正确性修复：不新增功能、不加依赖、不重构架构 |
 | 验收命令 | `swift build --build-tests`；`swift test`；空核启动检查（第七节） |
@@ -30,7 +31,8 @@
 | 测试断言加强 | `da61865` | 87（用例数不变） | 全绿 ×5 | Lead 实测 |
 | **终态** | **`677d44e`** | **89 = 60 + 16 + 13** | **全绿 ×5（0.021–0.024s/次）** | Lead 权威 inventory（2026-10-20） |
 | 文件分布 | — | Lead 侧 60：`ContextTests` 13 / `DurabilityTests` 15 / `GatesTests` 6 / `LoopTests` 26；验收 29：`ConversationAcceptanceTests` 16 / `RecoveryAcceptanceTests` 13 | 全绿 | Lead 权威 inventory |
-| `swift test` 汇总行 | — | `Test run with 89 tests in 0 suites passed after 0.021 seconds.` | 通过 | Lead 本地 `677d44e` 5 连跑（CI 复跑见第六节） |
+| `swift test` 汇总行（本地） | — | `Test run with 89 tests in 0 suites passed after 0.021 seconds.` | 通过 | Lead 本地 `677d44e` 5 连跑；本轮复跑 0.020s |
+| `swift test` 汇总行（CI） | `719d3f1`（代码树与 `677d44e` 逐字节一致） | `✔ Test run with 89 tests in 0 suites passed after 0.074 seconds.` | 通过 | run `39361419757`，`macos-26`，Swift 6.3.3（第六节） |
 
 测试函数名必须带回归 ID（`Project-Conventions.md` 第六章）。下表按「Lead 侧冻结清单」与「独立验收文件」分列：两者都通过才算该 ID 有独立证据。注：STORE-010 在两个文件里的函数名不同（Lead 侧 `STORE_010_beginFailureLeavesNoOrphanTerminal`、验收文件 `STORE_010_beginTransactionFailureLeavesNoOrphanTerminal`），是两个独立测试，均需为绿。
 
@@ -138,16 +140,21 @@
 |---|---|
 | workflow | `.github/workflows/ci.yml`（`runs-on: macos-26`，单 job，仅 `actions/checkout` + `actions/cache`） |
 | 触发事件 | push 到 `rewrite/2.0`（`workflow_dispatch` 与 PR→`main` 同样触发） |
-| 代码基线 SHA | `677d44e`（最终内核 + 测试 HEAD） |
+| 代码基线 SHA | `677d44e`（最终内核 + 测试 HEAD，CI 跑的树与它逐字节一致） |
 | 测试提交 SHA（两个验收文件） | `118263f` |
-| CI head SHA（含 Docs 与 workflow） | TODO(lead)（push 后 run 的 `headSha`） |
-| Run ID | TODO(lead): `gh run list --branch rewrite/2.0` |
-| Run URL | TODO(lead): `https://github.com/LingXiFox/LingXiAgent/actions/runs/<run-id>` |
-| Conclusion | TODO(lead): success / failure |
-| 空核启动步骤 | TODO(lead): CI 步骤结果（本地实测见第七节） |
-| runner 工具链 | TODO(lead): 从日志摘录 `swift --version` 与选中 Xcode |
+| CI head SHA（含 Docs 与 workflow） | `719d3f16aed4d5340e51759b33314ad13b12d04c`（`docs(validation): archive the frozen Phase 1.1 contract in-repo`） |
+| Run ID | `39361419757`（attempt 1，`event: push`，`headBranch: rewrite/2.0`） |
+| Run URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39361419757 |
+| Conclusion | **success** — job `macOS 26 (arm64) build & test` completed，10/10 步骤全 success（Set up job / Check out / Select newest Xcode / Cache SwiftPM / Build products and tests / Run tests / Empty core … / Post Cache / Post Check out / Complete job） |
+| 用时 | 2026-10-20T02:54:21Z → 02:55:52Z（91s 端到端）；工具自报 `swift build --build-tests` 49.40s、test run 0.074s |
+| runner | GitHub Actions 托管 `macos-26`（arm64），runner id `1000000898` |
+| 空核启动步骤 | **success** — 日志实测：`providers:      0`、`No inference was attempted; nothing was added to the journal.`、`empty-core startup clean: guidance printed, no journal records`；`events.jsonl` 非空即 `exit 1` 的断言未触发 |
+| runner 工具链 | `xcode: /Applications/Xcode_26.6.0.app`；`Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)`；`Target: arm64-apple-macosx26.0` |
+| `swift test` 汇总行（CI） | `✔ Test run with 89 tests in 0 suites passed after 0.074 seconds.` — 与本地 89 用例数一致 |
 
-说明：1.x 的 `CI Matrix Gate` 只存在于 `main` 分支的历史工作流中；`rewrite/2.0` 维护自己的最小 `CI` workflow，不修改 1.x 工作流。CI run 由 Lead 在 Docs 定稿提交后 push 触发；run 记录随后以纯文档提交（`[skip ci]`，符合 `Project-Conventions.md` 第七章）补入，不影响首次 run 的证据效力。
+> **命名提示**：本分支的 `.github/workflows/ci.yml` 与 `main` 上 1.x 的 `CI Matrix Gate` 是同一个文件路径，因此 GitHub 沿用该 workflow 身份（id `360644161`）在默认分支上的显示名「CI Matrix Gate」；实跑 job 名 `macOS 26 (arm64) build & test` 与步骤序列均来自 `rewrite/2.0` 自己那份文件（1.x 的 job 名为 `macOS Build & Test (arm64)`，且带 linux/windows job，本 run 没有）。核查时用 job 名与步骤名对齐，不要只看 workflow 显示名。
+
+说明：1.x 的 `CI Matrix Gate` 只存在于 `main` 分支的历史工作流中；`rewrite/2.0` 维护自己的最小 `CI` workflow，不修改 1.x 工作流。本 run 记录以纯文档提交（`[skip ci]`，符合 `Project-Conventions.md` 第七章）补入，不影响首次 run 的证据效力。
 
 ## 七、空核启动检查（QA-013）
 
@@ -178,7 +185,7 @@ No provider plugin is active. Install and enable a provider plugin to start a co
 No inference was attempted; nothing was added to the journal.
 ```
 
-CI 上的复跑结果：TODO(lead)（第六节）。
+CI 上的复跑结果（run `39361419757`，head SHA `719d3f1`，Swift 6.3.3 / Xcode 26.6.0）：**通过**。步骤 `Empty core starts without a provider and writes no journal records` 结论 success，日志含 `providers:      0`、`No provider plugin is active. Install and enable a provider plugin to start a conversation; the core runs without one.`、`No inference was attempted; nothing was added to the journal.` 与 `empty-core startup clean: guidance printed, no journal records`；journal 非空即 `exit 1` 的断言未触发。CI 与本地用不同工具链（6.3.3 vs 6.4.2）得到同一结果，见第八节第 14 条。
 
 ## 八、未覆盖与风险（诚实记录）
 
@@ -200,27 +207,45 @@ CI 上的复跑结果：TODO(lead)（第六节）。
 11. **物理掉电/`fsync` 语义无法在单测层证明**：STORE-009 只覆盖可控坏尾行/坏中行；D3 结论的边界即止于此。
 12. **恢复不继续执行**：重启后未完成 Run 一律 `failed`，用户需重新发起 Turn。`LOOP-008` 原「只读补跑」口径已重新定界（`Kernel-Design.md` 第六章）；在线恢复（执行器与插件环境可用）推迟到阶段 3（PLG-014）。
 13. **反例验证不是 CI 门禁**：变异在 `/tmp` 副本执行，无法在 CI 中例行化；若以后要制度化，需要新增脚本（不在 Phase 1.1 范围）。
-14. **本地与 runner 工具链差异**：本地为 Xcode 27.2 / Swift 6.4.2；CI 选择 `macos-26` runner 上最新 Xcode，版本可能不同，两边的 `swift --version` 都要记录（第一、六节）。
+14. **本地与 runner 工具链差异（已实测并记录）**：本地 Xcode 27.2 / Swift 6.4.2（`Target: arm64-apple-macosx27.2.0`）；CI 在 `macos-26` 上取到最新 Xcode 26.6.0 / **Swift 6.3.3**（`Target: arm64-apple-macosx26.0`）。两边 `swift build --build-tests` + `swift test` 与空核检查**都是全绿**（本地 89 / CI 89），说明内核不依赖 6.4 专有行为；反向的缺口仍然存在——**6.4 更新版本上的前向兼容已由本地覆盖，但 6.3.3 之外的更旧工具链没有门禁**，Phase 1.2 若升 runner 需同步更新本条。
 15. **Provider/插件/TUI 层不在范围**：本记录只覆盖内核；这些层的验收记录在阶段 2–4 补。
 16. **LOOP-023 的调度确定性**依靠注入时钟与 Gate，不依赖固定 sleep（QA-002）；若 CI 出现 flake，必须按 `Testing-and-Acceptance.md` 第八章记录并限期处理，禁止用 retry 掩盖。
 17. **Info：进程内自愈只写内存**，journal 中没有合成条目；重启后由 `KernelRecovery` 从同一日志重新派生相同历史（`LOOP_025_danglingBatchHealedInProcess` 与重放等价性测试覆盖）。这是设计选择，不是缺口。
+18. **测试 target 有 1 条编译告警（不动已冻结代码）**：`swift build --build-tests` 在 `Tests/LingXiKernelTests/GatesTests.swift:111` 报 `#UnnecessaryEffectMarker`——`#expect(try await runs.record(...))` 里的 `try` 是多余的（`record` 不抛错）。**内核与宿主 target 零告警**（本地对 `Sources/**` 强制重编复核：`swift build` 无任何 warning），CI 日志里唯一告警也来自这一行测试代码。`README.md` 的「`swift build` 无告警」指产品构建，不含测试 target，措辞成立。删除这个 `try` 是一行无行为变更的清理，但 `677d44e` 已作为验收代码基线冻结、CI 证据与之绑定，本阶段不为 cosmetics 再动基线；留到 Phase 1.2 随 `endExecution` 接线一并处理。
 
 ## 九、复现步骤
 
 ```bash
 # 1. 确认基线/终态
-git rev-parse HEAD            # 期望 677d44e 或其后仅文档提交
+git rev-parse HEAD            # 期望 677d44e 或其后仅文档/CI 提交（34c834a、719d3f1）
+git log --oneline -1 -- Sources Tests   # 期望仍是 677d44e：文档提交不得改代码
 swift build --build-tests
 swift test                    # 期望 Test run with 89 tests ... passed
 
-# 2. 空核启动检查（同第七节）
+# 2. 用例分布与验收文件未被改动（应与第二节、第一节 sha256 一致）
+for f in Tests/LingXiKernelTests/*.swift; do
+  printf "%-40s %s\n" "$(basename "$f")" "$(grep -cE '^\s*func test|^\s*@Test' "$f")"
+done                          # 13/16/15/0/6/26/13 = 89
+git diff --stat 118263f HEAD -- Tests/LingXiKernelTests/ConversationAcceptanceTests.swift \
+                               Tests/LingXiKernelTests/RecoveryAcceptanceTests.swift  # 应为空
+shasum -a 256 Tests/LingXiKernelTests/{ConversationAcceptanceTests,RecoveryAcceptanceTests}.swift
+shasum -a 256 Docs/Validation/Phase-1.1-contract.md   # 期望 bee6f2d8…cf48
+
+# 3. 逐 ID 证据表点名的测试函数确实存在（第七节口径：函数名可核查）
+grep -ohE '\b(LOOP|CTX|STORE|CACHE|QA|L0|DEADLINE)_[0-9A-Za-z_]+' Docs/Validation/Phase-1.1.md \
+  | sort -u | while read -r fn; do
+      grep -rq "$fn" Tests/LingXiKernelTests/ || echo "MISSING: $fn"
+    done                      # 期望无输出
+
+# 4. 空核启动检查（同第七节）
 DATA_DIR="$(mktemp -d)"
 LINGXI_DATA_DIR="$DATA_DIR" .build/debug/LingXiCoreHost
 test ! -s "$DATA_DIR/events.jsonl"
 
-# 3. CI 结果
-gh run list --branch rewrite/2.0 --limit 5
-gh run view <run-id> --log
+# 5. CI 结果
+gh run view 39361419757 --repo LingXiFox/LingXiAgent \
+  --json status,conclusion,jobs --jq '{status,conclusion,steps:[.jobs[].steps[]|{name,conclusion}]}'
+gh run view 39361419757 --repo LingXiFox/LingXiAgent --log   # grep "Test run with 89 tests"
 ```
 
 ## 十、修订记录
@@ -232,3 +257,5 @@ gh run view <run-id> --log
 - 2026-10-20：`Provider-Plugin-Contract.md` 第三章新增第 8 条；`Kernel-Design.md` 更新 D3 结论段、§六双恢复入口说明、§七 `CancellationError` 分类、§十一 `endExecution` 未接线提示；README 状态与用例数收口。
 - 2026-10-20：最终 HEAD 校正为 `da61865`（仅测试断言加强），空核实测改用最终 HEAD 构建产物；替换已不存在的 `emptyCoreBootsButCannotInfer` 引用（改为 `QA_013_*` 双测试覆盖）。
 - 2026-10-20：最后一轮源码收口 `677d44e`（进程内悬空批次自愈 + duplicate-call 持久化前预校验），终态改为 **89 tests = 60 + 16 + 13**（5 连跑 0.021–0.024s）；§三补两个新测试并新增 3.4「独立审计之外的收口修复」；D3 证据补进程内自愈等价性；风险清单补 Info 第 17 条。
+- 2026-10-20：Docs 与 `.github/workflows/ci.yml` 入库（`34c834a`）；契约冻结稿按字节归档到 `Docs/Validation/Phase-1.1-contract.md`（sha256 `bee6f2d8…cf48`），验收记录与 `Regression-Cases.md` 的引用改指仓库内路径（`719d3f1`）。补记：README/Regression-Cases 曾停在 87 tests / `70847ca`，已同步为 89 / `677d44e`。
+- 2026-10-20：**CI 实跑通过，状态转「已验收」**。run `39361419757`（push 事件，head SHA `719d3f1`，`macos-26` / Swift 6.3.3 / Xcode 26.6.0）10/10 步骤 success，`✔ Test run with 89 tests in 0 suites passed after 0.074 seconds.`，空核检查通过；§六填入实测值并加「workflow 显示名沿用 main 的 CI Matrix Gate」核查提示，§七补 CI 复跑结果，§九复现步骤扩为可机检的五步（含分文件用例数、验收文件 sha256、逐 ID 函数名存在性交叉核验，本条记录发布前已当场跑过）。风险第 14 条改为已实测口径，并新增第 18 条记录 `GatesTests.swift:111` 的测试侧 `#UnnecessaryEffectMarker` 告警（内核零告警，基线已冻结故本阶段不动）。
