@@ -1,0 +1,85 @@
+name: CI
+
+# Phase 1.1 macOS gate. Deliberately minimal: one runner, no matrix, no third-party action
+# beyond checkout + cache. The chunked L3 harness described in Testing-and-Acceptance.md §八
+# arrives with the phase that needs it; this workflow is the permanent-red baseline for the
+# kernel tests and the empty-core startup contract (Kernel-Design.md §一, QA-013).
+
+on:
+  push:
+    branches: [rewrite/2.0]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS 26 (arm64) build & test
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Select newest Xcode
+        # The package declares macOS 26, so the gate needs an SDK that SwiftPM accepts. Pick the
+        # newest toolchain installed on the image instead of pinning one that predates the SDK.
+        run: |
+          set -euo pipefail
+          XCODE_APP="$(find /Applications -maxdepth 1 -name 'Xcode_*.app' -print | sort -V | tail -n 1)"
+          if [ -n "$XCODE_APP" ]; then
+            sudo xcode-select -s "$XCODE_APP"
+            echo "xcode: $XCODE_APP"
+          else
+            echo "xcode: keeping the image default ($(xcode-select -p))"
+          fi
+          swift --version
+
+      - name: Cache SwiftPM artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-macos-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: spm-macos-
+
+      - name: Build products and tests
+        timeout-minutes: 15
+        run: swift build --build-tests
+
+      - name: Run tests
+        timeout-minutes: 15
+        run: swift test
+
+      - name: Empty core starts without a provider and writes no journal records
+        # QA-013: with no provider plugin the host must start, report guidance, and write nothing.
+        # A fresh data directory must stay clean — an empty journal is the whole point of the
+        # "cannot infer, but can boot" contract; recovery of an empty journal appends no records.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          HOST=".build/debug/LingXiCoreHost"
+          test -x "$HOST"
+          DATA_DIR="$(mktemp -d)"
+          OUTPUT="$(LINGXI_DATA_DIR="$DATA_DIR" "$HOST")"
+          printf '%s\n' "$OUTPUT"
+
+          grep -Eq 'providers:[[:space:]]*0' <<<"$OUTPUT"
+          grep -q 'No provider plugin is active' <<<"$OUTPUT"
+          grep -q 'No inference was attempted' <<<"$OUTPUT"
+
+          JOURNAL="$DATA_DIR/events.jsonl"
+          if [ -s "$JOURNAL" ]; then
+            echo "::error::empty-core startup wrote journal records:"
+            cat "$JOURNAL"
+            exit 1
+          fi
+          echo "empty-core startup clean: guidance printed, no journal records"

@@ -57,11 +57,12 @@ DeepSeek 落在哪条 family **不是实现细节而是产品判断**：同一�
 3. **必须有终态**：既无 `[DONE]`、又无 finish_reason、又无 `message_stop` 时，必须报流协议错误，不得静默当成功。有 `[DONE]` 或"带 finish_reason 的 EOF"可宽容收尾。
 4. `(完成过的 toolCall 数 > 0) == (终态 == .toolCalls)`。出现 `tool_use` 却终态为 stop，判失败。
 
-补充三条：
+补充四条：
 
 5. **取消不得伪造失败**。取消路径静默结束流；Provider 自己先投递的 `.failed` 保留为真实原因。1.x 的 `f118d15` 记录过 Esc 被翻译成"Provider 流连接中断"并与真实故障抢同一终态槽位（LOOP-006）。
 6. 工具参数最终不是 JSON object 时必须失败，不许猜。
 7. 终态与原因的绑定信息一起交付，测试要同时钉 status 与 cause（QA 约定）。
+8. **provider 自身的中止必须显式表达**：抛 `ModelFailure` 或交付 `.failed` 事件，不得用 `CancellationError` 表达业务原因（超时、限流、内容过滤等）。`CancellationError` 只属于用户取消/内核 deadline；若 Provider 仍抛出，内核会防御性归类为 `.failed / .providerFailure(.transport)`，不当作 `cancelled`（LOOP-006 加固，Phase 1.1）。
 
 ## 四、各家差异与吸收方式
 
@@ -72,7 +73,7 @@ DeepSeek 落在哪条 family **不是实现细节而是产品判断**：同一�
 | 流格式 | `choices[].delta` + `[DONE]` | `message_start` / `content_block_*` / `message_stop`，无 `[DONE]`，`error` 本身是事件 | 具名事件状态机 |
 | 工具调用增量 | 按 `delta.index` 累积；id/name 可迟到、name 可跨 delta 分裂；参数须保证每个字符恰好出现一次 | 按 content block index 走 `partial_json` | arguments 有时增量有时**整体替换**（需 `hasPrefix` 判别）；`call_id` 与 `item_id` 需双向映射 |
 | reasoning | 需同时读 `reasoning` 与 `reasoning_content` | `thinking_delta`（1.x 曾直接丢弃） | 必须显式请求 `reasoning.summary`，否则思考期 10–40s 全静默；且仅特定后端接受，另一后端对未验证组织直接 400 |
-| stop reason | `stop`/`length`/`content_filter`/`tool_calls`，还要兼容顶层 `finish_reason`、`stop_reason`、camelCase 多形态 | `end_turn`/`stop_sequence`/`max_tokens`/`tool_use`/`refusal` | **没有 reason**：由 `completed` + 是否完成过调用推导 `stop|toolCalls`；`incomplete` 一律记 `maxTokens` |
+| stop reason | `stop`/`length`/`content_filter`/`tool_calls`，还要兼容顶层 `finish_reason`、`stop_reason`、camelCase 多形态 | `end_turn`/`stop_sequence`/`max_tokens`/`tool_use`/`refusal` | **没有 reason**：由 `completed` + 是否完成过调用推导 `stop` 或 `toolCalls`；`incomplete` 一律记 `maxTokens` |
 | 工具结果位置 | `tool` role | **无 `tool` role**，结果折进 user 轮 | 按 item 回传 |
 | system | 消息内 | **顶层字段**，唯一特权通道 | instructions |
 | 多模态 | `content` parts + data URI | `source.base64` 或 `source.type=file` + beta 头（仅当请求出现 fileID 才加） | 按 input item |

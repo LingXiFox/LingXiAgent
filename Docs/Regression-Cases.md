@@ -6,12 +6,13 @@
 ## 修订记录
 
 - **Phase 0.1（2026-10-19）**：插件运行模型由"插件即子进程、作者自实现 IPC"改为"插件是固定 C ABI 动态库 + 每插件一个独立 Plugin Host 进程"。影响范围：`IPC-*` 组的适用对象变为 **Core↔Host 内部协议**（作者不再接触）；`PLG-*` 组语义不变，新增 PLG-015~019 覆盖 ABI、签名策略、fail-closed 与进程级隔离；新增 E-13~E-15 记录握手五套不一致、library validation 取舍、无 size/version 字段的前向兼容缺陷。
+- **Phase 1.1（2026-10-20，内核正确性收口）**：不新增功能、不加依赖、不重构架构，只修内核正确性并补验证。新增 12 条：**LOOP-021~025、STORE-008~010、CTX-017/018、CACHE-007、QA-013**（契约见 `.tmp/phase-1.1-contract.md`，验收记录见 `Docs/Validation/Phase-1.1.md`）。既有条目的硬约束不变，但证据扩展：LOOP-002 的"写失败回滚"扩展为日志修复状态机（STORE-009）；LOOP-003/LOOP-004 的重启与 begin 语义分别由 `KernelRecovery` 全量重放（STORE-008）与单事务（STORE-010）承担；LOOP-006/007 的取消语义扩展为阻塞流竞争（LOOP-023）。**恢复策略改为"只读重放 + 终态化，不恢复执行"**：`LOOP-008` 原"只读项补跑、继续下一步"的口径不再适用于内核重启恢复，重新定界为在线故障恢复（PLG-014）。**验收结果（2026-10-20，终态 HEAD `677d44e`；变异矩阵在代码基线 `70847ca` 复跑）**：89 tests 全绿 ×5，变异检验 11/11 RED（其中删除预算后协议复校验的覆盖缺口已由 `CTX_018_postBudgetValidationGatePresent` 结构性门禁关闭），证据见 `Docs/Validation/Phase-1.1.md`；新条目状态统一标为「已覆盖（阶段 1.1）」。终态分类补一条：Provider 自身抛出的 `CancellationError` 归 `.failed / .providerFailure`，不得冒充用户取消（LOOP-006 加固）。
 
 ## 使用方式
 
 1. 测试函数名必须带条目 ID，例如 `func LOOP_006_cancelDoesNotFabricateProviderFailure()`。
 2. 新出现的失败场景先登记 ID 再写测试，不允许"先修了再说"。
-3. `状态` 列取值：`待继承`（2.0 需实现并覆盖）、`进行中`、`已覆盖`、`不适用`（架构已废弃，保留理由）。
+3. `状态` 列取值：`待继承`（2.0 需实现并覆盖）、`进行中`、`已覆盖`、`不适用`（架构已废弃，保留理由）；阶段验收期间的临时状态 `待验收（阶段 X.Y）` 表示测试已写但未完成 frozen 后验证与证据归档。
 4. `阶段` 列表示该回归在哪个阶段必须开始跑；`层` 对应 `Testing-and-Acceptance.md` 的 L0–L4。
 5. 证据列指向 1.x 的测试文件、符号或修复提交。它是"为什么这条值得测"的依据，不是实现参考。
 
@@ -47,18 +48,18 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| LOOP-001 | 同一 Run 并发触发取消终态化与完成终态化 | 只有一个赢家推进后续，另一次返回"未发生迁移"；幂等 | Round 12 *Single Terminalization Winner* | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-002 | 终态事件落盘失败 | 内存回滚到写之前，已追加事件被截断，不推进任何后续 | Round 19 *Root Terminal Durability* | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-004 | 全流程事件序列 | `runCreated` 恰好一次；stop 后内核待答交互账本与快照均为空 | `4ec856a`、`stopClearsCorePendingInteractions` | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-005 | 一个批次内 [慢, 快, 失败] 三个工具 | 并行执行，结果按 Provider 给出顺序进入同一条 tool 消息，事件保序；批次内出现重复 callID 时**整批拒绝** | `AgentToolLoopTests.multiToolBatchExecutesInParallelAndSettlesInProviderOrder` | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-006 | Provider 已投递失败的同时用户按 Esc | 终态保留真实故障原因，不改判为 cancelled；取消路径静默结束流，**严禁伪造失败事件** | `f118d15`、`CancellationRaceTests` 场景 4（钉 cause 不只钉 status） | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-007 | Esc 发生在工具已结算、下一次模型请求未发出时 | Run 进 `cancelled`，已执行的工具不重跑 | `toolContinuationEscToolNotReplayed` | 1 | L1 | 已覆盖（阶段 1） |
-| LOOP-008 | 崩溃时留有未消费批次（含只读与可变混合） | 重启后只读项执行补齐；可变项记 `executionStateUnknown` + `verificationRequired`；恰好发一次模型请求 | `restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown` | 1 | L1 | 待继承 |
+| LOOP-001 | 同一 Run 并发触发取消终态化与完成终态化 | 只有一个赢家推进后续，另一次返回"未发生迁移"；幂等 | Round 12 *Single Terminalization Winner* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：`terminalize` 显式返回赢家与否，begin 失败不补写终态） |
+| LOOP-002 | 终态事件落盘失败 | 内存回滚到写之前，已追加事件被截断，不推进任何后续 | Round 19 *Root Terminal Durability* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：repairRequired/rollbackFailed 状态机，见 STORE-009） |
+| LOOP-003 | 进程重启，存在已 started 但非终态的 Run | 一律判 `failed`，绝不重新排队或重放（避免重复副作用） | Round 13 *Crash Recovery Safety* | 1 | L1 | 已覆盖（阶段 1；1.1 加固：由 `KernelRecovery` 全量重放重建，见 STORE-008） |
+| LOOP-004 | 全流程事件序列 | `runCreated` 恰好一次；stop 后内核待答交互账本与快照均为空 | `4ec856a`、`stopClearsCorePendingInteractions` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：begin 三记录单事务，见 STORE-010） |
+| LOOP-005 | 一个批次内 [慢, 快, 失败] 三个工具 | 并行执行，结果按 Provider 给出顺序进入同一条 tool 消息，事件保序；批次内出现重复 callID 时**整批拒绝** | `AgentToolLoopTests.multiToolBatchExecutesInParallelAndSettlesInProviderOrder` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：`batchStarted` 意图先于任何副作用落盘） |
+| LOOP-006 | Provider 已投递失败的同时用户按 Esc | 终态保留真实故障原因，不改判为 cancelled；取消路径静默结束流，**严禁伪造失败事件**；Provider 自身抛出的 `CancellationError` 归 `.failed / .providerFailure`，不得冒充用户取消（只有用户取消/内核 deadline 产生 `cancelled`） | `f118d15`、`CancellationRaceTests` 场景 4（钉 cause 不只钉 status） | 1 | L1 | 已覆盖（阶段 1；1.1 加固：阻塞流下的终态优先级 + provider CancellationError 不冒充取消） |
+| LOOP-007 | Esc 发生在工具已结算、下一次模型请求未发出时 | Run 进 `cancelled`，已执行的工具不重跑 | `toolContinuationEscToolNotReplayed` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：阻塞流取消竞争，见 LOOP-023） |
+| LOOP-008 | 崩溃时留有未消费批次（含只读与可变混合） | **Phase 1.1 重新定界**：内核重启恢复不执行任何工具、不发模型请求，只读项也不补跑；已 `batchStarted` 未 `batchSettled` 一律合成 `executionStateUnknown` + `verificationRequired` 结果（见 LOOP-025）。"只读补跑"仅在阶段 3 在线插件故障恢复、执行器可用时按 PLG-014 实现 | `restartSchedulesReadOnlyRemainderAndSettlesMutationClaimAsUnknown`（1.x 口径） | 1 | L1 | 范围移至 PLG-014/阶段 3（重启恢复口径见 LOOP-025） |
 | LOOP-009 | 等待人工应答期间跨过 Run 与工具超时 | 超时必须不能吞掉人工等待，Run 继续存活 | `permissionWaitKeepsRunDurablePastAgentAndToolDeadlines` | 1 | L1 | 待继承 |
 | LOOP-010 | Stop 时队列非空 | 排队项一并进终态且不提升为新 root Run | `stopCancelsTheQueuedTurn` | — | — | **不适用**：内核取消排队（D1），该场景在 2.0 内核层不可构造；若将来在产品层引入队列，此条连同 LOOP-001/002/003 的交叉证明一起重新启用 |
 | LOOP-011 | 取消一个不存在的 Run / 只取消排队项 | 在产生任何副作用前抛命名错误；取消范围不得越界伤及 active Run | Round 11 *Cancel Scope*、*P0-D Validation Before Destruction*、`3ca4d37` | 1 | L1 | 待继承 |
-| LOOP-012 | 触达显式步数上限 | 错误信息含步数、最后一个工具调用、最后一次观察，可供用户判断 | `maxStepsReachedProvidesDetailedExplanation…` | 1 | L1 | 已覆盖（阶段 1） |
+| LOOP-012 | 触达显式步数上限 | 错误信息含步数、最后一个工具调用、最后一次观察，可供用户判断；步边界的预算耗尽与总超时检查同样成立 | `maxStepsReachedProvidesDetailedExplanation…` | 1 | L1 | 已覆盖（阶段 1；1.1 加固：步边界预算/超时检查，`LOOP_012_budgetExceeded`、`DEADLINE_stepBoundaryCheck`） |
 | LOOP-013 | 35 批真实变更 / 10 批空结果 / 10 批相同失败 | 全部执行到底，不得因"看起来没进展"硬停；空 stdout 不构成终止理由 | `usefulWorkBeyond32StepsCompletes`、`emptyResultsDoNotStop`、`identicalCommandsReachReport`、`8ca6b9f` | 1 | L1 | 已覆盖（阶段 1） |
 | LOOP-014 | Turn 期间会话修订号发生变化 | 陈旧 Run 的终态以 `StaleRunError` 丢弃且**不落盘** | `completeTurn` lease 校验 | 1 | L1 | 待继承 |
 | LOOP-015 | 同批次 `read a → write a → read a`；以及目录列表 + 该目录内写入 | 第三次读必须真执行并返回新字节；目录列表不可被复用；**数真实执行次数**作为断言手段 | `ReadConsistencyTests`（11 门）、`13b9c39` | 1 | L1 | 待继承 |
@@ -67,6 +68,11 @@
 | LOOP-018 | 工具启动了后台子进程后被取消 | 后台进程归属必须登记并可回收，不得泄漏或杀不掉 | `0a2fffe`、`8726555` | 2 | L2 | 待继承 |
 | LOOP-019 | 工具结果里的版本戳被用于后续写回校验 | `read_file` 的 stamp 必须被写/编辑的 expected-hash 接受；不匹配仍拒绝且**不动磁盘** | `SensitivePathPolicyTests`、`ReadConsistency` | 2 | L2 | 待继承 |
 | LOOP-020 | Turn 完成路径并发 | Turn 完成必须串行，不得出现两次完成副作用 | `52243d7` | 1 | L1 | 待继承 |
+| LOOP-021 | 同一 Session 已有 active Run 时发起第二个 Run | 第二个 Run 在产生任何副作用前被拒：`failed / concurrentRunRejected`，日志无新记录、SessionStore 无新条目，首 Run 不受影响；不同 Session 可各自并发建 Run | 1.x 用队列串行化、无准入拒绝语义（E-02 反面证据） | 1 | L1 | 已覆盖（阶段 1.1） |
+| LOOP-022 | `maxTokens` / `contentFilter` / `refusal` / `unknown` 停止原因 | 不得报 `completed`：分别 `failed / outputTruncated`、`failed / contentFiltered`、`failed / refused`、`failed / streamProtocolViolation`；仅正常 `.stop` 才 `completed`（有文本 `completedWithText`、无文本 `completedWithEmptyText`） | 阶段 1 把所有 `.completed(stop)` 一律当 completed；Phase 1.1 契约 §2.5 | 1 | L1 | 已覆盖（阶段 1.1） |
+| LOOP-023 | Provider 流阻塞时的取消与总超时 | `stream()` 调用与流消费整体放进可竞争任务；取消/总超时先被观察到 → `cancelled / cancelledByUser` 或 `deadlineExceeded / deadlineExceeded`；迟到事件丢弃且不伪造 provider 失败；终态事件一旦被内核处理即胜出，之后取消不改写；已收到的 usage 部分照常汇总 | 1.x `CancellationRaceTests` 场景 4（LOOP-006）只覆盖非阻塞流；Phase 1.1 契约 §2.6 | 1 | L1 | 已覆盖（阶段 1.1） |
+| LOOP-024 | Assistant 文本落盘与跨 Turn 可见 | 工具轮：assistant 文本与工具调用写进**同一条** `entryRecorded`（`.assistantMessage`，unit=batchID；文本为空时用 `.toolCall`）；正常完成：最终文本写 `.text` 条目（role assistant、segment history）；`.maxTokens` 已产出文本同样写入，contentFilter/refusal 不写入；先事件落盘再进 store；后续 Turn 请求可见完整历史 | 阶段 1 只落工具调用、不落 assistant 文本；Phase 1.1 契约 §2.4 | 1 | L1 | 已覆盖（阶段 1.1） |
+| LOOP-025 | 崩溃恢复不重放写操作 | 恢复只读重放事件、重建内存对象；`batchStarted` 有而 `batchSettled` 缺 → 合成 `isError=true`、`effect=.unknown` 的结果（内容含 `executionStateUnknown` 与 verification 要求），Run 记入 `executionStateUnknownRunIDs`，**绝不重放**；恢复期间 ToolExecutor 调用 0 次、模型请求 0 次 | 1.x 恢复矩阵允许只读补跑（LOOP-008），2.0 取更严格口径；Phase 1.1 契约 §1.3 | 1 | L1 | 已覆盖（阶段 1.1） |
 
 ### CTX 组 — 上下文装配、完整性、压缩
 
@@ -88,6 +94,8 @@
 | CTX-014 | 装配前协议校验 | 孤儿工具调用、乱序、重复必须显式抛错，不发往模型 | `ModelRequestProtocolValidator.validate` | 1 | L1 | 已覆盖（阶段 1） |
 | CTX-015 | 同一条目连续 8 轮参与装配 | 只做一次移出 + 一条引用行，不得反复投影 | `residencyPreventsRepeatedCanonicalPageOut` | 1 | L1 | 待继承 |
 | CTX-016 | 读文件类工具的大输出 | 该类工具豁免通用投影阈值（1.x 为 8 次全文 / 64KB），阈值判定在**被调用方一侧**完成 | 1.x 输出策略实现 | 2 | L2 | 待继承 |
+| CTX-017 | 跨 Turn 的 user 条目分段 | 只有当前 Run 的 user 条目是 `.currentUser`（mandatory）；之前轮的 user 全部降级为 `.history`（可淘汰）；重放与实时共用同一降级规则 | 阶段 1 里所有 user 条目都是 currentUser，旧轮历史永不可淘汰；Phase 1.1 契约 §1/§2.9 | 1 | L1 | 已覆盖（阶段 1.1） |
+| CTX-018 | 预算裁剪后的引用行与协议复核 | 引用行 segment `.derivedPage`、role **`.user`（不得 `.system`）**；引用行 token 计入 `BudgetPlan.estimatedTokens` 与 hard limit；计入后超 hard 先继续淘汰，为容纳引用行而追加淘汰后必须**重算引用行（清单不得漏列被移出 id）**，仍超 → `BudgetError`；`plan.selected` 必须再过 `ContextRequestValidator`，失败 → `failed / streamProtocolViolation` | 阶段 1 引用行是 `.system` 且不计预算；Phase 1.1 契约 §2.7/§2.8；引用行重算见 `4276281` | 1 | L1 | 已覆盖（阶段 1.1） |
 
 ### CACHE 组 — Prompt Cache 证据
 
@@ -99,6 +107,7 @@
 | CACHE-004 | 上报命中率 | 同时给原始 token 与分母，并说明块粒度量化边界；禁止把量化后的连续值当精确比率解读 | 实测 `cacheReadTokens=16384 / previousPromptTokens=26555 ≈ 61.7%`，16384 为块量化值 | 5 | L4 | 待继承 |
 | CACHE-005 | 前缀里混入每轮可变条目 | goal anchor、后台通知、子代理回执、检索内容一律不得并入特权前缀——这是 1.x 命中率天花板的直接成因 | 同上 live-audit；`missDiagnostics` 显示增量历史吃掉约 10,171 token | 1 | L1 | 待继承 |
 | CACHE-006 | 某 Provider 不报缓存字段 | 五个 usage 字段允许缺失，**缺失不等于 0**，并独立上报"无缓存遥测" | `CrossProviderCacheArchitectureTests.providerC_NoCacheTelemetry…` | 2 | L2 | 待继承 |
+| CACHE-007 | 同 Run 跨 Step 的 usage 汇总 | 每个字段独立做"非 nil 求和"；该字段全程缺失 → nil；显式 0 保留并参与求和（缺失 ≠ 0） | 阶段 1 用 `??` 取首个非 nil 值，后步数值覆盖前步；Phase 1.1 契约 §2.8 | 1 | L1 | 已覆盖（阶段 1.1） |
 
 ### PROV 组 — Provider 语义（详单见 `Provider-Plugin-Contract.md`）
 
@@ -166,13 +175,16 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| STORE-001 | 终态写入与内存变更顺序 | 先落盘成功再改内存；写失败回滚内存并截断事件 | Round 19 | 1 | L1 | 已覆盖（阶段 1） |
+| STORE-001 | 终态写入与内存变更顺序 | 先落盘成功再改内存；写失败回滚内存并截断事件 | Round 19 | 1 | L1 | 已覆盖（阶段 1；1.1 加固：append 失败进入 repairRequired→rollBack 修复，见 STORE-009） |
 | STORE-002 | 账号引用 `{env:NAME}` 在 Dock 启动进程里不可解析 | 不发注定失败的请求，报出变量名；`LINGXI_<ID>_API_KEY` 覆盖优先 | `4ec856a` | 4 | L1 | 待继承 |
 | STORE-003 | 存储迁移时机 | `start()` 内禁止迁移（源码级门禁），避免隐式写库 | `4ec856a` | 1 | L0 | 待继承 |
 | STORE-004 | 历史时间戳格式 / 排序精度 | 读取端容忍历史格式；需要排 page-out 与 cache bust 先后处必须毫秒精度 | `c5d00b5`、`0d9761d` | 1 | L1 | 待继承 |
 | STORE-005 | 凭据库 KDF | cost 写进 header 且可用低值测（生产 600k 轮使每个 store 4s 拖死测试） | `5e9083c` | 4 | L1 | 待继承 |
 | STORE-006 | 会话摘要字段 | 各构造点都要带 goal；重命名/改力度/回退不得清空；列表缓存分支需覆盖活值 | `8865b66`、`9b81345` | 4 | L1 | 待继承 |
 | STORE-007 | 只读查询接口 | 不得回写任何状态（1.x 热度过期值被只读快照接口写回）；测试须用量级正确的 `now`，远期值会掩盖 underflow | `b49111e` | 1 | L1 | 待继承 |
+| STORE-008 | 事件日志全量重放 | 用重放结果重建**全新** `SessionStore` 与 `RunRegistry`（不复用旧实例）：条目按实时规则重放（含 User 降级 CTX-017），Run 状态与终态与事件一致；连续重放两遍结果一致（幂等） | 1.x 重启恢复矩阵只覆盖 Run 终态，未证明全量重建；Phase 1.1 契约 §1.2 | 1 | L1 | 已覆盖（阶段 1.1） |
+| STORE-009 | 事件日志损坏与写入失败 | 打开时只允许**末尾**一行损坏：截断并计数 `repairedTailRecordCount`，新记录仍可写；非末尾坏行 → `undecodableLine` 拒绝打开；`append` 失败后进入 `repairRequired`（除 `rollBack` 外一律拒绝），`rollBack` 成功即修复；`rollBack` 失败 → `rollbackFailed`，此后日志 `unavailable` 拒绝写入 | 1.x `FileEventLogSink` 遇损坏尾行按 `undecodableLine` 拒载（Kernel-Design D3 遗留缺口）；Phase 1.1 契约 §1 | 1 | L1 | 已覆盖（阶段 1.1） |
+| STORE-010 | begin() 事务失败 | `runCreated + runStarted + user entry` 单事务失败 → rollBack、内存 Run 记录 `discard`，返回 failed 且 `terminalCommitted == false`；**不得补写孤立 runTerminal**；SessionStore 不变 | 阶段 1 事务失败后仍走终态化、留下孤立终态记录；Phase 1.1 契约 §2.3 | 1 | L1 | 已覆盖（阶段 1.1） |
 
 ### FE 组 — 前端协议与 TUI
 
@@ -201,6 +213,7 @@
 | QA-010 | 结构门禁实现 | 直接解析 `Package.swift` 断言依赖方向，不维护第二份清单 | `CoreDependencyGraphGateTests` | 1 | L0 | 待继承 |
 | QA-011 | 真实网络与凭据 | 默认零外呼；真上游 env 门禁且在独立 job；CI 隔离 `HOME` 与数据目录 | 1.x CI 环境变量门禁组 | 2 | CI | 待继承 |
 | QA-012 | 验收记录 | 每条验收含实测数字、trace 顺序与**反例**（把 bug 注回后测试必须变红） | `Docs/Validation/`（1 例） | 2 | 评审 | 待继承 |
+| QA-013 | 无 Provider 的空内核启动与运行 | 启动预检 `router.resolve(model:)` 先于任何事件：失败 → `failed / runtimeFailure`，detail 为引导文案，`terminalCommitted == false`；日志 0 记录、RunRegistry 无记录、SessionStore 不变；CI 另有独立步骤断言 `events.jsonl` 不存在或为空 | 阶段 1 空内核运行会写 `runCreated`/`runTerminal` 等无意义日志；Phase 1.1 契约 §2.1 | 1 | L1 + CI | 已覆盖（阶段 1.1） |
 
 ---
 

@@ -15,7 +15,7 @@
 
 **内核不含**：任何 Provider 实现或厂商特判；任何工具实现（文件、命令执行、Git、Browser、MCP、LSP、记忆、子代理）；任何 UI 代码；P/E 双核与自主召回；面向数百家 Provider 的兼容矩阵。
 
-判据：空内核在没有任何 Provider 插件时必须能启动、展示状态并引导配置，但不能发起推理（项目书 §3.1、§七第 1 条）。这条是阶段 1 的验收主体。
+判据：空内核在没有任何 Provider 插件时必须能启动、展示状态并引导配置，但不能发起推理，且启动与运行不得写下任何无意义的事件日志（项目书 §3.1、§七第 1 条；QA-013）。这条是阶段 1 的验收主体。
 
 ## 二、进程形态与模块边界
 
@@ -91,7 +91,7 @@ Run 状态机：
 规则（LOOP-005、CTX-009）：
 
 1. **并行执行、有序结算**。执行顺序不保证，结算顺序严格按 Provider 给出调用的顺序；结果合并进同一条 tool 消息。
-2. `callID ↔ result` 严格配对；同一批次内出现重复 callID，**整批拒绝**，不做去重容忍。
+2. `callID ↔ result` 严格配对；同一批次内出现重复 callID，**整批拒绝**，不做去重容忍。拒绝发生在写任何持久化记录**之前**（`677d44e` 加固）：非法 call 条目不得进入事件日志，否则一次失败 Run 会永久污染会话、后续每个请求都过不了协议校验（LOOP-005）。
 3. 读共享波次：同批次内只读调用可共享一次实际执行，但**写操作使其失效**。`read a → write a → read a` 第三次必须真执行并返回新字节；目录列表不可被该目录内的写入复用；陈旧读不得写入会话存储，也不得进入下一次模型请求（LOOP-015、CTX-003）。1.x 用 `ReadConsistencyTests` 数真实执行次数来断言，这个"数执行次数"的手法要保留。
 4. 每个调用带效果分类（只读 / 可变 / 未知），恢复流程据此决定能否重放（第六章）。
 5. 批次状态持久化：`pending → settledAwaitingConsumption → consumed`。未消费的批次是 mandatory 上下文，压缩时不可淘汰（CTX-009）。
@@ -102,16 +102,31 @@ Run 状态机：
 
 存储形态（D3）：**追加式事件日志 + 定期快照**，阶段 1 不引入 SQLite。理由：1.x 的崩溃正确性来自"终态先落盘 + 单一赢家 + 恢复矩阵"这套纪律，而不是来自 SQLite；但因果批次与租约状态确实需要事务性提交，阶段 2 若事件日志无法满足原子性，再评估换存储，并作为 ADR 记录。
 
-恢复矩阵（LOOP-003、008）：
+**恢复策略（Phase 1.1 冻结口径，LOOP-003、LOOP-025、STORE-008~010）**。恢复入口是 `KernelRecovery.recover(log:)`：只读重放 + 重建全新内存对象；唯一允许的写入是给未终态 Run 追加 `runTerminal` 失败记录。恢复期间**绝不调用 ToolExecutor、绝不重发模型请求**。
+
+1. **打开日志**：只允许**末尾**一行坏数据——截断并计入 `repairedTailRecordCount`；非末尾坏行 → `EventLogError.undecodableLine`，拒绝打开。`append` 失败后日志进入 `repairRequired`（除 `rollBack` 外一律拒绝）；`rollBack` 失败 → `rollbackFailed`，此后日志 `unavailable`，不可再用（STORE-009）。
+2. **重放重建**：按序重放 `runCreated / runStarted / entryRecorded / batchStarted / batchSettled / batchConsumed / runTerminal`，用与实时路径相同的规则重建**全新** `SessionStore` 与 `RunRegistry`（含 User 降级规则 CTX-017，不复用旧实例）；重放两遍结果必须一致（STORE-008）。
+3. **批次对账**（历史自愈，仅内存、确定性）：
+   - `batchSettled` 有、对应 `entryRecorded(result-<batch>)` 缺 → 用 settled outcomes 合成结果条目并插到 call 条目之后（settled-unconsumed 自愈）。
+   - `batchStarted` 有、`batchSettled` 缺 → **执行状态不确定**：合成 `isError=true`、`effect=.unknown` 的结果条目（内容含 `executionStateUnknown` 与 verification 要求），Run 记入 `executionStateUnknownRunIDs`，**绝不重放**。
+   - 有 call 条目（unit=batchID）但无任何 batch 事件 → 崩溃发生在派发前，合成"未开始执行"错误结果，不记 unknown。
+4. **终态化**：未终态 Run 一律 `terminalize(failed)`：有未结算批次 → cause `.executionStateUnknown`；否则 cause `.runtimeFailure`；detail 含 "recovered after restart"。
+5. **恢复不继续执行**：被中断的 Run 不会被"接着跑完"，继续执行只能由下一次 Turn 重新发起。这比 1.x 的恢复口径更严格——1.x 在部分路径上允许只读工具补跑（LOOP-008），2.0 选择一律不执行：只读重跑的正确性依赖执行器与插件环境完整可用，而恢复阶段这两者尚未建立；宁可显式标未知，也不冒重复副作用的风险。
+
+阶段 1 有两个恢复入口：宿主使用的 `KernelRecovery.recover`（完整语义）与 `RunRegistry.recoverUnfinishedRuns`（旧入口，仅把未完成 Run 终态化，没有 `executionStateUnknown` 语义）。Phase 1.2 收敛到 `KernelRecovery`，避免两套恢复口径并存。
+
+同进程内的悬空批次也按同一套规则处理（`677d44e` 加固）：Run 在 call 条目落盘后、result 落盘前失败（例如 `batchStarted` append 失败）时，下一次 Run 在装配请求前按日志**确定性自愈**——`batchSettled` 已落盘 → 恢复结果条目；`batchStarted` 未 settled → 合成 `executionStateUnknown` 错误结果；call 条目存在但没有任何 batch 事件 → 合成 not started 错误结果。自愈只写内存、不追加日志；重启后由 `KernelRecovery` 从同一日志派生出等价历史（LOOP-025 加固）。两条污染路径因此都被封死：重复 callID 在持久化前拒绝，悬空批次在进程内下一次 Run 前自愈。
+
+恢复矩阵（Phase 1.1 口径；"恢复动作"只操作事件日志与内存，**不执行任何工具、不发模型请求**）：
 
 | 崩溃时刻 | 恢复动作 | 禁止 |
 |---|---|---|
-| Run 已创建未开始 | 标记 `failed`，不重排执行 | 重新排队 |
-| Run 在跑、无终态 | 一律 `failed(runtimeFailure)` | 继续执行该 Run |
-| 批次全部 settled 未 consumed | 消费结果，继续下一步 | 重跑工具 |
-| 批次部分执行、含只读 | 只读项可重跑，结果按顺序补齐 | 重跑可变项 |
-| 批次含可变项、结果未知 | 记 `executionStateUnknown` + `verificationRequired`，显式补录失败结果，只发一次模型请求 | 静默重放整批 |
-| 等待人工应答时崩溃 | 保持待答状态；回复后原批次精确续跑一次；已拒绝的也绝不重放 | 复活过期审批卡 |
+| Run 已创建未开始 | 标记 `failed(runtimeFailure)`，不重排执行 | 重新排队 |
+| Run 在跑、无终态 | `failed`；有未结算批次时 cause `.executionStateUnknown` | 继续执行该 Run |
+| 批次全部 settled 未 consumed | 重建结果条目进历史（settled-unconsumed 自愈），Run 仍 `failed` | 重跑工具、恢复执行 |
+| 批次 started 未 settled | 合成 `executionStateUnknown` 错误结果，Run 记入 unknown 列表并 `failed` | 静默重放整批 |
+| call 条目存在、无 batch 事件 | 合成"未开始执行"错误结果，不记 unknown | 重跑工具 |
+| 等待人工应答时崩溃 | 阶段 1 内核无待答交互（`interrupted` 仅作状态占位）；阶段 2 引入交互后按"保持待答、回复后原批次精确续跑一次"实现 | 复活过期审批卡 |
 
 核心不变式：**副作用不重复执行**。宁可留下"状态未知"并让模型去验证，也不自动重放写操作。1.x 在 `SessionRuntime` 里对"工具成功后崩溃导致意图丢失"做过 SQLite 控制面 + 单事务提交的修复，2.0 用事件日志也要满足同一条不变式（CTX-008 关联）。
 
@@ -122,6 +137,8 @@ Run 状态机：
 取消（LOOP-006、007、011、017）：
 
 - 取消是意图声明，不是错误。取消路径必须**静默结束**流，严禁伪造 `.failed`；Provider 自己先投递的失败必须保留为真实原因，不能被取消覆盖。
+- 取消必须能竞争过阻塞中的 Provider 流：`stream()` 调用与流消费整体放进可竞争的任务，watchdog 用注入时钟等到剩余总超时；取消/超时先被观察到 → `cancelled` 或 `deadlineExceeded`，迟到事件丢弃、不伪造 provider 失败，已处理的终态事件胜出；已收到的 usage 部分照常汇总（LOOP-023）。
+- Provider 自身抛出的 `CancellationError` 属 provider 失败（`.failed / .providerFailure(.transport)`），不得冒充用户取消；只有用户取消或内核 deadline 才产生 `cancelled / cancelledByUser`。Provider 契约（阶段 2）必须写明不得用 `CancellationError` 表达用户取消。
 - 取消粒度：按 Run。取消一个不存在的 ID 必须在产生任何副作用前抛出命名错误。
 - 取消发生在工具已完、下一次模型请求未发出时：Run 进 `cancelled`，已执行的工具不重跑。
 - 取消后到达的迟到增量不得渲染上屏；已投递的增量保留；活动注册表清空。
@@ -165,7 +182,7 @@ Run 状态机：
 - 水位策略：`highWater = preferred × 1.15`，`lowWater = preferred × 0.8`。起点是"全保留"，按分数从低到高逐个移出，降到 lowWater **立即停止**，不做多余压缩（CTX-008）。
 - mandatory 底价：system、当前 user 消息、未消费的因果批次不可淘汰；mandatory 之和超过 hard limit 直接报 `budgetExceeded`，不硬塞。
 - 以因果批次为最小移出单位。
-- 移出时留一条**能精确指回原文的稳定引用行**，由模型显式请求回读（CTX-010）。
+- 移出时留一条**能精确指回原文的稳定引用行**，由模型显式请求回读（CTX-010）。引用行 segment 为 `.derivedPage`、role 为 **user**（不得冒充 system 指令），其 token 计入 `BudgetPlan.estimatedTokens` 与 hard limit；引用行列出全部被移出条目 id，因此为容纳引用行而继续淘汰时必须**重算引用行文本与 token**，直到 mandatory 底价 + 引用行仍不超 hard limit，仍超才报 `budgetExceeded`；裁剪后的 `selected` 必须重新通过协议校验，失败即按流协议违例失败，不静默发送（CTX-018）。
 - 失败诊断证据（异常名、exitCode）必须在压缩与再投影后仍存活，且重复投影幂等（CTX-004）。
 
 **丢弃**：
@@ -186,7 +203,7 @@ Run 状态机：
 2. 缓存断点位置由内核的 cachePlan 决定，插件无权自行判定 stable/volatile（CACHE-002）。
 3. 撤回/回退后不得伪造缓存命中：必须推进 epoch 并把该轮标记 `invalidated`（CACHE-003）。
 4. 命中率不是连续量：1.x 实测 `cacheReadTokens=16384` 是块粒度量化值，上报时须同时给原始 token 与分母，并说明量化边界（CACHE-004）。
-5. `usage` 各字段允许缺失，**缺失不等于 0**；某 Provider 无缓存遥测必须独立上报这一事实（CACHE-006）。
+5. `usage` 各字段允许缺失，**缺失不等于 0**；某 Provider 无缓存遥测必须独立上报这一事实（CACHE-006）。同一 Run 跨 Step 对每个字段做"非 nil 求和"：全程缺失为 nil，显式 0 保留并参与求和（CACHE-007）。
 6. 客户端自算的 token 估算只用于预算与限流预判，不进成本报告；成本报告用上游 usage。
 7. 不为命中率牺牲必要上下文、推理质量或任务正确性（项目书 §3.4）。判定方式见 `Testing-and-Acceptance.md` L4。
 
@@ -202,6 +219,8 @@ Run 状态机：
 
 内核不含任何端口的实现，因此"没有 Provider 时能启动、不能推理"是结构上的必然，不是配置上的开关。三个端口全部由插件经统一握手与能力注册流程提供（`Plugin-System-Design.md` 第四章）：内核看到的是 bundle id 命名空间下的能力标识，看不到厂商、进程方式或 ABI 细节。
 
+**阶段 1 未接线**：`endExecution` 清理路径尚未被内核调用。Phase 1.2 接入 Provider 插件前必须补上，否则 provider 的每个执行态没有清理（`Docs/Validation/Phase-1.1.md` 风险 8.1 第 1 条）。
+
 ## 十二、决策与待决
 
 | ID | 决定 | 理由 | 可逆性 |
@@ -209,12 +228,14 @@ Run 状态机：
 | D1 | 内核不实现多轮排队，单 active Run | 消除队列×终态×崩溃交叉缺陷面（E-02） | 中：可在产品层加队列而不改内核 |
 | D2 | 终止权威只来自硬边界，取消启发式硬停与正则完成检测 | 1.x 两套机制最终都被自己废除或大量妥协 | 高 |
 | D3（**有条件成立**） | 追加事件日志 + 快照，阶段 1 不引入 SQLite | 正确性来自"终态先落盘 + 单一赢家 + 恢复矩阵"这套纪律，不来自存储引擎；依赖最小 | 中：阶段 2 可按 ADR 更换 |
-
-D3 的前提是**可靠恢复必须被验证**（Phase 0.1 决策）。阶段 1 的验收要求：恢复矩阵每一行都有对应测试，且能证明"因果批次落盘 + 租约状态变更"这一类多记录写入的原子性。若事件日志无法在不引入事务引擎的前提下满足该原子性，D3 立即失效并改选存储——这不是可以拖到阶段 5 的技术债。
-
-阶段 1 的实际证明程度：日志层事务（提交标记 + 失败截断）、终态先落盘、单一赢家、重启后将未完成 Run 判失败、文件日志重开与解码往返，均已有测试。**尚未证明**的是进程被强杀或掉电时的半行写入行为（`FileEventLogSink` 目前是整行追加 + `synchronize()`，重开时遇到损坏尾行会按 `undecodableLine` 报错而非丢弃）。这件事必须在阶段 2 引入外部能力调用之前定论，否则恢复语义只是理论上成立。
 | D4 | Core 独立成进程，前端只走协议 | 满足"不重编 Core 换 Provider"，TUI 与任务互不拖垮 | 低（架构根基） |
 | D5 | 上下文压缩保留水位+mandatory+因果批次，丢弃评分器与经济调度 | 前者被实测有效，后者从未校准且在真实窗口下形同虚设 | 高 |
-| ~~Q1~~ | **已解决**：首发 macOS 26.2+ / Apple Silicon，Swift 6.4 开发工具链，`swift-tools-version` 暂定 6.2 | Phase 0.1 决策第 1 条；`.swift-version` 需从 6.0.3 同步更新 | — |
+| ~~Q1~~ | **已解决**：首发 macOS 26.2+ / Apple Silicon，Swift 6.4 开发工具链，`swift-tools-version` 暂定 6.2 | Phase 0.1 决策第 1 条；`.swift-version` 已同步为 6.4 | — |
 | Q2 | 事件日志的快照触发阈值 | 阶段 1 实现期决定即可 | — |
 | Q3 | 是否需要"最小历史检索"作为自主召回的替代 | 目前判定只需引用行 + 显式回读；若真实任务出现需要再开 ADR | — |
+
+D3 的前提是**可靠恢复必须被验证**（Phase 0.1 决策）。阶段 1 的验收要求：恢复策略与矩阵的每一行都有对应测试，且能证明"因果批次落盘 + 租约状态变更"这一类多记录写入的原子性。若事件日志无法在不引入事务引擎的前提下满足该原子性，D3 立即失效并改选存储——这不是可以拖到阶段 5 的技术债。
+
+阶段 1 的实际证明程度（Phase 1.1 更新）：日志层事务（begin marker + 失败截断 + `repairRequired`/`rollbackFailed` 状态机）、终态先落盘、单一赢家、未终态 Run 的终态化、全量重放重建（STORE-008）、尾部坏行截断修复并计数（STORE-009）、begin 事务失败不留孤立终态（STORE-010）均已纳入测试。**半行写入行为已定论**：进程被强杀或掉电留下末尾坏行时，重开只截断该行并计入 `repairedTailRecordCount`，不再按 `undecodableLine` 拒绝；只有非末尾损坏才拒载。仍未证明的是：非末尾损坏的自动恢复（当前策略是显式拒载而非猜测修复）、快照压缩路径，以及真实掉电（非进程级 kill）下的块设备行为。
+
+**D3 结论（Phase 1.1）**：事件日志方案在阶段 1 范围内满足可靠一致性要求——单一终态赢家、终态先落盘再改内存、多记录提交（marker + 回滚）、副作用前 `batchStarted` 意图落盘、尾部损坏可验证修复、重放确定且幂等，且变异检验 11/11 全红（证据映射见 `Docs/Validation/Phase-1.1.md` 第四节与「D3 前提验证」小节）。**保留追加式事件日志，不替换存储引擎**，不需要为换存储单独开 ADR；物理掉电/`fsync` 语义不在单测可证范围，列入残余风险。阶段 2 引入外部能力调用前必须保持"事件日志是唯一真相源"。

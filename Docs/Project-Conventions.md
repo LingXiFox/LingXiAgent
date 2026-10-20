@@ -6,7 +6,7 @@
 ## 一、平台与工具链
 
 - 唯一目标平台：**macOS 26.2 及以上 / Apple Silicon**（Phase 0.1 决策第 1 条）。
-- 开发工具链 **Swift 6.4**；SwiftPM `swift-tools-version` 暂定 **6.2**，`Package.swift` 的平台声明与 `.swift-version` 必须与此一致（当前 `.swift-version` 记的是 1.x 遗留值 6.0.3，Phase 1 建包时一并更新）。
+- 开发工具链 **Swift 6.4**；SwiftPM `swift-tools-version` 暂定 **6.2**，`Package.swift` 的平台声明与 `.swift-version` 必须与此一致（`.swift-version` 已更新为 6.4，`Package.swift` 为 6.2）。
 - **暂不迁移旧版 OpenTUI 动态库**（Phase 0.1 决策第 3 条）。TUI 的依赖与渲染方案在后续阶段独立验证；在此之前，任何 target 都不得链接 `Vendor/OpenTUI/`，也不得为它预留 shim。
 - 禁止为 Windows、Linux 预先铺设兼容层、条件编译分支、平台抽象替身或 CI job。需要 OS 相关能力时直接写 Darwin 实现，抽象点只到"这一层是平台层"为止，不做第二个实现。
 - 禁止在 2.0 阶段继续原生 GUI 开发。前端只保证协议面存在（`Testing-and-Acceptance.md` 的前端契约层），实现按 TUI 优先。

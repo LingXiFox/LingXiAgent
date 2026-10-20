@@ -24,7 +24,7 @@ L2 是项目书"插件异常"验收的家，也是 2.0 相对 1.x 最重要的�
 1. **依赖方向**：解析 `Package.swift`，断言内核 target 不可达任何 UI/前端 target、不可达任何 Provider 或工具实现 target、不可达厂商 SDK。1.x 的 `CoreDependencyGraphGateTests` 手法照搬。
 2. **无孤儿契约类型**：协议 target 里每个公开类型必须有生产者或消费者，违反即失败，带显式 allow-list。这是防止 2.0 重演"hook 全套类型都在但生产代码零调用方"的唯一有效手段（PLG-006）。
 3. **能力不得继承**：能力与权限声明结构无默认参数，不显式声明就不通过（PLG-009）。
-4. **许可矩阵一致**：`Package.swift` 里的 target 集合必须与 `LICENSE-MATRIX.md` 完全对应。注意当前矩阵内容是 1.x 的清单，2.0 首个 target 建立时必须先重写矩阵（`Project-Conventions.md` 第八章）。
+4. **许可矩阵一致**：`Package.swift` 里的 target 集合必须与 `LICENSE-MATRIX.md` 完全对应。矩阵已按 2.0 实际 target 重建，并由 L0 门禁 `L0_licenseMatrixMatchesDeclaredTargets` 自动检查漂移（`Project-Conventions.md` 第八章）。
 
 ## 三、测试替身
 
@@ -111,6 +111,8 @@ L2 是项目书"插件异常"验收的家，也是 2.0 相对 1.x 最重要的�
 ## 八、CI 形态
 
 单平台单流水线：build → L0/L1/L2 快检 → L3 分块。机制继承 1.x 的分块脚本，内容不继承其跨平台部分：
+
+阶段 1.1 起已落地最小 macOS 流水线 `.github/workflows/ci.yml`：`swift build --build-tests` + `swift test` + 空核启动检查（无 Provider 不写事件日志）。下面的分块 L3 机制在阶段 2 引入。
 
 - 按 suite 数分块（1.x 用 12 块），每块独立 watchdog + **一次隔离重试**（隔离重试用于确认是否 flake，重试仍失败才算真失败）。
 - 每块落 `--event-stream-output-path`，这样进程被 kill 后仍能指名卡住的那个用例。
