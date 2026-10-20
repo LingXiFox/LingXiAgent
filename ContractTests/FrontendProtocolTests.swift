@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LingXiFrontendProtocol
 import LingXiKernel
@@ -105,7 +106,10 @@ final class ProtocolCore: @unchecked Sendable {
 
     func terminate() {
         if process.isRunning { stdin.fileHandleForWriting.closeFile(); process.terminate() }
-        process.waitUntilExit()
+        if !waitForProcessExit(process, timeout: 3) {
+            kill(process.processIdentifier, SIGKILL)
+            #expect(waitForProcessExit(process, timeout: 2), "Core test process did not exit after SIGKILL")
+        }
     }
 
     var exitStatus: Int32 { process.terminationStatus }

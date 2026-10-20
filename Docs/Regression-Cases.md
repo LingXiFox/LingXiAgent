@@ -232,7 +232,7 @@
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
 | QA-001 | 测试构造工具结果 | 禁止手工造结果直塞内核；必须跨真实执行与被调用方边界（截断、归档、投影都在被调用侧） | `Docs/AA/PE-Core-ToolLoop-Audit-2026-10-04.md` §H | 1 | 评审 + L0 | 新增 |
-| QA-002 | 时间相关测试 | 禁止固定 `Task.sleep`；用注入时钟或 poll-to-deadline | `27b1899`、`67604b8`（flake 反复修） | 1 | L0 | 已覆盖（`QA_002_pollDoesNotBlockObservedTask`，旧阻塞轮询反例变红） |
+| QA-002 | 时间相关测试 | 禁止固定 `Task.sleep`；用注入时钟或 poll-to-deadline；进程清理不得无截止地等待 RunLoop | `27b1899`、`67604b8`（flake 反复修） | 1 | L0 | 已覆盖（`QA_002_pollDoesNotBlockObservedTask`，旧阻塞轮询反例变红；`QA_002_processCleanupIsBounded`） |
 | QA-003 | 端到端 oracle | oracle 必须真跑 Agent 并核查世界状态，不得用 `swift test --filter` 代替、不得 `exit 0` 兜底 | `Evals/Runner/main.swift`（反面） | 3 | L3 | 新增 |
 | QA-004 | 基线非劣性 | 零翻转硬失败；p50 耗时/工具数/成本劣化 ≤ 5%；钉模型与协议版本；离线与真凭据分轨 | `Evals/*/task.json` 判据设计 | 5 | L4 | 待继承 |
 | QA-005 | 录制回放 | 只替换传输层、保留真实解析器；严格匹配不回落；提升金标准需 secret scan + 人工批准 + 断网重放 | `Tests/LingXiAgentTests/VCR/README.md` | 2 | L2/L4 | 待继承 |

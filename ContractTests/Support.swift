@@ -2,6 +2,13 @@ import Foundation
 import LingXiKernel
 import LingXiPluginABI
 
+/// QA-002: avoid an unbounded nested Foundation run loop while cleaning up async tests.
+func waitForProcessExit(_ process: Process, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while process.isRunning && Date() < deadline { usleep(10_000) }
+    return !process.isRunning
+}
+
 let repoRoot = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .deletingLastPathComponent()

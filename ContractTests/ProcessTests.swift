@@ -3,6 +3,23 @@ import LingXiPluginABI
 import LingXiPluginRuntime
 import Testing
 
+@Test("QA-002 process cleanup has a deadline and observes an exited child without a nested run loop")
+func QA_002_processCleanupIsBounded() throws {
+    let process = Process()
+    let input = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/bin/cat")
+    process.standardInput = input
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+    try process.run()
+    defer { if process.isRunning { process.terminate() } }
+    #expect(!waitForProcessExit(process, timeout: 0.02))
+    input.fileHandleForWriting.closeFile()
+    try #require(waitForProcessExit(process, timeout: 3))
+    #expect(process.terminationStatus == 0)
+    #expect(waitForProcessExit(process, timeout: 0))
+}
+
 @Test("IPC-001 a live pipe carries a request and its reply without waiting for EOF")
 func IPC_001_livePipeRoundTrip() async throws {
     let process = PluginProcess(executableURL: builtProduct("LingXiPluginHost"))

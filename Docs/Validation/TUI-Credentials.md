@@ -106,4 +106,13 @@ Trivy 对 `Sources/`、`ContractTests/` 的 secret scan 均无发现。
 随后复核补齐 AUTH-003 的分段粘贴取消场景：取消后一直丢弃到 paste-end，不把迟到的密钥尾部插回普通草稿。
 移除该保护后测试能检测尾部泄漏并失败（2.047 秒）；恢复保护后通过。
 证据 `.tmp/tui-v2-paste-cancel-counterexample.log`、`.tmp/tui-v2-paste-cancel-test.log`；
-最终全量回归见 `.tmp/tui-v2-security-final-tests.log`，149 项中 147 实际通过、2 项真实上游门禁跳过。
+这次全量并发压力运行（`.tmp/tui-v2-security-final-tests.log`）在测试清理中挂起，已终止，不计为通过。
+
+`834dd8a` 的 macOS CI 全绿：[39434805678](https://github.com/LingXiFox/LingXiAgent/actions/runs/39434805678)。
+本机上述挂起的采样显示 Core 已退出，测试辅助 `ProtocolCore.terminate()` 仍停在 Foundation `waitUntilExit()` 的
+RunLoop 中，见 `.tmp/tui-v2-test-wait-sample.txt`。Apple 的
+[API 文档](https://developer.apple.com/documentation/foundation/process/waituntilexit()) 也说明其内部轮询当前 RunLoop。
+现将 Core/PTY 测试清理改为有截止时间的状态轮询，必要时强制回收；强制回收后未退出必须报错。
+`QA_002_processCleanupIsBounded` 覆盖尚未退出时到期、自然退出和已退出时立即返回，不修改产品代码。
+修复后全量开启 Keychain/PTY 的本机回归：150 项中 148 实际通过、2 项真实上游 smoke 按门禁跳过；
+契约组 42 项在 5.978 秒内结束，证据 `.tmp/tui-v2-cleanup-final-tests.log`。此前挂起不被这次通过覆盖。

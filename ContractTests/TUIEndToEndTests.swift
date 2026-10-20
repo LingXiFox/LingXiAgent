@@ -72,11 +72,9 @@ final class PTYProcess: @unchecked Sendable {
         if process.isRunning {
             // `script` does not guarantee forwarding SIGTERM to its child. Exit the TUI first.
             write("\u{03}\u{03}/quit\r")
-            let deadline = Date().addingTimeInterval(3)
-            while process.isRunning && Date() < deadline { usleep(10_000) }
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            if !waitForProcessExit(process, timeout: 3) { kill(process.processIdentifier, SIGKILL) }
         }
-        process.waitUntilExit()
+        #expect(waitForProcessExit(process, timeout: 2), "PTY test process did not exit after cleanup")
     }
 
     var isRunning: Bool { process.isRunning }
