@@ -11,8 +11,10 @@ private struct RecordedMiMoCassette: Decodable {
     let exchanges: [Exchange]
     struct Exchange: Decodable { let events: [ProviderWireEvent] }
 }
+/// A real recording made against the live MiMo API on 2026-10-20 (sanitized: normalized events
+/// only, no headers, credential stripped before hashing). Re-record with Scripts/mimo-record.sh.
 private let mimoFixtureURL: URL = Bundle.module.url(
-    forResource: "mimo-chat-fixture", withExtension: "json", subdirectory: "Fixtures"
+    forResource: "mimo-chat-live", withExtension: "json", subdirectory: "Fixtures"
 )!
 
 private final class MiMoEventRecorder: @unchecked Sendable {
@@ -134,20 +136,43 @@ func MIMO_cassetteDrivesMultiTurnAndToolLoop() async throws {
     )
     defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
 
-    let first = await harness.loop.run(mimoRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())
+    let first = await harness.loop.run(
+        mimoRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy()
+    )
     #expect(first.status == .completed)
-    #expect(first.assistantText.contains("MiMo"))
-    let deltas = harness.recorder.events.filter { if case .textDelta = $0 { true } else { false } }
+    #expect(first.assistantText.lowercased().contains("pong"))
+    // Real streaming: the recording carries reasoning and text deltas, not one whole reply.
+    let deltas = harness.recorder.events.filter {
+        switch $0 {
+        case .textDelta, .reasoningDelta: true
+        default: false
+        }
+    }
     #expect(deltas.count >= 2)
-    #expect(first.usage?.inputTokens == 11)
+    #expect(first.usage?.inputTokens == 89)
+    #expect(first.usage?.reasoningTokens == 4)
 
     harness.recorder.reset()
-    let second = await harness.loop.run(mimoRequest(turn: 2, prompt: "Call the echo tool with value 42"), policy: LoopPolicy())
+    let second = await harness.loop.run(
+        mimoRequest(turn: 2, prompt: "Call the echo tool with value 42, then say what it returned."),
+        policy: LoopPolicy()
+    )
     #expect(second.status == .completed)
     #expect(second.steps == 2)
     #expect(second.toolOutcomes == 1)
     #expect(second.assistantText.contains("42"))
     #expect(harness.executor.executed.map(\.toolName) == ["echo"])
+    #expect(harness.executor.executed.first?.argumentsJSON == "{\"value\": \"42\"}")
+
+    // Third turn replays the recorded follow-up, so history assembled from two prior turns must
+    // reproduce the recorded request digest.
+    harness.recorder.reset()
+    let third = await harness.loop.run(
+        mimoRequest(turn: 3, prompt: "In one sentence, what did the tool return?"), policy: LoopPolicy()
+    )
+    #expect(third.status == .completed)
+    #expect(third.assistantText.contains("42"))
+    #expect(third.usage?.cacheReadTokens == 128)
 }
 
 @Test("MIMO disabling the provider removes its model route and its host process")
@@ -169,7 +194,7 @@ func MIMO_providerStreamCancellation() async throws {
     )
     let pid = try #require(await harness.coordinator.processIdentifier(bundleID: mimoID))
     let result = await harness.loop.run(
-        mimoRequest(turn: 1, prompt: "Say hello"),
+        mimoRequest(turn: 1, prompt: "Reply with the single word: pong"),
         policy: LoopPolicy(overallTimeout: .milliseconds(150))
     )
     #expect(result.status == .deadlineExceeded)
@@ -189,7 +214,7 @@ func MIMO_recordingWritesCassette() async throws {
     )
     defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
 
-    #expect((await harness.loop.run(mimoRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())).status == .completed)
+    #expect((await harness.loop.run(mimoRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy())).status == .completed)
     let data = try Data(contentsOf: output)
     let cassette = try JSONDecoder().decode(RecordedMiMoCassette.self, from: data)
     #expect(cassette.provider == "mimo")

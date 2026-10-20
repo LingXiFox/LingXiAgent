@@ -1,6 +1,6 @@
 # Provider 验收记录：Xiaomi MiMo（Chat Completions）
 
-> **状态：离线与 CI 验收通过，真实 API 录制待主人执行** —— 合并提交 `0c0192a`，130 tests 全绿（104 内核 + 26 契约），CI run `39374459326` success，零告警。离线回归使用手工 fixture；`Scripts/mimo-record.sh` 录制的真实 cassette 将替换它后完成最终验收。
+> **状态：已验收（含真实 API）** —— 130 tests 全绿（104 内核 + 26 契约），零告警。真实调用于 2026-10-20 通过，模型 `mimo-v2.6-flash`；脱敏 cassette `ContractTests/Fixtures/mimo-chat-live.json` 已入库，离线用例按 digest 逐轮匹配。
 
 ## 一、协议事实（2026-10-20 核对）
 
@@ -9,7 +9,7 @@
 | Base URL | `https://api.xiaomimimo.com/v1` |
 | 端点 | `POST /chat/completions` |
 | 鉴权 | `Authorization: Bearer <MIMO_API_KEY>` |
-| 模型 | `mimo-v2.6-flash`（默认）、`mimo-v2.6-pro` |
+| 模型 | `mimo-v2.6-flash`（默认，已实测）、`mimo-v2.6-pro` |
 | 协议族 | OpenAI Chat Completions（**与 DeepSeek 的 Responses 不同族**，正是本轮要验证的差异面） |
 | 流式 | `data:` 分块：`choices[].delta.content`、`reasoning_content`、`tool_calls[]`（index/id/function.name/arguments）、`finish_reason`；`stream_options.include_usage` 的末尾 usage 块；`data: [DONE]` |
 | 工具 | OpenAI function schema；assistant `tool_calls` 与 `tool` 角色回传结果 |
@@ -28,7 +28,9 @@
 
 | 要求 | 用例 |
 |---|---|
-| 真流式（非整段输出） | `MIMO_cassetteDrivesMultiTurnAndToolLoop`：断言 ≥2 个 `textDelta` |
+| 真流式（非整段输出） | `MIMO_cassetteDrivesMultiTurnAndToolLoop`：真实录制含 3 个推理增量 + 1 个文本增量（首轮）与 7 个文本增量（收尾轮） |
+| 真实 API 录制 | `MIMO_liveSmoke`（主人执行）：三轮真实调用，工具循环完成；cassette 4 个 exchange，digest 非空 |
+| 离线按真实请求重放 | 同一测试用真实提示词跑三轮，插件对每轮请求做 digest 校验并全部命中 |
 | 多轮对话 | 同一 Session 连续两轮 |
 | 完整工具调用循环 | 模型调用 echo → 工具执行 → 第二次请求 → 最终文本；`steps == 2`、`toolOutcomes == 1` |
 | usage 映射 | 首轮 `inputTokens == 11` |
@@ -37,14 +39,14 @@
 | 录制真的落盘且不夹带 fixture | `MIMO_recordingWritesCassette`（回放+录制只得到 1 个 exchange） |
 | 核心无厂商依赖 | `Sources/LingXiKernel`、`Sources/LingXiCoreHost` 无 MiMo 标识；L0 门禁通过 |
 
-并行稳定性：全套 130 tests 连跑 3 次全绿。
+并行稳定性：全套 130 tests 连跑 3 次全绿。真实 cassette 的关键数值：首轮 usage `input=89 / output=7 / reasoning=4`；工具轮模型返回 `echo {"value": "42"}`；追问轮 `cacheRead=128`，证明缓存字段映射有效。
 
 **录制链路上的两个真 bug（首轮录制时暴露，已修复并回归）**：
 1. 纯录制模式没有创建 cassette store，`append` 被静默跳过，脚本却打印成功——现在录制输出有独立 store，脚本还会校验文件非空并扫描敏感文本。
 2. 回放与录制共用 store，录制文件把 fixture 中未消费的 exchange 一并写入（首轮产物出现 4 个 exchange 而非 1 个）——现在回放源与录制输出分离。
 3. 终态事件发出后内核立即结束 Run，落盘若放在其后会与调用方读取/关闭竞争——现在在**发出 `completed` 之前**同步写盘。期间发现握手超时在并行负载下过紧（含 codesign + dlopen），默认值由 5s 调整为 15s。
 
-## 四、真实 API 与 cassette（待主人执行）
+## 四、真实 API 与 cassette（已执行）
 
 ```bash
 # 冒烟（默认 mimo-v2.6-flash；需要 pro 时设 LINGXI_MIMO_MODEL=mimo-v2.6-pro）
@@ -54,7 +56,7 @@ MIMO_API_KEY=... ./Scripts/mimo-smoke.sh
 MIMO_API_KEY=... ./Scripts/mimo-record.sh
 ```
 
-产物为归一化事件序列（无请求头、无凭据）。拿到后替换 `ContractTests/Fixtures/mimo-chat-fixture.json`，复跑离线用例并提交。
+产物为归一化事件序列（无请求头、无凭据）。`Scripts/mimo-record.sh` 已在 2026-10-20 执行：`ContractTests/Fixtures/mimo-chat-live.json`，4 个 exchange、digest 非空；离线用例已切换到该文件，并按真实提示词重放。手工 fixture 已删除。
 
 ## 五、CI 记录
 
@@ -75,4 +77,4 @@ MIMO_API_KEY=... ./Scripts/mimo-record.sh
 2. **并行工具调用声明为 false**（保守）；同一响应的多个调用按 index 顺序结算。
 3. **`reasoning_content`** 已映射为推理增量，但不同模型是否返回该字段未用真实响应核对。
 4. **重试与退避**未实现；错误按分类上报。
-5. fixture 为手工构造，`requestDigest` 为空；真实录制后由插件自动计算 digest。
+5. cassette 与具体提示词/工具 schema 绑定：改动测试提示词或工具定义会使 digest 失效，这是刻意的（宁可报错，不静默回放错配的响应）。重新录制用 `Scripts/mimo-record.sh`。

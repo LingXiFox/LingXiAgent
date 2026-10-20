@@ -185,7 +185,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
-- **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。真实 API 录制与最终验收见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
+- **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。MiMo 已完成真实 API 录制（`mimo-chat-live.json`，离线按 digest 重放）；DeepSeek 等候真实录制。详见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
 
 尚未实现（技术待办，按建议顺序）：
 

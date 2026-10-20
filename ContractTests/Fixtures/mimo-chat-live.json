@@ -1,0 +1,279 @@
+{
+  "exchanges" : [
+    {
+      "events" : [
+        {
+          "text" : "Simple",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " request",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ".",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "pong",
+          "type" : "textDelta"
+        },
+        {
+          "type" : "usage",
+          "usage" : {
+            "inputTokens" : 89,
+            "outputTokens" : 7,
+            "reasoningTokens" : 4
+          }
+        },
+        {
+          "stopReason" : "stop",
+          "type" : "completed"
+        }
+      ],
+      "requestDigest" : "c5f0881ec2ee346e"
+    },
+    {
+      "events" : [
+        {
+          "text" : "The user asks me",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " to call echo with",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " value 42",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ". Note",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ": \"",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "42\" is",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " a number, but",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " the tool",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " schema says",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " value is a string",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ". I",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "'ll pass \"4",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "2\".",
+          "type" : "reasoningDelta"
+        },
+        {
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "name" : "echo",
+          "type" : "toolCallStarted"
+        },
+        {
+          "arguments" : "{\"value\": ",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "type" : "toolCallDelta"
+        },
+        {
+          "arguments" : "\"",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "type" : "toolCallDelta"
+        },
+        {
+          "arguments" : "42",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "type" : "toolCallDelta"
+        },
+        {
+          "arguments" : "\"",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "type" : "toolCallDelta"
+        },
+        {
+          "arguments" : "}",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "type" : "toolCallDelta"
+        },
+        {
+          "type" : "usage",
+          "usage" : {
+            "inputTokens" : 116,
+            "outputTokens" : 60,
+            "reasoningTokens" : 41
+          }
+        },
+        {
+          "arguments" : "{\"value\": \"42\"}",
+          "callID" : "call_df639aba553b4fd29ca29e88",
+          "name" : "echo",
+          "type" : "toolCallCompleted"
+        },
+        {
+          "stopReason" : "toolCalls",
+          "type" : "completed"
+        }
+      ],
+      "requestDigest" : "9c8f2684c4902416"
+    },
+    {
+      "events" : [
+        {
+          "text" : "It",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " returned the",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " value",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " echoed",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " back",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ".",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "The tool",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " returned:",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " `{\"value\":",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " \"42\"",
+          "type" : "textDelta"
+        },
+        {
+          "text" : "}` — it echoed",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " back the value ",
+          "type" : "textDelta"
+        },
+        {
+          "text" : "42.",
+          "type" : "textDelta"
+        },
+        {
+          "type" : "usage",
+          "usage" : {
+            "inputTokens" : 192,
+            "outputTokens" : 33,
+            "reasoningTokens" : 8
+          }
+        },
+        {
+          "stopReason" : "stop",
+          "type" : "completed"
+        }
+      ],
+      "requestDigest" : "5c13a9697b1dfba9"
+    },
+    {
+      "events" : [
+        {
+          "text" : "The user asks",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " about",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " the previous",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : " tool call result",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : ".",
+          "type" : "reasoningDelta"
+        },
+        {
+          "text" : "The echo",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " tool returned `{\"",
+          "type" : "textDelta"
+        },
+        {
+          "text" : "value\": \"4",
+          "type" : "textDelta"
+        },
+        {
+          "text" : "2\"}`, confirming",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " it",
+          "type" : "textDelta"
+        },
+        {
+          "text" : " accepted the value ",
+          "type" : "textDelta"
+        },
+        {
+          "text" : "42.",
+          "type" : "textDelta"
+        },
+        {
+          "type" : "usage",
+          "usage" : {
+            "cacheReadTokens" : 128,
+            "inputTokens" : 235,
+            "outputTokens" : 35,
+            "reasoningTokens" : 11
+          }
+        },
+        {
+          "stopReason" : "stop",
+          "type" : "completed"
+        }
+      ],
+      "requestDigest" : "f85afe9bc868185a"
+    }
+  ],
+  "provider" : "mimo",
+  "version" : 1
+}
