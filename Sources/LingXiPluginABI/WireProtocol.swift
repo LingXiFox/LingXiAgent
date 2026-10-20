@@ -41,9 +41,10 @@ public enum JSONValue: Sendable, Equatable, Codable {
         try JSONDecoder().decode(type, from: JSONEncoder().encode(self))
     }
 
-    var string: String? { if case .string(let value) = self { value } else { nil } }
-    var object: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
-    var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
+    public var string: String? { if case .string(let value) = self { value } else { nil } }
+    public var numberValue: Double? { if case .number(let value) = self { value } else { nil } }
+    public var object: [String: JSONValue]? { if case .object(let value) = self { value } else { nil } }
+    public var array: [JSONValue]? { if case .array(let value) = self { value } else { nil } }
 
     public init(data: Data) throws {
         self = try JSONDecoder().decode(JSONValue.self, from: data)
@@ -92,12 +93,25 @@ public struct HostFault: Error, Codable, Sendable, Equatable {
     }
 }
 
+/// A frame with no id. Provider streams use it so events reach the caller while the invoke is still
+/// running; the payload carries the requestID that routes it.
+public struct HostNotification: Codable, Sendable {
+    public let event: String
+    public let payload: JSONValue?
+
+    public init(event: String, payload: JSONValue?) {
+        self.event = event
+        self.payload = payload
+    }
+}
+
 public struct HostReply: Codable, Sendable {
     public var id: Int?
     public let ok: Bool
     public var bundleID: String?
     public var abiMajor: UInt32?
     public var capabilities: [DeclaredCapability]?
+    public var providers: [ProviderIdentity]?
     public var payload: JSONValue?
     public var fault: HostFault?
 

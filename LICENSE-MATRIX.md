@@ -38,6 +38,7 @@ Tracks in use:
 | `LingXiPluginRuntime` | `Sources/LingXiPluginRuntime` | LCSAL-1.1 | Source: no; binary: no | Core-side supervisor: registry, process lifecycle, IPC client, and the adapters that present plugin capabilities through kernel ports. It is the only module that knows a plugin exists. |
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Official example plugin used by the L2 contract tests: one `contextPrepare` hook that rewrites the request. Third-party authors write against the same ABI and the same manifest. |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | The same capability written in plain C, so the ABI is proven cross-language rather than asserted. |
+| `DeepSeekProvider` | `Plugins/DeepSeekProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | First real provider plugin. DeepSeek Responses API over SSE, normalized to the provider wire events; cassette replay for offline tests. |
 | `ContractTests` | `ContractTests` | Not shipped | n/a | L2 contract gate: real Host process, real `dlopen`, real fault injection. |
 
 ---
@@ -51,6 +52,7 @@ be added as targets without first being entered in the table above.
 |---|---|---|---|
 | `Docs/` | CC-BY-4.0 unless a file says otherwise | Attribution required | Design documents, decisions and the regression ledger. |
 | `Examples/` | — | — | Placeholder only; it becomes license-scoped when a plugin example target is added. |
+| `Scripts/` | LCSAL-1.1 | No (development tooling) | Build, CI and provider smoke/recording scripts. |
 | `Package.swift`, `.swift-version`, `.gitignore`, `.gitattributes` | LCSAL-1.1 | No (build infrastructure) | Follows the Core track, as in 1.x. |
 | `LICENSE`, `LICENSE-CORE`, `LICENSE-FRONTEND`, `LICENSE-ABI`, `LICENSE-MATRIX.md` | — | — | The licensing documents themselves. |
 

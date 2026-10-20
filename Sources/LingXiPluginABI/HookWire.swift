@@ -89,11 +89,15 @@ public struct PluginIdentity: Codable, Sendable, Equatable {
     public let bundleID: String
     public let version: String
     public let hooks: [DeclaredHook]
+    /// Required, like every other declaration: a plugin that offers models says so, and one that
+    /// does not says that too.
+    public let providers: [ProviderIdentity]
 
-    public init(bundleID: String, version: String, hooks: [DeclaredHook]) {
+    public init(bundleID: String, version: String, hooks: [DeclaredHook], providers: [ProviderIdentity]) {
         self.bundleID = bundleID
         self.version = version
         self.hooks = hooks
+        self.providers = providers
     }
 }
 

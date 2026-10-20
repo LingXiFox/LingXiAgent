@@ -13,13 +13,46 @@ public actor PluginCoordinator {
     private let hostExecutableURL: URL
     private let registry: PluginRegistry
     private let pipeline: HookPipeline
+    private let credential: @Sendable (String) -> String?
     private var sessions: [String: PluginSession] = [:]
     private var handlerIDs: [String: [String]] = [:]
 
-    public init(hostExecutableURL: URL, registry: PluginRegistry, pipeline: HookPipeline) {
+    /// `credential` resolves a capability id to a secret the Core owns. It never comes from the host
+    /// environment and is never written to a log; only the provider adapter puts it on the wire.
+    public init(
+        hostExecutableURL: URL,
+        registry: PluginRegistry,
+        pipeline: HookPipeline,
+        credential: @escaping @Sendable (String) -> String? = { _ in nil }
+    ) {
         self.hostExecutableURL = hostExecutableURL
         self.registry = registry
         self.pipeline = pipeline
+        self.credential = credential
+    }
+
+    public struct ProviderBinding: Sendable {
+        public let declaration: ProviderIdentity
+        public let adapter: PluginProviderAdapter
+    }
+
+    /// Builds the kernel-facing adapters for a plugin's declared providers. One host process backs
+    /// both its hooks and its provider; disabling the plugin removes both routes.
+    public func providerBindings(bundleID: String) async -> [ProviderBinding] {
+        guard let session = sessions[bundleID] else { return [] }
+        let providers = await session.providers
+        let credential = self.credential
+        return providers.map { declaration in
+            ProviderBinding(
+                declaration: declaration,
+                adapter: PluginProviderAdapter(
+                    session: session,
+                    providerID: declaration.id,
+                    declaration: declaration,
+                    credential: { credential("provider.\(declaration.id)") }
+                )
+            )
+        }
     }
 
     /// Installs a bundle in the registry without starting it. Enabling is a separate, explicit act.

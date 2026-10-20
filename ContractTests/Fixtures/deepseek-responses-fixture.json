@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "provider": "deepseek",
+  "exchanges": [
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "providerRequestID", "requestID": "resp_fixture_1"},
+        {"type": "textDelta", "text": "Hello"},
+        {"type": "textDelta", "text": " from"},
+        {"type": "textDelta", "text": " DeepSeek."},
+        {"type": "usage", "usage": {"inputTokens": 12, "outputTokens": 5}},
+        {"type": "completed", "stopReason": "stop"}
+      ]
+    },
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "providerRequestID", "requestID": "resp_fixture_2"},
+        {"type": "toolCallStarted", "callID": "call_fixture_1", "name": "echo"},
+        {"type": "toolCallDelta", "callID": "call_fixture_1", "arguments": "{\"value\":"},
+        {"type": "toolCallDelta", "callID": "call_fixture_1", "arguments": "\"42\"}"},
+        {"type": "toolCallCompleted", "callID": "call_fixture_1", "name": "echo", "arguments": "{\"value\":\"42\"}"},
+        {"type": "usage", "usage": {"inputTokens": 40, "outputTokens": 12}},
+        {"type": "completed", "stopReason": "toolCalls"}
+      ]
+    },
+    {
+      "requestDigest": "",
+      "events": [
+        {"type": "providerRequestID", "requestID": "resp_fixture_3"},
+        {"type": "textDelta", "text": "The"},
+        {"type": "textDelta", "text": " tool returned 42."},
+        {"type": "usage", "usage": {"inputTokens": 60, "outputTokens": 8}},
+        {"type": "completed", "stopReason": "stop"}
+      ]
+    }
+  ]
+}

@@ -22,6 +22,7 @@ public actor PluginSession {
     public let hostExecutableURL: URL
     public private(set) var state: SessionState = .installed
     public private(set) var capabilities: [DeclaredCapability] = []
+    public private(set) var providers: [ProviderIdentity] = []
     public private(set) var processIdentifier: Int32?
 
     private var process: PluginProcess?
@@ -70,6 +71,7 @@ public actor PluginSession {
             throw SessionError.handshake(reason)
         }
         capabilities = declared
+        providers = loaded.providers ?? []
 
         var start = HostRequest(id: nil, method: .start)
         start.grantedPermissions = grantedPermissions
@@ -96,6 +98,51 @@ public actor PluginSession {
             throw SessionError.hostFailed(reason)
         }
         return body
+    }
+
+    /// Runs an invoke whose events arrive while it is still in flight. The returned stream ends when
+    /// the invoke reply arrives; buffered events are drained before the end.
+    public func invokeStreaming(
+        capability: String, payload: JSONValue, requestID: String, timeout: Duration? = nil
+    ) -> AsyncThrowingStream<JSONValue, Error> {
+        guard let process, state == .running else {
+            return AsyncThrowingStream { $0.finish(throwing: SessionError.notRunning) }
+        }
+        let subscription = process.subscribe(requestID: requestID)
+        let session = self
+        Task {
+            do {
+                var request = HostRequest(id: nil, method: .invoke)
+                request.capability = capability
+                request.payload = payload
+                request.requestID = requestID
+                let reply = try await session.send(request, process: process, timeout: timeout)
+                if reply.ok {
+                    subscription.finish()
+                } else {
+                    let reason = reply.fault.map { "\($0.code): \($0.message)" } ?? "invoke failed without a fault"
+                    subscription.finish(throwing: SessionError.hostFailed(reason))
+                }
+            } catch {
+                subscription.finish(throwing: error)
+            }
+            process.unsubscribe(requestID: requestID)
+        }
+        return AsyncThrowingStream { outer in
+            let pump = Task {
+                do {
+                    for try await value in subscription.stream { outer.yield(value) }
+                    outer.finish()
+                } catch {
+                    outer.finish(throwing: error)
+                }
+            }
+            outer.onTermination = { _ in
+                pump.cancel()
+                // The kernel cancelled the Run: stop the provider request instead of letting it run.
+                Task { await session.cancel(requestID: requestID) }
+            }
+        }
     }
 
     /// Names one in-flight call and asks the host to interrupt it. The host forwards the id to the
@@ -135,6 +182,7 @@ public actor PluginSession {
         processIdentifier = nil
         self.process = nil
         capabilities = []
+        providers = []
         state = .disabled
     }
 

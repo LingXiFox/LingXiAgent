@@ -163,7 +163,9 @@ final class HostAgent {
                 message: "manifest declares ABI major \(manifest.abiMajor) but the plugin table says \(opened.abiMajor)"
             )
         }
-        guard Set(manifest.capabilities) == Set(opened.identity.hooks.map { "hook.\($0.id)" }) else {
+        let declaredHooks = opened.identity.hooks.map { "hook.\($0.id)" }
+        let declaredProviders = opened.identity.providers.map { "provider.\($0.id)" }
+        guard Set(manifest.capabilities) == Set(declaredHooks + declaredProviders) else {
             opened.close()
             throw HostFault(code: "protocolViolation", domain: "host", message: "declared capabilities differ from the plugin identity")
         }
@@ -174,6 +176,7 @@ final class HostAgent {
         reply.capabilities = opened.declaredHooks.map {
             DeclaredCapability(kind: "hook", id: $0.id, node: $0.node, priority: $0.priority, canVeto: $0.canVeto)
         }
+        reply.providers = opened.identity.providers
         reply.payload = .object([
             "version": .string(manifest.version),
             "teamID": manifest.teamID.map { .string($0) } ?? .null,

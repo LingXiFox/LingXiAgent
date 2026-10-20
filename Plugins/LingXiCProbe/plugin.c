@@ -19,7 +19,7 @@ static int32_t emit_bytes(const char *text, uint8_t **out, uint32_t *outLength) 
 static int32_t probe_describe(uint8_t **out, uint32_t *outLength) {
     static const char *identity =
         "{\"bundleID\":\"site.lingxi.plugin.cprobe\",\"version\":\"1.0.0\","
-        "\"hooks\":[{\"id\":\"cProbe\",\"node\":\"contextPrepare\",\"priority\":60,\"canVeto\":true}]}";
+        "\"hooks\":[{\"id\":\"cProbe\",\"node\":\"contextPrepare\",\"priority\":60,\"canVeto\":true}],\"providers\":[]}";
     return emit_bytes(identity, out, outLength);
 }
 

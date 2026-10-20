@@ -15,6 +15,22 @@ private struct NoToolExecutor: ToolExecutor {
     }
 }
 
+/// Reads `<data>/credentials.json` and resolves each capability id to the environment variable the
+/// Core will read. Only the variable name is stored on disk; values exist in this process only.
+private func loadCredentialMap(dataDirectory: String) throws -> [String: String] {
+    let url = URL(fileURLWithPath: dataDirectory).appendingPathComponent("credentials.json")
+    guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+    let data = try Data(contentsOf: url)
+    guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+    var resolved: [String: String] = [:]
+    for (capability, variable) in raw {
+        if let value = ProcessInfo.processInfo.environment[variable] {
+            resolved[capability] = value
+        }
+    }
+    return resolved
+}
+
 private func pluginHostExecutable() -> URL {
     if let override = ProcessInfo.processInfo.environment["LINGXI_PLUGIN_HOST"] {
         return URL(fileURLWithPath: override)
@@ -45,8 +61,13 @@ do {
     let registryURL = URL(fileURLWithPath: dataDirectory).appendingPathComponent("plugins.json")
     let registry = try PluginRegistry(configURL: registryURL)
     let pipeline = HookPipeline()
+
+    // credentials.json maps a capability id to the NAME of an environment variable the Core owns.
+    // The value never enters a plugin process environment, a log line or the registry.
+    let credentialMap = try loadCredentialMap(dataDirectory: dataDirectory)
     let coordinator = PluginCoordinator(
-        hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline
+        hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline,
+        credential: { capability in credentialMap[capability] }
     )
 
     let installed = await registry.all()
@@ -54,6 +75,14 @@ do {
     for entry in installed where entry.enabled {
         do {
             _ = try await coordinator.enable(bundleID: entry.bundleID, policy: policy)
+            // A provider plugin becomes a model source for the loop; the kernel still sees only ids.
+            for binding in await coordinator.providerBindings(bundleID: entry.bundleID) {
+                await router.register(
+                    provider: binding.adapter,
+                    id: ProviderID(binding.declaration.id),
+                    models: binding.declaration.models.map { ModelID($0) }
+                )
+            }
         } catch {
             // A plugin that cannot be restored must not take the Core down with it.
             failures.append("\(entry.bundleID): \(error)")

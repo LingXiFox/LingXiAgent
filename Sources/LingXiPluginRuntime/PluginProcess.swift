@@ -18,6 +18,7 @@ public final class PluginProcess: @unchecked Sendable {
         case exited(Termination)
         case noReplyWithinDeadline(method: String, id: Int, stderrTail: String)
         case frameTooLarge
+        case streamOverflow(requestID: String)
     }
 
     private let process = Process()
@@ -28,6 +29,7 @@ public final class PluginProcess: @unchecked Sendable {
 
     private var replies: [Int: HostReply] = [:]
     private var notices: [String] = []
+    private var streams: [String: PluginProcess.Subscription] = [:]
     private var terminated: Termination?
     private var started = false
     private var stderrRing: [UInt8] = []
@@ -89,6 +91,49 @@ public final class PluginProcess: @unchecked Sendable {
             kill(process.processIdentifier, SIGKILL)
             process.waitUntilExit()
         }
+    }
+
+    /// A live event stream for one in-flight request. The owner finishes it when the invoke reply
+    /// arrives, which drains what was already buffered before ending.
+    public final class Subscription: @unchecked Sendable {
+        public let stream: AsyncThrowingStream<JSONValue, Error>
+        private let continuation: AsyncThrowingStream<JSONValue, Error>.Continuation
+
+        init(bufferSize: Int) {
+            var captured: AsyncThrowingStream<JSONValue, Error>.Continuation?
+            stream = AsyncThrowingStream(bufferingPolicy: .bufferingOldest(bufferSize)) { captured = $0 }
+            continuation = captured!
+        }
+
+        @discardableResult
+        func yield(_ value: JSONValue) -> AsyncThrowingStream<JSONValue, Error>.Continuation.YieldResult {
+            continuation.yield(value)
+        }
+
+        public func finish() { continuation.finish() }
+        public func finish(throwing error: any Error) { continuation.finish(throwing: error) }
+    }
+
+    /// Subscribes to streamed events for one in-flight request. The buffer is bounded; an overflow
+    /// fails the stream instead of silently dropping part of a model reply.
+    public func subscribe(requestID: String, bufferSize: Int = 1024) -> Subscription {
+        let subscription = Subscription(bufferSize: bufferSize)
+        lock.lock()
+        streams[requestID] = subscription
+        lock.unlock()
+        return subscription
+    }
+
+    private func stream(for requestID: String) -> Subscription? {
+        lock.lock()
+        defer { lock.unlock() }
+        return streams[requestID]
+    }
+
+    public func unsubscribe(requestID: String) {
+        lock.lock()
+        streams.removeValue(forKey: requestID)
+        lock.unlock()
     }
 
     /// Drains the bounded notification queue (plugin → host → core events).
@@ -205,7 +250,16 @@ public final class PluginProcess: @unchecked Sendable {
             waiter?.resume(returning: reply)
             return
         }
-        // A frame with no id is a notification (capabilities.changed and friends).
+        guard let notification = try? HostWire.decode(HostNotification.self, from: line) else { return }
+        // Streaming events route by request id; everything else is a bounded diagnostic notice.
+        if let requestID = notification.payload?.object?["requestID"]?.string,
+           let subscription = stream(for: requestID) {
+            if case .dropped = subscription.yield(notification.payload ?? .null) {
+                subscription.finish(throwing: PluginProcessError.streamOverflow(requestID: requestID))
+                unsubscribe(requestID: requestID)
+            }
+            return
+        }
         lock.lock()
         // Bounded, drop-oldest: a plugin that emits faster than the Core consumes must not grow the
         // parent without limit. The cap is the backpressure signal the provider path will surface.

@@ -35,6 +35,7 @@ TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──>
 | `LingXiCoreHost` | `Sources/LingXiCoreHost` | 正式 Core 进程：恢复内核状态与插件，把 HookPipeline 接到真实 AgentLoop | LCSAL-1.1 |
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | 官方示例插件（Swift）：一个 `contextPrepare` Hook | PolyForm Noncommercial 1.0.0 |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | 同一能力的 C 实现，用于证明 ABI 跨语言 | PolyForm Noncommercial 1.0.0 |
+| `DeepSeekProvider` | `Plugins/DeepSeekProvider` | 首个真实 Provider：DeepSeek Responses API + SSE 流式，Cassette 回放 | PolyForm Noncommercial 1.0.0 |
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | L0 结构门禁 + L1 内核回归 | 不发布 |
 | `ContractTests` | `ContractTests` | L2 契约：真 `.lxap`、真签名、真 Host 进程、故障注入 | 不发布 |
 
@@ -161,7 +162,19 @@ Core 退出只停进程，不改注册表；用户禁用才写 `enabled=false`�
 CI：`.github/workflows/ci.yml`，`macos-26` 单 job，执行构建、测试与空核启动检查；push `rewrite/2.0`、
 PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，120 tests 全绿。
 
-## 7. 当前实现状态
+## 7. Provider 插件
+
+Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 Host、ABI 与生命周期。首个实现是 DeepSeek：
+
+- capability `provider.deepseek`，模型 `deepseek-flash`，`POST https://api.deepseek.com/responses`。
+- 插件把 SSE 事件归一化为文本增量、推理增量、工具调用增量/完成、usage、终态与失败；
+  Runtime 再映射为内核的 `ModelEvent`，因此内核不认识任何厂商事件名。
+- 凭据由 Core 从 `<data>/credentials.json`（能力 id → 环境变量名）解析，按次注入 invoke 载荷；
+  Host 进程环境仍是 allow-list，密钥不落日志、不进 cassette。
+- 离线回归用脱敏 cassette（`vcr=<path>` 授权），真实 API 冒烟与录制由 `Scripts/deepseek-*.sh` 提供，
+  CI 不依赖付费密钥。
+
+## 8. 当前实现状态
 
 已实现并验收（证据见 `Validation/`）：
 
@@ -170,7 +183,8 @@ PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，12
 - **插件闭环**（阶段 2–2.1）：C ABI v1、通用 Host、注册表与监管、Hook 桥、真 `.lxap` 端到端、
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
-- **两个插件实现**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
+- **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
+- **首个真实 Provider**（DeepSeek Responses API）：真 SSE 流式、工具调用循环、usage、在途取消、脱敏 cassette；离线 4 条用例。真实 API 录制与最终验收记录见 `Validation/Provider-DeepSeek.md`。
 
 尚未实现（技术待办，按建议顺序）：
 
@@ -182,7 +196,7 @@ PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，12
 5. 插件工具能力接入、Swift 运行时唯一性的运行期检测。
 6. TUI 与插件市场。
 
-## 8. 文档集
+## 9. 文档集
 
 | 文件 | 内容 |
 |---|---|
@@ -199,7 +213,7 @@ PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，12
 `Project-Conventions.md` → 对应模块设计 → `Testing-and-Acceptance.md`；评审读
 `Project-Conventions.md` 第三章与 `Regression-Cases.md` 相关条目。
 
-## 9. 术语
+## 10. 术语
 
 - **Core / 内核**：不含 Provider、工具与 UI 的可执行运行时。
 - **插件**：以 `.lxap` 交付、导出固定 C ABI 的动态库，由独立 Host 进程加载并向内核注册能力。

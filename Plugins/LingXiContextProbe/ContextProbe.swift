@@ -32,7 +32,8 @@ private let describeImpl: @convention(c) (
     let identity = PluginIdentity(
         bundleID: bundleIdentifier,
         version: pluginVersion,
-        hooks: [PluginIdentity.DeclaredHook(id: hookIdentifier, node: "contextPrepare", priority: 50, canVeto: false)]
+        hooks: [PluginIdentity.DeclaredHook(id: hookIdentifier, node: "contextPrepare", priority: 50, canVeto: false)],
+        providers: []
     )
     return emit(json(identity), out: out, length: outLength) ? 0 : -1
 }
