@@ -3,11 +3,16 @@ public struct RecoveryReport: Sendable {
     public let eventsReplayed: Int
     public let sessionCount: Int
     public let restoredRunCount: Int
+    /// Runs THIS recovery had to terminalize; empty when replaying a journal whose runs already
+    /// reached a terminal record (a second recovery reports none).
     public let failedRunIDs: [RunID]
     /// Runs that were interrupted while a tool batch may have partially executed. Never replayed;
-    /// the next turn must verify side effects (LOOP-025).
+    /// the next turn must verify side effects (LOOP-025). Derived from the journal, so it is stable
+    /// across repeated recoveries.
     public let executionStateUnknownRunIDs: [RunID]
+    /// Deterministic history-healing count (missing result records + unknown/not-started batches).
     public let synthesizedResultEntryCount: Int
+    /// Torn journal records dropped by `DurableEventLog` when this process opened the journal.
     public let repairedTailRecordCount: Int
 }
 
@@ -146,7 +151,6 @@ public enum KernelRecovery {
             let unit = batchID.rawValue
             let callEntryID = EntryID("call-\(unit)")
             let resultID = EntryID("result-\(unit)")
-            let lastCallID = state.calls.last?.callID
 
             if let outcomes = state.outcomes {
                 // Durable results whose entry record was lost with the crash: restore them instead of
@@ -179,13 +183,12 @@ public enum KernelRecovery {
                     synthesizedResultCount += 1
                 }
             }
-            _ = lastCallID
             await store.replace(entries, for: state.sessionID)
         }
 
         var failedRunIDs: [RunID] = []
         for runID in createdOrder where openRunIDs.contains(runID) {
-            guard let info = runInfo[runID] else { continue }
+            guard runInfo[runID] != nil else { continue }
             let unknown = unknownExecutionRunIDs.contains(runID)
             let detail = unknown
                 ? "recovered after restart; executionStateUnknown: verify side effects before retrying"
@@ -195,7 +198,6 @@ public enum KernelRecovery {
                 runID, status: .failed, cause: cause, detail: detail, via: log
             )
             if won { failedRunIDs.append(runID) }
-            _ = info
         }
 
         let report = RecoveryReport(
