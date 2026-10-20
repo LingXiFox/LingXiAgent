@@ -1,67 +1,209 @@
-# LingXiAgent 2.0 设计与规范文档
+# LingXiAgent 2.0 技术文档
 
-本目录是 2.0 的**设计与验收依据**。产品目标、工作范围和完成标准以《LingXiAgent 2.0 项目书》为准（外部文档，本文档集不重复其内容，只引用其章节号）。
+LingXiAgent 2.0 是一个本地优先的 Agent 运行时：一个不含任何 Provider、工具或 UI 实现的最小内核，
+全部能力以原生动态插件的形式接入。本文档集规定**边界、契约与判定口径**，不规定具体写法；实现细节以
+代码和测试为准，冲突时先确认是代码错了还是文档过期。
 
-文档只规定**边界、契约和判定口径**，不规定具体实现写法。实现细节以代码和测试为准；与本文冲突时，先确认是代码错了还是文档过期了。
+产品目标与完成标准以《LingXiAgent 2.0 项目书》为准，本文档集只引用其章节号。
 
-## 文档集
+## 1. 架构
 
-| 文件 | 内容 | 对应阶段 |
-|---|---|---|
-| `Project-Conventions.md` | 项目规范：目录与命名、依赖审批、Core 不膨胀的评审规则、提交与许可登记、安全红线 | 阶段 0 |
-| `Kernel-Design.md` | 最小内核设计：职责白名单、进程形态、Run/Step 状态机、工具批次语义、执行状态与恢复、取消与超时、单上下文组装、预算与压缩、缓存度量 | 阶段 1 |
-| `Plugin-System-Design.md` | 插件系统与 `.lxap`：macOS 原生 bundle 包格式与 Manifest、插件 C ABI（`LingXiPlugin_Init`）、Plugin Host 进程模型、统一握手与能力注册、生命周期与启停撤销、故障分类与隔离、Hook 与 fail-closed、权限三层区别 | 阶段 2–3 |
-| `Provider-Plugin-Contract.md` | Provider 插件契约：按 wire family 划分的能力面、事件流终态契约、错误分类与重试、用量与缓存字段、验收清单 | 阶段 2 |
-| `Testing-and-Acceptance.md` | 测试分层门禁与项目书第七章完成标准的逐条判定方式 | 贯穿 |
-| `Regression-Cases.md` | 1.x 已验证经验与回归案例清单：带 ID 的场景 → 期望行为 → 1.x 证据 → 2.0 归属 | 阶段 0，持续引用 |
-| `Validation/` | 阶段验收记录：基线/终态数字、逐 ID 证据、反例（变异）结果、CI 记录 | 各阶段 |
+```
+TUI / 前端进程 ──前端协议──> Core 进程 ──内部 IPC──> Plugin Host 进程 ×N ──C ABI──> .lxap 动态库
+                               │
+                               ├─ 内核（Agent Loop、上下文、预算、Run 状态、事件日志）
+                               └─ 插件监管（注册表、进程生命周期、能力路由、Hook 桥）
+```
 
-## 阅读顺序
+- **内核不做 I/O**：模型请求、工具执行、上下文注入全部经由端口由插件提供。没有 Provider 插件时，
+  内核可以启动、展示状态、给出配置引导，但**结构上不能推理**。这不是开关，是依赖方向决定的。
+- **每插件一个 Plugin Host 进程**。Host 是官方发布的通用可执行文件，只做 `dlopen`、签名与 manifest
+  校验、ABI 协商、IPC↔ABI 翻译；它不含任何插件代码，官方插件也没有特权通道。
+- **插件作者不实现 IPC**。插件与 Host 之间是固定 C ABI；Core 与 Host 之间是内部 JSON 行协议，
+  随 Core/Host 同版本发布，不对外承诺兼容。
+- **能力注册是唯一入口**。内核看到的是 bundle id 命名空间下的能力标识，看不到厂商、进程形态或 ABI 细节。
 
-要理解产品为什么这么设计：项目书 → `Kernel-Design.md` → `Plugin-System-Design.md`。
-要写代码：`Project-Conventions.md` → 对应模块设计 → `Testing-and-Acceptance.md`。
-要评审一个 PR：`Project-Conventions.md` 第三章（Core 不膨胀）+ `Regression-Cases.md` 相关条目。
-要判断某个能力该放内核还是插件：项目书 §3.1 与 §五.3，判据在 `Project-Conventions.md` 第三章。
+## 2. 模块
 
-## 关键术语
+| Target | 路径 | 职责 | 许可 |
+|---|---|---|---|
+| `LingXiKernel` | `Sources/LingXiKernel` | Agent Loop、单上下文装配与校验、预算与压缩、Run 终态化、事件日志与恢复、端口与 Hook 接缝 | LCSAL-1.1 |
+| `LingXiPluginABIC` | `Sources/LingXiPluginABIC` | 插件 ABI 的 C 头文件与 `ABI-MANIFEST.txt`（契约结构体必须来自 C，见 §5） | MIT |
+| `LingXiPluginABI` | `Sources/LingXiPluginABI` | Core↔Host 线协议、Hook 载荷、签名策略枚举 | MIT |
+| `LingXiPluginHost` | `Sources/LingXiPluginHost` | 通用 Host 进程：验包、签名/Team 策略、manifest、`dlopen`、调用分发、取消 | LCSAL-1.1 |
+| `LingXiPluginRuntime` | `Sources/LingXiPluginRuntime` | Core 侧监管：注册表、会话、进程与 IPC 客户端、Hook 桥、启停编排 | LCSAL-1.1 |
+| `LingXiCoreHost` | `Sources/LingXiCoreHost` | 正式 Core 进程：恢复内核状态与插件，把 HookPipeline 接到真实 AgentLoop | LCSAL-1.1 |
+| `LingXiContextProbe` | `Plugins/LingXiContextProbe` | 官方示例插件（Swift）：一个 `contextPrepare` Hook | PolyForm Noncommercial 1.0.0 |
+| `LingXiCProbe` | `Plugins/LingXiCProbe` | 同一能力的 C 实现，用于证明 ABI 跨语言 | PolyForm Noncommercial 1.0.0 |
+| `LingXiKernelTests` | `Tests/LingXiKernelTests` | L0 结构门禁 + L1 内核回归 | 不发布 |
+| `ContractTests` | `ContractTests` | L2 契约：真 `.lxap`、真签名、真 Host 进程、故障注入 | 不发布 |
 
-- **Core / 内核**：不含 Provider、不含工具的可执行运行时。
-- **插件**：以 `.lxap` bundle 交付、导出固定 C ABI 的动态库，被独立的 Plugin Host 进程加载，向内核注册能力。官方插件与社区插件遵循同一契约。
-- **Plugin Host**：官方发布的通用可执行文件，`dlopen` 加载单个插件，并在 Core 与插件之间翻译 IPC 与 ABI 调用。插件作者不需要认识它。
-- **前端**：TUI 或其他界面进程，通过前端协议连接 Core，不链接内核实现。
-- **Turn / Step / Run**：一次用户提交为 Turn；Turn 内模型请求与工具执行的交替单位为 Step；一次执行实例为 Run。
-- **特权通道**：只有内核标记为 `immutableInstructions` 的内容才能进入模型的指令位置；其余一律为数据。
-- **因果批次**：一条 assistant 工具调用请求与其全部结果构成不可拆分的上下文单位。
+依赖方向由 L0 门禁解析 `Package.swift` 强制执行：内核不得依赖任何其他 target、只 import `Foundation`，
+且源码中不得出现 `dlopen`/`dlsym`/`@_cdecl`/`LingXiPlugin_Init` 或任何厂商名。装载代码只能存在于 Host 一侧。
 
-## 状态
+## 3. 运行时模型
 
-**阶段 1（含 1.1、1.2）已验收；阶段 2 最小动态插件闭环与 Phase 2.1（产品接线、安全边界、取消传播）已实现并验收（120 tests），验收记录 `Validation/Phase-2.md`、`Validation/Phase-2.1.md`。`LingXiCoreHost` 启动时恢复已启用插件并把 Hook 管线接到真实 AgentLoop；默认签名策略为 restricted。**
+- **Session → Turn → Run → Step**。一次用户提交是一个 Turn；Turn 内「模型请求 → 工具批次 → 结果回传」
+  的一次交替是 Step；一次执行实例是 Run。
+- **同 Session 同时只允许一个 active Run**；第二个 Run 在产生任何副作用前被拒（`concurrentRunRejected`）。
+- **标识唯一性**：`runID` 全局唯一；`turnID` 在 Session 内唯一（重复的 `turn-<turnID>` 条目 id 会让引用
+  产生歧义，因此在任何持久化写入前拒绝）；`executionID` 每 Run 一个，跨 Step 共用。
+- **终态化**：终态事件先落盘再改内存；写失败回滚并保持非终态；同一 Run 只有一个赢家。终态原因与状态
+  绑定写入，正常完成、输出截断、内容过滤、拒绝、取消、超时、预算耗尽各自有独立原因码。
+- **取消与超时**：取消是意图声明，不伪造失败；`stream()` 与流消费整体与取消/总超时竞争，迟到事件丢弃；
+  取消/超时后调用 `endExecution` 释放 provider 执行态，每 Run 恰好一次。
+- **恢复**：`KernelRecovery` 是唯一入口，只读重放事件、重建全新内存对象，绝不重放工具或模型请求。
+  `batchStarted` 未 `batchSettled` 的批次记 `executionStateUnknown` 并要求后续验证。
+- **上下文**：单一上下文，按 token 预算淘汰，mandatory 集合（指令、当前用户输入、未消费批次）不可淘汰；
+  淘汰留稳定引用行；最终请求在发送前重新通过协议校验。只有 `immutableInstructions` 能进入指令位置，
+  其余内容（检索、Hook 注入、引用行）一律是数据。
 
-阶段 1 交付的是可运行事实，不是计划：
+## 4. 插件系统
 
-- `Sources/LingXiKernel`：Agent Loop、单上下文装配与校验、预算与水位压缩、执行状态与终态化、追加式事件日志与崩溃恢复、模型/工具端口与路由。零外部依赖，`swift build` 无告警。
-- `Sources/LingXiCoreHost`：可执行宿主。无 Provider 时正常启动、报告状态并给出配置引导，但不能推理——项目书 §七第 1 条已实测。
-- `Tests/LingXiKernelTests`：96 个用例（基线 30；Phase 1.1 新增 59，Phase 1.2 新增 7），覆盖 L0 结构门禁（依赖方向、许可矩阵漂移、内核内无厂商名与无 `dlopen`）与 LOOP/CTX/STORE/PROV 各组回归；Phase 1.1 新增 `RecoveryAcceptanceTests`（STORE-008/009/010、LOOP-025）与 `ConversationAcceptanceTests`（LOOP-021~024、CTX-017/018、CACHE-007、QA-013）；Phase 1.2 新增 LOOP-026（`endExecution` 四条终态路径清理）与 LOOP-027（Session 内条目 id 唯一）。`swift build --build-tests` 零告警。许可漂移门禁做过反向验证（塞入未登记 target 会变红）。
-- `.github/workflows/ci.yml`：最小 macOS 26 CI：`swift build --build-tests` + `swift test`，外加一步空核启动检查（无 Provider 时只打印引导、不写事件日志，QA-013）；触发条件为 push `rewrite/2.0`、PR→`main`、`workflow_dispatch`。**首跑已 success**：run `39361419757`（`macos-26`，Swift 6.3.3 / Xcode 26.6.0，89 tests 全绿，证据见 `Validation/Phase-1.1.md` 第六节）。
-- `LICENSE-MATRIX.md` 已按 2.0 实际 target 重建。
+### 4.1 包格式
 
-Phase 1.1 修的是内核正确性，不新增功能、不加依赖（逐条对应 `Regression-Cases.md`）：同 Session 并发 Run 准入（LOOP-021）、stop reason 终态分类（LOOP-022）、阻塞流取消/超时竞争（LOOP-023）、assistant 文本落盘（LOOP-024）、恢复不重放写操作（LOOP-025）、全量重放重建（STORE-008）、事件日志尾行修复与回滚毒化（STORE-009）、begin 事务无孤立终态（STORE-010）、历史 User 降级（CTX-017）、预算引用行（CTX-018）、跨 Step usage 汇总（CACHE-007）、无 Provider 启动零日志（QA-013）。验收记录 `Validation/Phase-1.1.md` 含 89 tests 全绿 ×5、变异反例 11/11 RED、D3 前提验证与 CI run 记录。
+`.lxap` 是 macOS 原生 bundle：
 
-Phase 1.2 是进入阶段 2 前的最小收尾，只还 Phase 1.1 登记过的债（验收记录 `Validation/Phase-1.2.md`，反例 4/4 RED，CI run `39365903961` 全绿且构建零告警）：`endExecution` 已在四条终态路径接线、每 Run 释放一次（LOOP-026）；恢复入口收敛为 `KernelRecovery` 唯一（旧 `RunRegistry.recoverUnfinishedRuns` 删除）；同 Session 内条目 id 必须唯一，重复 TurnID 在任何持久化写入前被拒（LOOP-027）；测试 target 的 11 处冗余 `try` 告警清零。
-阶段 2 的最小动态插件闭环已落地（验收记录 `Validation/Phase-2.md`）：固定 C ABI v1（标量状态 + 出参，`ABI-MANIFEST` 已按真机验证后冻结）、通用 Plugin Host（每插件一进程，`dlopen` + 单管双向 JSON）、Core 侧监管（独立 `plugins.json` 注册表 + 会话监管 + Hook 桥）、Swift 与 C 两个实验插件。114 tests 全绿；启用改写上下文、禁用即停止参与、卸载后路由/进程/注册表三空、插件崩溃只杀死自己的 Host。未实现且不声称：租约状态机、熔断退避、permissive/公证、security 类人工确认、插件工具能力、Swift 运行时唯一性检测。TUI 与插件市场仍未开始。已覆盖的回归条目在 `Regression-Cases.md` 里标为「已覆盖（阶段 1）」「已覆盖（阶段 1.1）」「已覆盖（阶段 1.2）」，未标的仍然是待办。
+```
+Plugin.lxap/Contents/
+├── Info.plist                    身份、版本、入口、能力、权限
+├── MacOS/<CFBundleExecutable>    导出 C ABI 的动态库（单一 arm64 切片）
+└── _CodeSignature/               标准 codesign 产物
+```
 
-已定的基线：
+`Info.plist` 顶层的 `LingXiPlugin` 字典包含 `ABIMajor`、`EntryPoint`、`Capabilities`、`Permissions`，
+可选 `MinimumCoreVersion`（仅人类提示，不参与判定）。**能力与权限必须显式声明，缺字段即加载失败**。
+作者身份由签名 Team Identifier 决定，不由 manifest 自称。
 
-- 平台与工具链：macOS 26.2+ / Apple Silicon，Swift 6.4 开发工具链，`swift-tools-version` 暂定 6.2。
-- 插件运行模型：`.lxap` 为 macOS 原生 bundle；插件是导出固定 C ABI 的动态库；每插件一个独立 Plugin Host 进程；Core↔Host 走内部 IPC，**插件作者不实现 IPC**；官方与社区共用同一套能力注册契约。
-- 安全边界：权限声明 / 权限强制执行 / OS 沙箱三层分开；初期只做签名校验与进程隔离，**不宣称强制沙箱**；`security` 类 Hook 故障一律 fail-closed。
-- 首批真实 Provider：OpenAI、Anthropic、DeepSeek。
-- TUI：暂不迁移 1.x 的 OpenTUI 动态库，渲染方案后续阶段独立验证。
-- D1、D2、D4 保留；D3（事件日志而非 SQLite）**有条件成立**，以阶段 1 的可靠恢复验证为前提（Phase 1.1 已把恢复策略定为可验证口径：尾部坏行截断修复、全量重放重建、恢复不重放执行，见 `Kernel-Design.md` 第六章；证据见 `Validation/Phase-1.1.md`。**D3 前提已验证：保留追加式事件日志，不替换存储引擎**）；D-P2 从"作者契约"重定位为"Core↔Host 内部协议"。
+### 4.2 ABI v1
 
-仍需主人拍板的事项：
+插件只导出 `LingXiPlugin_Init`：
 
-1. 插件 C ABI 头文件与示例工程的许可轨道（PolyForm 会劝退商业作者；MIT 需在矩阵新开一条轨道，属更改授权范围）。见 `Project-Conventions.md` 第八章。
-2. `permissive` 档是否额外要求第三方插件经公证（notarization）。
-3. OpenAI 一家同时覆盖 Chat 与 Responses 两条 wire 时的组织方式（Q-PR4）。
-4. 新能力字段 `supportsParallelToolCalls` / `toolResultPlacement` 的缺省策略（Q-PR5，涉及"无默认值"纪律的边界）。
+```c
+int32_t LingXiPlugin_Init(const LingXiHostAPI* hostAPI, uint32_t hostABIMajor,
+                          const LingXiPluginAPI** outAPI, uint32_t* outABIMajor,
+                          LingXiStatus* outStatus);
+```
+
+- 所有调用返回 `int32_t`，原因经 `LingXiStatus` 出参；状态只有三个整数，无指针。
+- 跨边界结构体以 `structSize`、`abiMajor` 开头；新字段只追加。
+- 字符串是 `(const uint8_t*, uint32_t)`，不假定 NUL 结尾；返回缓冲由被调方分配、调用方经函数表的
+  `free` 释放。
+- 生命周期固定为 `Init → Start → 运行 → Stop → Dispose`；`dlclose` 只在无在途调用时执行。
+- 主版本不匹配是具名硬失败，不存在兼容回退。
+- 布局与头文件哈希冻结在 `Sources/LingXiPluginABIC/ABI-MANIFEST.txt`（当前 revision 2）。
+
+### 4.3 握手与能力
+
+`load → 签名与 manifest 校验 → dlopen → Init 协商 → describe → start(grants)`。第 5 步之前，
+插件的能力不可被调用。Host 校验 bundle id 与插件自述一致、manifest 能力集与 `describe` 一致。
+Core 侧的注册表（`plugins.json`，独立于会话事件日志）是「是否启用」的唯一真相源；目录扫描不决定运行。
+
+### 4.4 Hook
+
+内核只在真实调用点挂 Hook：`contextPrepare`（装配后）与 `beforeModelRequest`（预算与复校验后）。
+裁决类型为 `keep / rewrite / veto / failed`。**故障策略由内核按能力判定**：持有否决能力者为 security 类，
+故障一律判拒绝；其余 fail-open，跳过原因写入 Run detail。挂载顺序按 priority、再按 handler id 稳定排序；
+撤销后不再参与后续 Run。注入内容走非特权数据通道，并重新通过请求协议校验。
+
+### 4.5 生命周期、隔离与故障
+
+- 禁用顺序：先摘路由 → 再停进程（stop → 等待退出 → 必要时 SIGKILL）→ 最后写注册表。
+- 卸载：禁用序列后删除注册表条目；插件产生的数据不随卸载自动清除。
+- 崩溃检测依赖 `terminationHandler`，携带退出码/信号/stderr 尾部；崩溃只影响该 Host 进程，
+  受影响的 Run 收到具名失败，其他插件与 Core 继续运行。
+- Host 环境是严格 allow-list（`PATH/HOME/TMPDIR/LANG`），API key 等凭据不会跨进程。
+- IPC：单管双向、按 id 路由、通知无 id、帧上限 32MB、stderr 环 256KB、通知队列有界 256、
+  调用按插件串行但读循环独立，因此 `cancel` 能在调用进行中生效。
+
+### 4.6 签名档位
+
+| 档位 | 行为 |
+|---|---|
+| `restricted`（默认） | 要求与 Host 同 Team ID；ad-hoc 与非本 Team 一律拒绝 |
+| `development` | 显式开启（`LINGXI_PLUGIN_POLICY=development`），允许 ad-hoc，启动输出标注不受信 |
+| `permissive` | 允许第三方签名；Host 已实现档位判定，端到端验收与公证策略未完成 |
+
+`codesign --verify --strict` 通过不等于 Developer ID 或公证；本项目不宣称 OS 沙箱。
+
+## 5. 存储与一致性
+
+- 会话与 Run 的**唯一真相源是追加式事件日志**（`events.jsonl`）：尾部单行损坏截断修复并计数，
+  非尾部损坏拒绝打开；append 失败进入 `repairRequired`，回滚失败则日志不可用（fail-closed）。
+- 插件启停是**配置**，存于独立的 `plugins.json`（原子写），不进入会话日志。
+- 结论（D3）：在阶段 1–2 的验证范围内保留事件日志，不引入数据库。若后续出现事件日志无法满足的
+  事务性需求，以 ADR 记录后再评估。
+
+## 6. 构建、运行与测试
+
+```bash
+swift build --build-tests        # 零告警
+swift test                       # 120 tests：104 内核 + 16 契约
+
+# 空核启动：无 Provider 时启动、报状态、给出引导，不写事件日志
+DATA_DIR="$(mktemp -d)"
+LINGXI_DATA_DIR="$DATA_DIR" .build/debug/LingXiCoreHost
+test ! -s "$DATA_DIR/events.jsonl"
+```
+
+环境变量：
+
+| 变量 | 作用 |
+|---|---|
+| `LINGXI_DATA_DIR` | 数据目录（`events.jsonl`、`plugins.json`） |
+| `LINGXI_PLUGIN_POLICY` | 仅 `development` 表示显式开发模式；其他值一律按 `restricted` |
+| `LINGXI_PLUGIN_HOST` | 覆盖 Plugin Host 可执行文件路径（打包布局使用） |
+
+安装一个插件：把 `.lxap` 放到任意路径，在 `<data>/plugins.json` 写入
+`{"plugins":[{"bundleID":"…","version":"…","bundlePath":"…","enabled":true}]}`，下次 Core 启动时恢复。
+Core 退出只停进程，不改注册表；用户禁用才写 `enabled=false`。
+
+CI：`.github/workflows/ci.yml`，`macos-26` 单 job，执行构建、测试与空核启动检查；push `rewrite/2.0`、
+PR→`main`、`workflow_dispatch` 触发。最近一次：run `39372322109`，120 tests 全绿。
+
+## 7. 当前实现状态
+
+已实现并验收（证据见 `Validation/`）：
+
+- **内核**（阶段 1–1.2）：Loop、上下文与预算、终态分类、事件日志与恢复、取消/超时、Hook 接缝；
+  104 个内核测试，含 L0 结构门禁与两组独立验收套件。
+- **插件闭环**（阶段 2–2.1）：C ABI v1、通用 Host、注册表与监管、Hook 桥、真 `.lxap` 端到端、
+  启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
+  16 个契约测试。
+- **两个插件实现**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
+
+尚未实现（技术待办，按建议顺序）：
+
+1. **Provider 插件适配器与流式事件传输**：Host 已有有界通知通道，但 `ModelProvider.stream` 的适配
+   （一次调用 + 多帧事件、背压）随第一个真实 Provider 插件一起实现。这是进入 Provider 阶段的硬前置。
+2. 能力租约状态机（`armed/used/expired/revoked`）与熔断/退避。
+3. `permissive` 档的端到端验收与公证策略（档位判定已在 Host 实现）。
+4. `security` 类 Hook 的「要求人工确认」——依赖尚未定义的待答交互模型，当前只做故障即拒绝。
+5. 插件工具能力接入、Swift 运行时唯一性的运行期检测。
+6. TUI 与插件市场。
+
+## 8. 文档集
+
+| 文件 | 内容 |
+|---|---|
+| `Project-Conventions.md` | 目录与命名、依赖审批、Core 不膨胀评审、提交与许可登记、安全红线 |
+| `Kernel-Design.md` | 最小内核：职责白名单、Run/Step 状态机、批次语义、恢复、取消、上下文、预算、缓存 |
+| `Plugin-System-Design.md` | `.lxap`、C ABI、Host、握手与能力注册、生命周期、故障分类、Hook、权限 |
+| `Provider-Plugin-Contract.md` | Provider 契约：wire family、事件流终态、错误分类、用量与缓存 |
+| `Testing-and-Acceptance.md` | 测试分层（L0–L4）与完成标准判定 |
+| `Regression-Cases.md` | 回归台账：带 ID 的场景 → 期望行为 → 证据 → 阶段归属 |
+| `Decisions/` | ADR：ABI 许可轨道、阶段范围前移、插件状态为配置 |
+| `Validation/` | 各阶段验收记录：计数、逐 ID 证据、反例、CI 记录 |
+
+阅读路径：理解设计读 `Kernel-Design.md` → `Plugin-System-Design.md`；动手实现读
+`Project-Conventions.md` → 对应模块设计 → `Testing-and-Acceptance.md`；评审读
+`Project-Conventions.md` 第三章与 `Regression-Cases.md` 相关条目。
+
+## 9. 术语
+
+- **Core / 内核**：不含 Provider、工具与 UI 的可执行运行时。
+- **插件**：以 `.lxap` 交付、导出固定 C ABI 的动态库，由独立 Host 进程加载并向内核注册能力。
+- **Plugin Host**：官方发布的通用宿主进程，每插件一个，插件作者无需认识它。
+- **前端**：通过前端协议连接 Core 的界面进程，不链接内核实现。
+- **特权通道**：只有 `immutableInstructions` 能进入模型指令位置；其余皆为数据。
+- **因果批次**：一条 assistant 工具调用请求与其全部结果构成的不可拆分上下文单位。
