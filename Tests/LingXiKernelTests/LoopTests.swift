@@ -457,6 +457,8 @@ func LOOP_012_budgetExceeded() async throws {
 @Test("QA-013 a model no active provider offers is guidance, not a journal-polluting run")
 func QA_013_modelNotOfferedGuidance() async throws {
     let log = try DurableEventLog(sink: MemorySink())
+    let runs = RunRegistry()
+    let store = SessionStore()
     let router = ModelRouter()
     await router.register(provider: ScriptedProvider(scripts: []), id: "test.provider", models: ["offered"])
     let loop = AgentLoop(
@@ -464,8 +466,8 @@ func QA_013_modelNotOfferedGuidance() async throws {
         toolRegistry: ToolRegistry(),
         executor: RecordingExecutor(),
         log: log,
-        runs: RunRegistry(),
-        store: SessionStore(),
+        runs: runs,
+        store: store,
         instructions: "instructions"
     )
     let request = RunRequest(
@@ -484,6 +486,8 @@ func QA_013_modelNotOfferedGuidance() async throws {
     #expect(result.detail?.contains("No active provider offers model missing-model") == true)
     #expect(!result.terminalCommitted)
     #expect(await log.recordCount == 0)
+    #expect(try await runs.record(request.runID) == nil)
+    #expect(await store.sessionIDs().isEmpty)
 }
 
 @Test("LOOP-021 reusing a run id that already reached a terminal state is rejected without journal writes")
@@ -530,6 +534,8 @@ func DEADLINE_stepBoundaryCheck() async throws {
 
     #expect(result.status == .deadlineExceeded)
     #expect(result.cause == .deadlineExceeded)
+    #expect(result.detail?.contains("elapsed=") == true)
+    #expect(result.terminalCommitted)
     #expect(provider.requestCount == 1)
 }
 
