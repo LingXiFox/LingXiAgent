@@ -5,6 +5,8 @@
 
 ## 修订记录
 
+- **Phase 2（2026-10-20，动态插件闭环开工）**：范围前移按 `Docs/Decisions/ADR-0002-phase-2-scope-pull-forward.md` 记账，PLG-002/003/004/005/006/013/016/018 的阶段列改为 2。已落地并验收的一半：**内核生命周期 Hook 接缝**（`Sources/LingXiKernel/Hooks.swift`，`bb2597a`）——两个内核真实调用的节点 `contextPrepare` 与 `beforeModelRequest`、类型化裁决（rewrite / veto / failed，绝非只收诊断）、**类别由内核从能力判定而非插件自declare**（有否决能力即 security 类，故障一律判拒绝；其余 fail-open 并把跳过原因写进 Run detail）、挂载顺序不决定执行顺序（priority 再 handler id 稳定排序）、撤销后不再参与后续 Run、注入仍受 CTX-001 与 CTX-018 两道校验拦阻。证据：`HookTests.swift` 8 条（PLG-006 ×5、PLG-016 ×2、PLG-003 ×1，另加 CTX-001 ×1），全套 104 tests 全绿。未落地的一半：插件装载与撤销的进程侧、注册表、监督者八步序列、崩溃归因与 `.lxap` 端到端——在制品在分支 `wip/phase2-plugin-host`（`1bec24a`），已知阻塞见该分支提交信息；`security` 类的「并要求人工确认」依 ADR-0002 推迟到待答交互设计那一轮，本阶段不伪造该语义。
+
 - **Phase 1.2（2026-10-20，进入阶段 2 前的最小收尾）**：不新增功能、不加依赖、不动架构，只还 Phase 1.1 验收记录登记的四笔债。新增 2 条：**LOOP-026**（`endExecution` 已接线，四条终态路径各证一次 + 跨 Step 只释放一次 + 未启动的 Run 不调用）、**LOOP-027**（`turn-<turnID>` 条目 id 在 Session 内必须唯一，重复 TurnID 在 `runs.create` 之后、任何持久化写入之前被拒并 `discard` 内存记录，Session 后续新 Turn 正常可用；备选口径「按 runID 生成 id 容忍重复」被明确否掉，理由见 `Validation/Phase-1.2.md` §3.3）。既有口径收紧两处：**LOOP-003** 的恢复入口收敛为 `KernelRecovery` 唯一（删除 `RunRegistry.recoverUnfinishedRuns`，用例改为断言重放**新建**对象上的终态与二次重放幂等，原实现是复用旧 registry 冒充重启）；**Phase 1.1 风险 8.2 第 18 条**的告警计数更正为 11 处并按来源位置去重后全部删除，`swift build --build-tests` 归零告警（内核与宿主本就零告警）。**验收结果（2026-10-20，HEAD `8bc8774`）**：96 tests 全绿 ×5，反例 M1–M4 全部 RED（M3 专门证明「每 Run 一次」不是弱断言），空核启动仍零日志，两个独立验收文件 sha256 未变，证据见 `Docs/Validation/Phase-1.2.md`。
 
 - **Phase 0.1（2026-10-19）**：插件运行模型由"插件即子进程、作者自实现 IPC"改为"插件是固定 C ABI 动态库 + 每插件一个独立 Plugin Host 进程"。影响范围：`IPC-*` 组的适用对象变为 **Core↔Host 内部协议**（作者不再接触）；`PLG-*` 组语义不变，新增 PLG-015~019 覆盖 ABI、签名策略、fail-closed 与进程级隔离；新增 E-13~E-15 记录握手五套不一致、library validation 取舍、无 size/version 字段的前向兼容缺陷。
@@ -156,23 +158,23 @@
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
 | PLG-001 | 禁用状态下扫描到插件可执行文件 | **registry 为唯一真相源**，未启用不得拉起进程 | `discoverAndStartAll`（反面） | 2 | L2 | 待继承 |
-| PLG-002 | 禁用一个正在跑的插件 | 八步撤销序列走完：路由表清除、在途收敛、租约 revoked、事件流与 Hook 卸载、进程树终止、前端 unregister、状态落盘 | `syncPluginCommands` 只增不减（反面） | 3 | L2 | 待继承 |
-| PLG-003 | 能力撤回 | 租约状态 `armed/used/expired/revoked` 明确可查，撤销后调用返回未注册错误 | `MCPRuntime:MCPLeaseState`（1.x 唯一做对的撤销样板） | 3 | L2 | 待继承 |
-| PLG-004 | 插件进程崩溃 | 由 `terminationHandler` 携带退出码/信号/stderr 尾部合成结构化故障；不得靠"下次调用看 isRunning" | `PluginProcessHost`（反面） | 3 | L2 | 待继承 |
-| PLG-005 | 连续故障 | 熔断计数 + 指数退避重启；超阈值标 `failed` 并撤销路由；**不得静默永久失能** | 一次超时即 terminate 判死全 host（反面） | 3 | L2 | 待继承 |
-| PLG-006 | 声明 `intercept` 模式的 Hook | 真的被调用，返回能否决请求、改写参数、要求人工确认；`observe` 模式不得阻塞 | `broadcastHook`/`emit` 零调用方（反面） | 3 | L1/L2 | 待继承 |
+| PLG-002 | 禁用一个正在跑的插件 | 八步撤销序列走完：路由表清除、在途收敛、租约 revoked、事件流与 Hook 卸载、进程树终止、前端 unregister、状态落盘 | `syncPluginCommands` 只增不减（反面） | 2（前移，ADR-0002） | L2 | 待继承 |
+| PLG-003 | 能力撤回 | 租约状态 `armed/used/expired/revoked` 明确可查，撤销后调用返回未注册错误 | `MCPRuntime:MCPLeaseState`（1.x 唯一做对的撤销样板） | 2（前移，ADR-0002） | L2 | 进行中（阶段 2：内核接缝与 L1 证据已落地，插件侧未通） |
+| PLG-004 | 插件进程崩溃 | 由 `terminationHandler` 携带退出码/信号/stderr 尾部合成结构化故障；不得靠"下次调用看 isRunning" | `PluginProcessHost`（反面） | 2（前移，ADR-0002） | L2 | 待继承 |
+| PLG-005 | 连续故障 | 熔断计数 + 指数退避重启；超阈值标 `failed` 并撤销路由；**不得静默永久失能** | 一次超时即 terminate 判死全 host（反面） | 2（前移，ADR-0002） | L2 | 待继承 |
+| PLG-006 | 声明 `intercept` 模式的 Hook | 真的被调用，返回能否决请求、改写参数、要求人工确认；`observe` 模式不得阻塞 | `broadcastHook`/`emit` 零调用方（反面） | 2（前移，ADR-0002） | L1/L2 | 进行中（阶段 2：内核接缝与 L1 证据已落地，插件侧未通） |
 | PLG-007 | 模型调用插件注册的工具 | 调用路径真实存在并抵达插件（1.x `executePluginTool` 无调用方，插件工具永不被调用） | `PluginToolRuntime`（反面） | 2 | L2 | 待继承 |
 | PLG-008 | 插件/sidecar/工具子进程环境 | 严格 allow-list；sentinel 探针证明 passphrase 与 `*_API_KEY` 进不去，且 `PATH`/`HOME` 存活；**MCP 侧不得豁免** | `1b4b31e`、`CredentialNonLeakageTripwireTests`、`EnvironmentSanitizer` | 2 | L2 | 待继承 |
 | PLG-009 | 能力与权限声明 | 无默认值兜底；不显式声明就不通过 | `ProtocolVersionContractTests`、`RuntimeCapabilities` 去默认参数 | 2 | L0 | 待继承 |
 | PLG-010 | 协议公开类型无生产者或消费者 | CI 失败（带显式 allow-list） | `OrphanContractTests` | 2 | L0 | 待继承 |
 | PLG-011 | 协议 major 不匹配 | 拒绝加载并报明确错误；minor 取能力交集；`minimumCoreVersion` 仅作人类提示 | `PluginIPC.supportedVersions`、`ProtocolVersionContractTests` | 2 | L2 | 待继承 |
 | PLG-012 | 并发请求 + 流式事件共用一根管 | 响应按 id 路由，通知无 id，事件流按 streamId 多路；**不得退回串行一问一答** | `VNextStdioTransport`（正面样板） | 2 | L2 | 待继承 |
-| PLG-013 | 插件实际行为越出 manifest 声明 | 记为权限违规，终止进程并标 `failed`，前端告警 | 1.x 无此机制（缺口） | 3 | L2 | 新增 |
+| PLG-013 | 插件实际行为越出 manifest 声明 | 记为权限违规，终止进程并标 `failed`，前端告警 | 1.x 无此机制（缺口） | 2（前移，ADR-0002） | L2 | 新增 |
 | PLG-014 | 插件在工具批次中间崩溃 | 走内核恢复矩阵：只读可重跑，可变记状态未知，副作用不重复 | LOOP-008 | 3 | L2 | 待继承 |
 | PLG-015 | 新版 Host 加载只认识旧 `abiMajor` 的插件；或结构体尾部新增字段 | 主版本不符**硬失败不静默兼容**；同主版本下按 `structSize` 判定字段可用性，旧插件读不到新字段也必须正常工作 | E-15（OpenTUIShim 无 size/version 字段） | 2 | L2 | 新增 |
-| PLG-016 | `security` 类 Hook 超时、崩溃或返回非法值 | **一律判拒绝并要求人工确认**，不得默认放行；插件不能通过声明 `observe` 逃避 fail-closed，类别由内核判定 | Phase 0.1 决策第 4 条 | 3 | L1/L2 | 新增 |
+| PLG-016 | `security` 类 Hook 超时、崩溃或返回非法值 | **一律判拒绝并要求人工确认**，不得默认放行；插件不能通过声明 `observe` 逃避 fail-closed，类别由内核判定 | Phase 0.1 决策第 4 条 | 2（前移，ADR-0002） | L1/L2 | 新增 |
 | PLG-017 | 签名策略 | `restricted` 下拒绝非本 Team ID 插件；`permissive` 需用户显式开启并显示告警；ad-hoc 签名不得进入发布通道，开发模式加载必须标注不受信；`codesign --verify --strict` 通过不等于 Developer ID 或公证 | `Docs/browser check/` 两份 PoC；`Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt` | 2 | L2 | 新增 |
-| PLG-018 | 插件 dylib 在其 Host 内段错误 | 只有该 Host 进程死亡；Core、前端、其他插件的 Host 全部存活，受影响 Run 收到 `crashed` 结构化故障 | 项目书 §七第 5 条 | 3 | L2 | 新增 |
+| PLG-018 | 插件 dylib 在其 Host 内段错误 | 只有该 Host 进程死亡；Core、前端、其他插件的 Host 全部存活，受影响 Run 收到 `crashed` 结构化故障 | 项目书 §七第 5 条 | 2（前移，ADR-0002） | L2 | 新增 |
 | PLG-019 | 插件与 Host 的 Swift 运行时 | 插件不得静态嵌入 stdlib；同一 Host 地址空间内只能有一份 Swift 运行时 | 1.x 全仓 `@_cdecl` 零命中，此为首例 | 2 | L2 | 新增 |
 
 ### STORE 组 — 持久化、配置、凭据
