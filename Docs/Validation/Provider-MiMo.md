@@ -1,6 +1,6 @@
 # Provider 验收记录：Xiaomi MiMo（Chat Completions）
 
-> **状态：已验收（含真实 API）** —— 130 tests 全绿（104 内核 + 26 契约），零告警。真实调用于 2026-10-20 通过，模型 `mimo-v2.6-flash`；脱敏 cassette `ContractTests/Fixtures/mimo-chat-live.json` 已入库，离线用例按 digest 逐轮匹配。
+> **状态：已验收（含真实 API）** —— 合并提交 `7775365`，130 tests 全绿（104 内核 + 26 契约），CI run `39375681740` success，零告警。真实调用于 2026-10-20 通过，模型 `mimo-v2.6-flash`；脱敏 cassette `ContractTests/Fixtures/mimo-chat-live.json` 已入库，离线用例按 digest 逐轮匹配。
 
 ## 一、协议事实（2026-10-20 核对）
 
@@ -62,12 +62,12 @@ MIMO_API_KEY=... ./Scripts/mimo-record.sh
 
 | 项 | 值 |
 |---|---|
-| Run ID | `39374459326` |
-| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39374459326 |
-| head SHA | `0c0192a` |
+| Run ID | `39375681740`（最终，含真实 cassette） |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39375681740 |
+| head SHA | `7775365` |
 | Conclusion | success |
 | runner 工具链 | Apple Swift version 6.3.3 (swiftlang-6.3.3.1.3 clang-2100.1.1.101)；xcode: /Applications/Xcode_26.6.0.app |
-| `swift test` 汇总 | `Test run with 128 tests in 0 suites passed after 2.230 seconds.` |
+| `swift test` 汇总 | `Test run with 130 tests in 0 suites passed after 1.945 seconds.` |
 | live 用例 | DeepSeek 与 MiMo 的 live smoke 均 **skipped**（无付费密钥时按设计跳过） |
 | 空核步骤 | success |
 
