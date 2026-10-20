@@ -1,6 +1,6 @@
 # Phase 2 验收记录：最小动态插件闭环
 
-> **状态：已验收（待合并与 CI run 记录）** —— 分支 `wip/phase2-plugin-host`，114 tests 全绿（104 内核 + 10 契约），`swift build --build-tests` 零告警。范围记账见 `Decisions/ADR-0002`，许可轨道见 `ADR-0001`，注册表存储见 `ADR-0003`。
+> **状态：已验收** —— 合并提交 `60423b3`（`rewrite/2.0`），本地 114 tests 全绿（104 内核 + 10 契约），CI run `39371365648` 在 `macos-26` 上 success（同样 114 tests），`swift build --build-tests` 零告警。范围记账见 `Decisions/ADR-0002`，许可轨道见 `ADR-0001`，注册表存储见 `ADR-0003`。
 
 ## 一、交付面
 
@@ -48,9 +48,21 @@
 2. **内存所有权**：每次调用都经函数表的 `free` 释放回复与 identity 缓冲，双释放会在测试中崩溃；但**泄漏**未被度量。
 3. **并发**：单个 Host 一次只处理一个请求（请求-响应严格串行），尚未实现单管多路事件流；多路复用排在阶段 3。
 4. **签名**：ad-hoc 只在 development 档放行；本机没有 Developer ID，故 `restricted` 的正向路径用“同 Team 拒绝/放行”逻辑覆盖，未用真实签名证书验证。
-5. **CI**：本分支尚未推送；合并到 `rewrite/2.0` 后跑 `macos-26` 门禁并回填。
+5. **CI 已跑通**：run `39371365648`（head `60423b3`，`macos-26` / Swift 6.3.3 / Xcode 26.6.0），10/10 步骤 success，`✔ Test run with 114 tests in 0 suites passed after 1.060 seconds.`，空核步骤 `empty-core startup clean`。CI 上契约测试真起 Host 进程并做 ad-hoc 签名，未依赖任何本地状态。
 
-## 六、复现
+## 六、CI 记录
+
+| 项 | 值 |
+|---|---|
+| Run ID | `39371365648` |
+| URL | https://github.com/LingXiFox/LingXiAgent/actions/runs/39371365648 |
+| head SHA | `60423b30820aa8d938fa67761591ce42f41078de` |
+| Conclusion | success（10/10 步骤） |
+| runner | `macos-26`，Swift 6.3.3 / Xcode 26.6.0 |
+| `swift test` 汇总 | `✔ Test run with 114 tests in 0 suites passed after 1.060 seconds.` |
+| 空核步骤 | success：`empty-core startup clean: guidance printed, no journal records` |
+
+## 七、复现
 
 ```bash
 git checkout wip/phase2-plugin-host
