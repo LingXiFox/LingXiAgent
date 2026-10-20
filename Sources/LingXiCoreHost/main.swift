@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import LingXiKernel
 import LingXiPluginABI
@@ -21,12 +22,11 @@ private func loadCredentialMap(dataDirectory: String) throws -> [String: String]
     let url = URL(fileURLWithPath: dataDirectory).appendingPathComponent("credentials.json")
     guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
     let data = try Data(contentsOf: url)
-    guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+    guard let raw = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
     var resolved: [String: String] = [:]
     for (capability, variable) in raw {
-        if let value = ProcessInfo.processInfo.environment[variable] {
-            resolved[capability] = value
-        }
+        guard let name = variable as? String, let value = ProcessInfo.processInfo.environment[name] else { continue }
+        resolved[capability] = value
     }
     return resolved
 }
@@ -39,17 +39,18 @@ private func pluginHostExecutable() -> URL {
     return selfURL.deletingLastPathComponent().appendingPathComponent("LingXiPluginHost")
 }
 
+// A resident Core publishes status and control replies to a pipe; block buffering would hide them.
+setvbuf(stdout, nil, _IONBF, 0)
+
 let dataDirectory = ProcessInfo.processInfo.environment["LINGXI_DATA_DIR"]
     ?? (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/LingXiAgent")
 try FileManager.default.createDirectory(atPath: dataDirectory, withIntermediateDirectories: true)
 
-// The default is the strict tier. Development is an explicit opt-in, never a fallback, and it says
-// out loud that signatures it admits are untrusted.
+// The default is the strict tier. Development is an explicit opt-in, never a fallback.
 let environmentPolicy = ProcessInfo.processInfo.environment["LINGXI_PLUGIN_POLICY"]
 let policy: SignaturePolicy = environmentPolicy == "development" ? .development : .restricted
+let controlMode = ProcessInfo.processInfo.environment["LINGXI_CORE_CONTROL"] == "1"
 
-// Startup is a status report, not a run: with no provider the host must print availability and
-// configuration guidance without writing a meaningless failed run to the journal (QA-013).
 do {
     let journalURL = URL(fileURLWithPath: dataDirectory).appendingPathComponent("events.jsonl")
     let log = try DurableEventLog(sink: FileEventLogSink(url: journalURL))
@@ -61,12 +62,9 @@ do {
     let registryURL = URL(fileURLWithPath: dataDirectory).appendingPathComponent("plugins.json")
     let registry = try PluginRegistry(configURL: registryURL)
     let pipeline = HookPipeline()
-
-    // credentials.json maps a capability id to the NAME of an environment variable the Core owns.
-    // The value never enters a plugin process environment, a log line or the registry.
     let credentialMap = try loadCredentialMap(dataDirectory: dataDirectory)
     let coordinator = PluginCoordinator(
-        hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline,
+        hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline, router: router,
         credential: { capability in credentialMap[capability] }
     )
 
@@ -75,22 +73,13 @@ do {
     for entry in installed where entry.enabled {
         do {
             _ = try await coordinator.enable(bundleID: entry.bundleID, policy: policy)
-            // A provider plugin becomes a model source for the loop; the kernel still sees only ids.
-            for binding in await coordinator.providerBindings(bundleID: entry.bundleID) {
-                await router.register(
-                    provider: binding.adapter,
-                    id: ProviderID(binding.declaration.id),
-                    models: binding.declaration.models.map { ModelID($0) }
-                )
-            }
         } catch {
             // A plugin that cannot be restored must not take the Core down with it.
             failures.append("\(entry.bundleID): \(error)")
         }
     }
 
-    // The actual Agent Loop is built around the same pipeline the plugins mounted on. A hook that
-    // fires during a turn is a plugin call, not a copy.
+    // The actual Agent Loop is built around the same pipeline the plugins mounted on.
     let loop = AgentLoop(
         router: router,
         toolRegistry: toolRegistry,
@@ -103,32 +92,79 @@ do {
     )
     _ = loop
 
-    let handlers = await pipeline.mountedHandlerIDs
-    let running = await coordinator.runningBundleIDs()
+    func statusLines() async -> [String] {
+        let handlers = await pipeline.mountedHandlerIDs
+        let running = await coordinator.runningBundleIDs()
+        var lines = [
+            "providers:      \(await router.providerCount)",
+            "models:         \(await router.offeredModels.map(\.rawValue).sorted().joined(separator: ", "))",
+            "plugin policy:  \(policy.rawValue)\(policy == .development ? " (explicit development opt-in; ad-hoc signatures are admitted as untrusted)" : "")",
+            "plugins:        \(installed.count) installed, \(installed.filter(\.enabled).count) enabled, \(running.count) running",
+            "plugin handlers:\(handlers.isEmpty ? " none" : " " + handlers.joined(separator: ", "))",
+        ]
+        for bundleID in running {
+            if let pid = await coordinator.processIdentifier(bundleID: bundleID) {
+                lines.append("plugin host pid: \(bundleID)=\(pid)")
+            }
+        }
+        for failure in failures { lines.append("plugin error:   \(failure)") }
+        return lines
+    }
 
     print("LingXiAgent 2.0 core host")
-    print("  providers:      \(await router.providerCount)")
-    print("  models:         \(await router.offeredModels.map(\.rawValue).joined(separator: ", "))")
-    print("  tools:          \(await toolRegistry.manifest().count)")
-    print("  journal:        \(await log.recordCount) records, repaired tail: \(await log.repairedTailRecordCount)")
-    print("  recovered runs: \(recovered.report.restoredRunCount), failed: \(recovered.report.failedRunIDs.count), unknown execution: \(recovered.report.executionStateUnknownRunIDs.count)")
-    print("  plugin policy:  \(policy.rawValue)\(policy == .development ? " (explicit development opt-in; ad-hoc signatures are admitted as untrusted)" : "")")
-    print("  plugins:        \(installed.count) installed, \(installed.filter(\.enabled).count) enabled, \(running.count) running")
-    print("  plugin handlers:\(handlers.isEmpty ? " none" : " " + handlers.joined(separator: ", "))")
-    for bundleID in running {
-        if let pid = await coordinator.processIdentifier(bundleID: bundleID) {
-            print("  plugin host pid: \(bundleID)=\(pid)")
-        }
-    }
-    for failure in failures {
-        print("  plugin error:   \(failure)")
-    }
-
+    for line in await statusLines() { print("  \(line)") }
     if await router.providerCount == 0 {
         print("No provider plugin is active. Install and enable a provider plugin to start a conversation; the core runs without one.")
         print("No inference was attempted; nothing was added to the journal.")
     } else {
         print("Provider plugins are active. Connect a frontend to start a conversation.")
+    }
+
+    if controlMode {
+        // A line-oriented control surface for verifying runtime switching without a frontend. It
+        // touches plugin routes and processes only; the journal is never written.
+        print("control: ready")
+        func emit(_ line: String) {
+            FileHandle.standardOutput.write(Data((line + "\n").utf8))
+        }
+        var pending = Data()
+        loop: while true {
+            let chunk = FileHandle.standardInput.availableData
+            guard !chunk.isEmpty else { break }
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let raw = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
+                pending.removeSubrange(pending.startIndex...newline)
+                let parts = raw.split(separator: " ", maxSplits: 1).map(String.init)
+                guard let command = parts.first else { continue }
+                switch command {
+                case "models":
+                    emit("models: " + (await router.offeredModels.map(\.rawValue).sorted().joined(separator: ",")))
+                case "plugins":
+                    var states: [String] = []
+                    for entry in await registry.all() {
+                        states.append("\(entry.bundleID)=\(await coordinator.isRunning(bundleID: entry.bundleID) ? "running" : "stopped")")
+                    }
+                    emit("plugins: " + states.sorted().joined(separator: ","))
+                case "enable", "disable":
+                    guard parts.count == 2 else { emit("error: \(command) needs a bundle id"); continue }
+                    do {
+                        if command == "enable" {
+                            _ = try await coordinator.enable(bundleID: parts[1], policy: policy)
+                        } else {
+                            try await coordinator.disable(bundleID: parts[1])
+                        }
+                        emit("\(command) \(parts[1]): ok")
+                    } catch {
+                        emit("\(command) \(parts[1]): error=\(error)")
+                    }
+                case "quit":
+                    break loop
+                default:
+                    emit("error: unknown command \(command)")
+                }
+            }
+        }
     }
 
     // No plugin process outlives the Core.

@@ -130,7 +130,7 @@ struct NoopExecutor: ToolExecutor {
 
 func makeTestLoop(provider: any ModelProvider, pipeline: HookPipeline) async throws -> AgentLoop {
     let router = ModelRouter()
-    await router.register(provider: provider, id: "test.provider", models: ["test-model"])
+    try? await router.register(provider: provider, id: "test.provider", models: ["test-model"])
     return AgentLoop(
         router: router,
         toolRegistry: ToolRegistry(),

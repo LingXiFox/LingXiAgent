@@ -29,6 +29,8 @@ public actor PluginSession {
     private let clock: any MonotonicClock
     private let timeout: Duration
     private let handshakeTimeout: Duration
+    private var intentionalShutdown = false
+    private var unexpectedExitHandler: (@Sendable () -> Void)?
 
     public init(
         bundlePath: String,
@@ -48,7 +50,11 @@ public actor PluginSession {
 
     public func enable(policy: SignaturePolicy, grantedPermissions: [String]) async throws {
         guard state != .running else { return }
+        intentionalShutdown = false
         let process = PluginProcess(executableURL: hostExecutableURL, clock: clock)
+        process.onTermination = { [weak self] _ in
+            Task { await self?.hostTerminated() }
+        }
         do {
             try process.start()
         } catch {
@@ -165,7 +171,18 @@ public actor PluginSession {
 
     /// Stop, dispose, close the pipe and wait for the process to actually go away; a host that will
     /// not exit is terminated. Nothing here leaves a background process behind.
+    public func setUnexpectedExitHandler(_ handler: @escaping @Sendable () -> Void) {
+        unexpectedExitHandler = handler
+    }
+
+    private func hostTerminated() {
+        guard !intentionalShutdown else { return }
+        state = .failed
+        unexpectedExitHandler?()
+    }
+
     public func disable() async {
+        intentionalShutdown = true
         guard let process else {
             state = .disabled
             return

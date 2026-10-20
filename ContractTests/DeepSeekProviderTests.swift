@@ -97,7 +97,7 @@ private func makeDeepSeekHarness(grants: [String], credential: @escaping @Sendab
 
     let recorder = ModelEventRecorder()
     let router = ModelRouter()
-    await router.register(
+    try await router.register(
         provider: TeeProvider(inner: binding.adapter, recorder: recorder),
         id: ProviderID(binding.declaration.id),
         models: binding.declaration.models.map { ModelID($0) }
@@ -133,7 +133,7 @@ func DEEPSEEK_cassetteDrivesMultiTurnAndToolLoop() async throws {
     let harness = try await makeDeepSeekHarness(
         grants: ["vcr=\(fixtureURL.path)"], credential: { "offline-test-credential" }
     )
-    defer { Task { await harness.coordinator.disable(bundleID: deepSeekID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: deepSeekID) } }
 
     // Turn 1: streamed text. More than one delta proves events arrived as a stream, not one blob.
     let first = await harness.loop.run(
@@ -178,7 +178,7 @@ func DEEPSEEK_providerStreamCancellation() async throws {
 
     // The host survived the cancellation and still answers, then shuts down cleanly.
     #expect(await harness.coordinator.isRunning(bundleID: deepSeekID))
-    await harness.coordinator.disable(bundleID: deepSeekID)
+    try await harness.coordinator.disable(bundleID: deepSeekID)
     #expect(await waitUntil { kill(pid, 0) != 0 })
 }
 
@@ -189,7 +189,7 @@ func DEEPSEEK_disableRemovesProviderRoute() async throws {
     )
     #expect(await harness.coordinator.isRunning(bundleID: deepSeekID))
     let pid = try #require(await harness.coordinator.processIdentifier(bundleID: deepSeekID))
-    await harness.coordinator.disable(bundleID: deepSeekID)
+    try await harness.coordinator.disable(bundleID: deepSeekID)
     #expect(await harness.coordinator.isRunning(bundleID: deepSeekID) == false)
     #expect(await waitUntil { kill(pid, 0) != 0 })
 }
@@ -203,7 +203,7 @@ func DEEPSEEK_recordingWritesCassette() async throws {
         grants: ["vcr=\(fixtureURL.path)", "record=\(output.path)"],
         credential: { "offline-test-credential" }
     )
-    defer { Task { await harness.coordinator.disable(bundleID: deepSeekID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: deepSeekID) } }
 
     #expect((await harness.loop.run(deepSeekRequest(turn: 1, prompt: "Say hello"), policy: LoopPolicy())).status == .completed)
     let data = try Data(contentsOf: output)
@@ -225,7 +225,7 @@ func DEEPSEEK_liveSmoke() async throws {
         grants.append("record=\(record)")
     }
     let harness = try await makeDeepSeekHarness(grants: grants, credential: { key })
-    defer { Task { await harness.coordinator.disable(bundleID: deepSeekID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: deepSeekID) } }
 
     let first = await harness.loop.run(
         deepSeekRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy()

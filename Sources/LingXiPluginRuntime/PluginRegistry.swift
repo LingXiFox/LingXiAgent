@@ -41,13 +41,26 @@ public actor PluginRegistry {
     public func entry(_ bundleID: String) -> Entry? { entries[bundleID] }
 
     public func upsert(_ entry: Entry) throws {
+        let previous = entries[entry.bundleID]
         entries[entry.bundleID] = entry
-        try persist()
+        do {
+            try persist()
+        } catch {
+            // The disk is the source of truth for enabled state: if the write failed, in-memory must
+            // not claim otherwise.
+            if let previous { entries[entry.bundleID] = previous } else { entries.removeValue(forKey: entry.bundleID) }
+            throw error
+        }
     }
 
     public func remove(_ bundleID: String) throws {
-        entries.removeValue(forKey: bundleID)
-        try persist()
+        let previous = entries.removeValue(forKey: bundleID)
+        do {
+            try persist()
+        } catch {
+            if let previous { entries[bundleID] = previous }
+            throw error
+        }
     }
 
     private func persist() throws {

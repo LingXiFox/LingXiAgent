@@ -2,33 +2,13 @@ import Foundation
 import LingXiKernel
 import LingXiPluginABI
 
-/// Ties the registry, the per-plugin host sessions and the kernel hook pipeline together. This is the
-/// only object that knows both a plugin and the kernel, and it lives outside both.
+/// Ties the registry, the per-plugin host sessions, the kernel hook pipeline and - when a router is
+/// supplied - the model routes together. This is the only object that knows both a plugin and the
+/// kernel, and it lives outside both.
 public actor PluginCoordinator {
     public struct Loaded: Sendable {
         public let bundleID: String
         public let capabilities: [DeclaredCapability]
-    }
-
-    private let hostExecutableURL: URL
-    private let registry: PluginRegistry
-    private let pipeline: HookPipeline
-    private let credential: @Sendable (String) -> String?
-    private var sessions: [String: PluginSession] = [:]
-    private var handlerIDs: [String: [String]] = [:]
-
-    /// `credential` resolves a capability id to a secret the Core owns. It never comes from the host
-    /// environment and is never written to a log; only the provider adapter puts it on the wire.
-    public init(
-        hostExecutableURL: URL,
-        registry: PluginRegistry,
-        pipeline: HookPipeline,
-        credential: @escaping @Sendable (String) -> String? = { _ in nil }
-    ) {
-        self.hostExecutableURL = hostExecutableURL
-        self.registry = registry
-        self.pipeline = pipeline
-        self.credential = credential
     }
 
     public struct ProviderBinding: Sendable {
@@ -36,23 +16,30 @@ public actor PluginCoordinator {
         public let adapter: PluginProviderAdapter
     }
 
-    /// Builds the kernel-facing adapters for a plugin's declared providers. One host process backs
-    /// both its hooks and its provider; disabling the plugin removes both routes.
-    public func providerBindings(bundleID: String) async -> [ProviderBinding] {
-        guard let session = sessions[bundleID] else { return [] }
-        let providers = await session.providers
-        let credential = self.credential
-        return providers.map { declaration in
-            ProviderBinding(
-                declaration: declaration,
-                adapter: PluginProviderAdapter(
-                    session: session,
-                    providerID: declaration.id,
-                    declaration: declaration,
-                    credential: { credential("provider.\(declaration.id)") }
-                )
-            )
-        }
+    private let hostExecutableURL: URL
+    private let registry: PluginRegistry
+    private let pipeline: HookPipeline
+    private let router: ModelRouter?
+    private let credential: @Sendable (String) -> String?
+    private var sessions: [String: PluginSession] = [:]
+    private var handlerIDs: [String: [String]] = [:]
+    private var adapters: [String: [PluginProviderAdapter]] = [:]
+    private var disabling: Set<String> = []
+
+    /// `credential` resolves a capability id to a secret the Core owns. It never comes from the host
+    /// environment and is never written to a log; only the provider adapter puts it on the wire.
+    public init(
+        hostExecutableURL: URL,
+        registry: PluginRegistry,
+        pipeline: HookPipeline,
+        router: ModelRouter? = nil,
+        credential: @escaping @Sendable (String) -> String? = { _ in nil }
+    ) {
+        self.hostExecutableURL = hostExecutableURL
+        self.registry = registry
+        self.pipeline = pipeline
+        self.router = router
+        self.credential = credential
     }
 
     /// Installs a bundle in the registry without starting it. Enabling is a separate, explicit act.
@@ -60,6 +47,8 @@ public actor PluginCoordinator {
         try await registry.upsert(.init(bundleID: bundleID, version: version, bundlePath: bundlePath, enabled: false))
     }
 
+    /// Starts a plugin, mounts its hooks and registers its model routes. Registration is atomic per
+    /// provider; any failure rolls back everything this call installed, including the host process.
     @discardableResult
     public func enable(
         bundleID: String,
@@ -74,59 +63,89 @@ public actor PluginCoordinator {
         }
 
         let session = PluginSession(bundlePath: entry.bundlePath, hostExecutableURL: hostExecutableURL)
-        try await session.enable(policy: policy, grantedPermissions: grantedPermissions)
-        let capabilities = await session.capabilities
+        var registered: [ProviderID] = []
         var mounted: [String] = []
-        for capability in capabilities where capability.kind == "hook" {
-            let bridge = PluginHookBridge(bundleID: bundleID, declaration: capability, session: session)
-            await pipeline.install(bridge)
-            mounted.append(bridge.handlerID)
-        }
-        sessions[bundleID] = session
-        handlerIDs[bundleID] = mounted
-        try await registry.upsert(.init(
-            bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath, enabled: true
-        ))
-        return Loaded(bundleID: bundleID, capabilities: capabilities)
-    }
+        do {
+            try await session.enable(policy: policy, grantedPermissions: grantedPermissions)
+            await session.setUnexpectedExitHandler { [weak self] in
+                Task { await self?.handleUnexpectedExit(bundleID: bundleID) }
+            }
 
-    /// Revocation order matters: routes go first, so no new Run can reach a plugin that is being torn
-    /// down; only then does the process stop. The registry is written last, and it never lies about a
-    /// still-running host.
-    public func disable(bundleID: String) async {
-        for handlerID in handlerIDs[bundleID] ?? [] {
-            _ = await pipeline.uninstall(handlerID: handlerID)
-        }
-        handlerIDs[bundleID] = nil
-        if let session = sessions.removeValue(forKey: bundleID) {
-            await session.disable()
-        }
-        if let entry = await registry.entry(bundleID) {
-            try? await registry.upsert(.init(
-                bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath, enabled: false
+            let deployments = await session.providers.map { declaration in
+                (
+                    declaration,
+                    PluginProviderAdapter(
+                        session: session,
+                        providerID: declaration.id,
+                        declaration: declaration,
+                        credential: { [credential] in credential("provider.\(declaration.id)") }
+                    )
+                )
+            }
+            if let router {
+                for (declaration, adapter) in deployments {
+                    try await router.register(
+                        provider: adapter,
+                        id: ProviderID(declaration.id),
+                        models: declaration.models.map { ModelID($0) }
+                    )
+                    registered.append(ProviderID(declaration.id))
+                }
+            }
+
+            for capability in await session.capabilities where capability.kind == "hook" {
+                let bridge = PluginHookBridge(bundleID: bundleID, declaration: capability, session: session)
+                await pipeline.install(bridge)
+                mounted.append(bridge.handlerID)
+            }
+
+            try await registry.upsert(.init(
+                bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath, enabled: true
             ))
-        }
-    }
 
-    /// Process shutdown: tear the hosts down without touching the registry. Exiting the Core is not
-    /// the user disabling a plugin, and flipping `enabled` here would mean a restart never restores
-    /// anything.
-    public func shutdown() async {
-        for (_, handlerIDs) in handlerIDs {
-            for handlerID in handlerIDs {
+            sessions[bundleID] = session
+            adapters[bundleID] = deployments.map(\.1)
+            handlerIDs[bundleID] = mounted
+            return Loaded(bundleID: bundleID, capabilities: await session.capabilities)
+        } catch {
+            for providerID in registered {
+                if let router { _ = await router.unregister(providerID: providerID) }
+            }
+            for handlerID in mounted {
                 _ = await pipeline.uninstall(handlerID: handlerID)
             }
-        }
-        handlerIDs.removeAll()
-        for (_, session) in sessions {
             await session.disable()
+            throw error
         }
-        sessions.removeAll()
+    }
+
+    /// Disables a plugin. The registry is written first: if the disk refuses, nothing is torn down
+    /// and the caller sees why. After that, routes go, in-flight calls are cancelled, hooks unmount,
+    /// and only then does the host stop. One plugin's teardown never touches another's routes.
+    public func disable(bundleID: String) async throws {
+        if disabling.contains(bundleID) { return }
+        disabling.insert(bundleID)
+        defer { disabling.remove(bundleID) }
+
+        if let entry = await registry.entry(bundleID), entry.enabled {
+            var disabled = entry
+            disabled.enabled = false
+            try await registry.upsert(disabled)
+        }
+        await teardown(bundleID)
     }
 
     public func uninstall(bundleID: String) async throws {
-        await disable(bundleID: bundleID)
+        try await disable(bundleID: bundleID)
         try await registry.remove(bundleID)
+    }
+
+    /// Process shutdown: tear hosts down without touching the registry. Exiting the Core is not the
+    /// user disabling a plugin, and flipping `enabled` here would mean a restart never restores.
+    public func shutdown() async {
+        for bundleID in Array(sessions.keys) {
+            await teardown(bundleID)
+        }
     }
 
     public func isRunning(bundleID: String) async -> Bool {
@@ -144,5 +163,52 @@ public actor PluginCoordinator {
             running.append(bundleID)
         }
         return running.sorted()
+    }
+
+    /// Adapters created by the last successful enable. Exposed for read-only inspection and for tests
+    /// that install a recording wrapper; the coordinator owns the routes when a router was supplied.
+    public func providerBindings(bundleID: String) async -> [ProviderBinding] {
+        guard let session = sessions[bundleID] else { return [] }
+        let providers = await session.providers
+        let built = adapters[bundleID] ?? []
+        return Array(zip(providers, built)).map { ProviderBinding(declaration: $0.0, adapter: $0.1) }
+    }
+
+    // MARK: - teardown
+
+    private func teardown(_ bundleID: String) async {
+        if let session = sessions[bundleID] {
+            let providers = await session.providers
+            if let router {
+                for declaration in providers {
+                    _ = await router.unregister(providerID: ProviderID(declaration.id))
+                }
+            }
+        }
+        // Stop in-flight provider work before the host goes away, so disable does not depend on the
+        // OS killing the process to end a stream.
+        for adapter in adapters[bundleID] ?? [] {
+            await adapter.cancelAll()
+        }
+        for handlerID in handlerIDs[bundleID] ?? [] {
+            _ = await pipeline.uninstall(handlerID: handlerID)
+        }
+        handlerIDs[bundleID] = nil
+        adapters[bundleID] = nil
+        if let session = sessions.removeValue(forKey: bundleID) {
+            await session.disable()
+        }
+    }
+
+    /// An unexpected host exit has the same effect as a disable, scoped to that plugin, and the
+    /// registry records `enabled=false` so a restart does not immediately revive a crashing plugin.
+    private func handleUnexpectedExit(bundleID: String) async {
+        if disabling.contains(bundleID) { return }
+        await teardown(bundleID)
+        if let entry = await registry.entry(bundleID), entry.enabled {
+            var disabled = entry
+            disabled.enabled = false
+            try? await registry.upsert(disabled)
+        }
     }
 }

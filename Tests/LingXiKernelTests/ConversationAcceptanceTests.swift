@@ -46,7 +46,7 @@ private func convMakeLoop(
     instructions: String = "instructions"
 ) async -> AgentLoop {
     let router = ModelRouter()
-    await router.register(provider: provider, id: ProviderID("test.provider"), models: [model])
+    try? await router.register(provider: provider, id: ProviderID("test.provider"), models: [model])
     return AgentLoop(
         router: router,
         toolRegistry: registry,
@@ -218,8 +218,8 @@ func LOOP_021_differentSessionsRunConcurrently() async throws {
     let providerA = BlockingStreamProvider(terminalEvents: [.textDelta("answer a"), .completed(.stop)])
     let providerB = BlockingStreamProvider(terminalEvents: [.textDelta("answer b"), .completed(.stop)])
     let router = ModelRouter()
-    await router.register(provider: providerA, id: ProviderID("test.provider.a"), models: ["model-a"])
-    await router.register(provider: providerB, id: ProviderID("test.provider.b"), models: ["model-b"])
+    try? await router.register(provider: providerA, id: ProviderID("test.provider.a"), models: ["model-a"])
+    try? await router.register(provider: providerB, id: ProviderID("test.provider.b"), models: ["model-b"])
     let loop = AgentLoop(
         router: router,
         toolRegistry: ToolRegistry(),

@@ -71,10 +71,12 @@ private struct MiMoHarness {
     let coordinator: PluginCoordinator
     let recorder: MiMoEventRecorder
     let executor: MiMoEchoExecutor
+    let router: ModelRouter?
 }
 
 private func makeMiMoHarness(
     grants: [String], model: String = "mimo-v2.6-flash",
+    router ownedRouter: ModelRouter? = nil,
     credential: @escaping @Sendable () -> String?
 ) async throws -> MiMoHarness {
     let bundle = try makeBundle(
@@ -88,6 +90,7 @@ private func makeMiMoHarness(
         hostExecutableURL: builtProduct("LingXiPluginHost"),
         registry: registry,
         pipeline: HookPipeline(),
+        router: ownedRouter,
         credential: { _ in credential() }
     )
     try await coordinator.install(bundleID: mimoID, version: "1.0.0", bundlePath: bundle.url.path)
@@ -96,12 +99,16 @@ private func makeMiMoHarness(
     let binding = try #require(bindings.first)
 
     let recorder = MiMoEventRecorder()
-    let router = ModelRouter()
-    await router.register(
-        provider: MiMoTeeProvider(inner: binding.adapter, recorder: recorder),
-        id: ProviderID(binding.declaration.id),
-        models: binding.declaration.models.map { ModelID($0) }
-    )
+    let router = ownedRouter ?? ModelRouter()
+    if ownedRouter == nil {
+        // Single-provider tests observe the stream through a wrapper; the coordinator owns routes
+        // only when a router is supplied.
+        try await router.register(
+            provider: MiMoTeeProvider(inner: binding.adapter, recorder: recorder),
+            id: ProviderID(binding.declaration.id),
+            models: binding.declaration.models.map { ModelID($0) }
+        )
+    }
     let tools = ToolRegistry()
     try await tools.register(ToolDescriptor(
         id: "test/echo", name: "echo",
@@ -115,7 +122,7 @@ private func makeMiMoHarness(
         runs: RunRegistry(), store: SessionStore(),
         instructions: "You are a test assistant."
     )
-    return MiMoHarness(loop: loop, coordinator: coordinator, recorder: recorder, executor: executor)
+    return MiMoHarness(loop: loop, coordinator: coordinator, recorder: recorder, executor: executor, router: ownedRouter)
 }
 
 private func mimoRequest(turn: Int, prompt: String, model: String = "mimo-v2.6-flash") -> RunRequest {
@@ -134,7 +141,7 @@ func MIMO_cassetteDrivesMultiTurnAndToolLoop() async throws {
     let harness = try await makeMiMoHarness(
         grants: ["vcr=\(mimoFixtureURL.path)"], credential: { "offline-test-credential" }
     )
-    defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
 
     let first = await harness.loop.run(
         mimoRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy()
@@ -177,12 +184,23 @@ func MIMO_cassetteDrivesMultiTurnAndToolLoop() async throws {
 
 @Test("MIMO disabling the provider removes its model route and its host process")
 func MIMO_disableRemovesProviderRoute() async throws {
+    let router = ModelRouter()
     let harness = try await makeMiMoHarness(
-        grants: ["vcr=\(mimoFixtureURL.path)"], credential: { "offline-test-credential" }
+        grants: ["vcr=\(mimoFixtureURL.path)"], router: router,
+        credential: { "offline-test-credential" }
     )
     #expect(await harness.coordinator.isRunning(bundleID: mimoID))
+    #expect(await router.offeredModels.map(\.rawValue).sorted() == ["mimo-v2.6-flash", "mimo-v2.6-pro"])
     let pid = try #require(await harness.coordinator.processIdentifier(bundleID: mimoID))
-    await harness.coordinator.disable(bundleID: mimoID)
+
+    try await harness.coordinator.disable(bundleID: mimoID)
+
+    // Both halves of "disabled": the route is gone and so is the process.
+    #expect(await router.offeredModels.isEmpty)
+    #expect(await router.providerIDs().isEmpty)
+    var refused = false
+    do { _ = try await router.resolve(model: "mimo-v2.6-flash") } catch { refused = true }
+    #expect(refused)
     #expect(await harness.coordinator.isRunning(bundleID: mimoID) == false)
     #expect(await waitUntil { kill(pid, 0) != 0 })
 }
@@ -199,7 +217,7 @@ func MIMO_providerStreamCancellation() async throws {
     )
     #expect(result.status == .deadlineExceeded)
     #expect(await harness.coordinator.isRunning(bundleID: mimoID))
-    await harness.coordinator.disable(bundleID: mimoID)
+    try await harness.coordinator.disable(bundleID: mimoID)
     #expect(await waitUntil { kill(pid, 0) != 0 })
 }
 
@@ -212,7 +230,7 @@ func MIMO_recordingWritesCassette() async throws {
         grants: ["vcr=\(mimoFixtureURL.path)", "record=\(output.path)"],
         credential: { "offline-test-credential" }
     )
-    defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
 
     #expect((await harness.loop.run(mimoRequest(turn: 1, prompt: "Reply with the single word: pong"), policy: LoopPolicy())).status == .completed)
     let data = try Data(contentsOf: output)
@@ -233,7 +251,7 @@ func MIMO_liveSmoke() async throws {
         grants.append("record=\(record)")
     }
     let harness = try await makeMiMoHarness(grants: grants, model: model, credential: { key })
-    defer { Task { await harness.coordinator.disable(bundleID: mimoID) } }
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
 
     let first = await harness.loop.run(mimoRequest(turn: 1, prompt: "Reply with the single word: pong", model: model), policy: LoopPolicy())
     #expect(first.status == .completed, "live run failed: \(first.status) \(first.detail ?? "")")

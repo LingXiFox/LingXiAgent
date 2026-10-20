@@ -61,7 +61,7 @@ func PLG_001_enableRewriteDisableReenableUninstall() async throws {
     #expect(markerSeen(provider, "probe.marker"))
 
     // Disable: routes go first, then the process, then the registry.
-    await coordinator.disable(bundleID: swiftPluginID)
+    try await coordinator.disable(bundleID: swiftPluginID)
     #expect(await pipeline.mountedHandlerIDs.isEmpty)
     #expect(await coordinator.isRunning(bundleID: swiftPluginID) == false)
     #expect(await registry.entry(swiftPluginID)?.enabled == false)
@@ -96,7 +96,7 @@ func PLG_015_cPluginUsesTheSameRuntimeAndABI() async throws {
     // runtime code was compiled differently for it.
     #expect(markerSeen(provider, "cprobe.marker"))
 
-    await coordinator.disable(bundleID: cPluginID)
+    try await coordinator.disable(bundleID: cPluginID)
     #expect(await coordinator.runningBundleIDs().isEmpty)
 }
 
@@ -163,7 +163,7 @@ func PLG_017_signaturePolicyTiers() async throws {
     // Development admits it and labels it: the bundle is not Developer ID and is not notarised.
     _ = try await coordinator.enable(bundleID: swiftPluginID, policy: .development)
     #expect(await coordinator.isRunning(bundleID: swiftPluginID))
-    await coordinator.disable(bundleID: swiftPluginID)
+    try await coordinator.disable(bundleID: swiftPluginID)
 }
 
 @Test("PLG-018 a crashing plugin kills only its host and the run is denied, not silently passed")
@@ -190,10 +190,11 @@ func PLG_018_pluginCrashIsIsolated() async throws {
     #expect(await waitUntil { await coordinator.isRunning(bundleID: cPluginID) == false })
     #expect(await coordinator.isRunning(bundleID: swiftPluginID))
     #expect(await pipeline.mountedHandlerIDs.contains("\(swiftPluginID).contextProbe"))
-    #expect(await pipeline.mountedHandlerIDs.contains("\(cPluginID).cProbe"))
+    // The dead plugin's route is cleaned up as part of crash handling, not left dangling.
+    #expect(await pipeline.mountedHandlerIDs.contains("\(cPluginID).cProbe") == false)
 
-    // Tear the dead one down: registry says disabled, no process, route gone.
-    await coordinator.disable(bundleID: cPluginID)
+    // The registry recorded the failure so a restart does not revive it; disable is idempotent.
+    try await coordinator.disable(bundleID: cPluginID)
     #expect(await pipeline.mountedHandlerIDs == ["\(swiftPluginID).contextProbe"])
     #expect(await coordinator.isRunning(bundleID: cPluginID) == false)
 

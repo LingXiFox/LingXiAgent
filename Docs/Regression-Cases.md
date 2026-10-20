@@ -5,6 +5,8 @@
 
 ## 修订记录
 
+- **Phase 3.1（2026-10-20，多 Provider 隔离与动态撤销）**：`ModelRouter` 增加原子 `register`（重复 provider / 模型冲突整批拒绝）与按所有者精确删除的 `unregister`；`PluginCoordinator` 持有 router 后，启用注册、禁用撤销，任何一步失败整体回滚。禁用顺序：注册表先写 → 摘路由 → 取消在途 → 卸 Hook → 停 Host；Host 意外退出按插件作用域清理并把 `enabled` 置 false（ADR-0004）。新增 7 条证据：双 Provider 各自服务、禁用只撤销自己的路由且 DeepSeek 继续完成 Run、强杀 Host 的作用域清理、禁用期间的在途取消与无幽灵路由、重复注册冲突、注册表写入失败回滚、常驻 Core 的运行时启停与重启状态恢复。原 `MIMO_disableRemovesProviderRoute` 补齐为真正的路由断言；`PLG_018_pluginCrashIsIsolated` 改为断言死插件路由被自动清理。全套 137 tests（104 + 33）连跑 3 次全绿。
+
 - **Provider-MiMo（2026-10-20，第二个 Provider，验证跨 wire family）**：MiMo 走 OpenAI Chat Completions（`POST https://api.xiaomimimo.com/v1/chat/completions`，`mimo-v2.6-flash` / `mimo-v2.6-pro`），与 DeepSeek 的 Responses 属不同协议族。实现为**独立插件**，请求编码、SSE 归一化、cassette 均不共享兼容层；只复用已冻结的 ABI、Host 与 Runtime。关键差异处理：工具调用按 index 累积且 id/name 齐备后才发 started；终态延迟到流末尾，确保 `stream_options.include_usage` 的 trailing usage 不被内核终态守卫丢弃。证据：离线 4 条（真流式 ≥2 delta、两轮对话、完整工具循环、取消/超时清理、禁用撤销），同套 128 tests 连跑 3 次全绿；并行负载暴露握手超时过紧，默认从 5s 调到 15s。真实 API 已验证（2026-10-20，`mimo-v2.6-flash`）：三轮录制、工具循环、reasoning 与 cacheRead usage 均命中；脱敏 cassette `ContractTests/Fixtures/mimo-chat-live.json` 已入库，离线用例按 digest 匹配全部通过。详见 `Docs/Validation/Provider-MiMo.md`。
 
 - **Provider-DeepSeek（2026-10-20，首个真实 Provider 插件）**：DeepSeek Responses API（`POST /responses`，模型 `deepseek-flash`）以独立 `.lxap` 接入，未改内核与 Core 一行。SSE 事件在插件内归一化为 `ProviderWireEvent`，经 Host IPC 通知流送到 Runtime，再映射为内核 `ModelEvent`；文本与推理增量、工具调用开始/增量/完成、usage、终态与失败均有映射。证据：离线 cassette 回放覆盖真流式（≥2 个 textDelta）、同一 Session 两轮对话、一次完整工具循环（2 Step、1 次工具执行）；`fault.slow` 慢速回放下 150ms 总超时触发取消，Host 存活且退出后无 PID；禁用后模型路由与进程同时撤销。凭据由 Core 按 `credentials.json`（能力 id → 环境变量名）解析并按次注入，Host 环境不放宽、密钥不进日志与 cassette。真实 API 录制待主人用 `Scripts/deepseek-record.sh` 执行后替换 fixture。详见 `Docs/Validation/Provider-DeepSeek.md`。
@@ -165,9 +167,9 @@
 
 | ID | 场景 | 期望行为 | 1.x 证据 | 阶段 | 层 | 状态 |
 |---|---|---|---|---|---|---|
-| PLG-001 | 禁用状态下扫描到插件可执行文件 | **registry 为唯一真相源**，未启用不得拉起进程 | `discoverAndStartAll`（反面） | 2 | L2  已覆盖（阶段 2：注册表为唯一真相源；安装/启用/禁用/重启用/卸载与持久化均有真实 .lxap 端到端用例） |
+| PLG-001 | 禁用状态下扫描到插件可执行文件 | **registry 为唯一真相源**，未启用不得拉起进程 | `discoverAndStartAll`（反面） | 2 | L2  已覆盖（阶段 3.1：注册表为唯一真相源；模型路由按插件归属，启用注册/禁用撤销；双 Provider 与常驻 Core 的运行时切换均有端到端用例） |
 | PLG-002 | 禁用一个正在跑的插件 | 八步撤销序列走完：路由表清除、在途收敛、租约 revoked、事件流与 Hook 卸载、进程树终止、前端 unregister、状态落盘 | `syncPluginCommands` 只增不减（反面） | 2（前移，ADR-0002） | L2 | 待继承 |
-| PLG-003 | 能力撤回 | 租约状态 `armed/used/expired/revoked` 明确可查，撤销后调用返回未注册错误 | `MCPRuntime:MCPLeaseState`（1.x 唯一做对的撤销样板） | 2（前移，ADR-0002） | L2  进行中（阶段 2：撤销即摘路由、调用返回未注册错误；租约 armed/used/expired/revoked 状态机未建） |
+| PLG-003 | 能力撤回 | 租约状态 `armed/used/expired/revoked` 明确可查，撤销后调用返回未注册错误 | `MCPRuntime:MCPLeaseState`（1.x 唯一做对的撤销样板） | 2（前移，ADR-0002） | L2  进行中（阶段 3.1：路由撤销、在途取消、Hook 卸载、进程回收与注册表顺序已实现并双 Provider 验证；租约状态机与事件流卸载未建） |
 | PLG-004 | 插件进程崩溃 | 由 `terminationHandler` 携带退出码/信号/stderr 尾部合成结构化故障；不得靠"下次调用看 isRunning" | `PluginProcessHost`（反面） | 2（前移，ADR-0002） | L2  已覆盖（阶段 2：terminationHandler 捕获退出码/信号/stderr 尾部，结构化错误进入受影响 Run 的 detail） |
 | PLG-005 | 连续故障 | 熔断计数 + 指数退避重启；超阈值标 `failed` 并撤销路由；**不得静默永久失能** | 一次超时即 terminate 判死全 host（反面） | 2（前移，ADR-0002） | L2 | 待继承 |
 | PLG-006 | 声明 `intercept` 模式的 Hook | 真的被调用，返回能否决请求、改写参数、要求人工确认；`observe` 模式不得阻塞 | `broadcastHook`/`emit` 零调用方（反面） | 2（前移，ADR-0002） | L1/L2  已覆盖（阶段 2：内核两节点 + 真插件进程，rewrite/veto 各自取证；observe 类随监听节点后补） |

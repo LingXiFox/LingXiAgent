@@ -460,7 +460,7 @@ func QA_013_modelNotOfferedGuidance() async throws {
     let runs = RunRegistry()
     let store = SessionStore()
     let router = ModelRouter()
-    await router.register(provider: ScriptedProvider(scripts: []), id: "test.provider", models: ["offered"])
+    try? await router.register(provider: ScriptedProvider(scripts: []), id: "test.provider", models: ["offered"])
     let loop = AgentLoop(
         router: router,
         toolRegistry: ToolRegistry(),

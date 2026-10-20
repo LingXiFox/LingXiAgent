@@ -28,6 +28,18 @@ public struct PluginProviderAdapter: ModelProvider {
             lock.lock(); defer { lock.unlock() }
             return Array(byExecution.removeValue(forKey: execution) ?? [])
         }
+
+        func takeAll() -> [String] {
+            lock.lock(); defer { lock.unlock() }
+            let all = byExecution.values.flatMap { $0 }
+            byExecution.removeAll()
+            return all
+        }
+
+        var count: Int {
+            lock.lock(); defer { lock.unlock() }
+            return byExecution.values.reduce(0) { $0 + $1.count }
+        }
     }
 
     public init(
@@ -83,6 +95,15 @@ public struct PluginProviderAdapter: ModelProvider {
             await session.cancel(requestID: requestID)
         }
     }
+
+    /// Disable/revocation path: every in-flight stream this adapter owns is cancelled.
+    public func cancelAll() async {
+        for requestID in active.takeAll() {
+            await session.cancel(requestID: requestID)
+        }
+    }
+
+    public var inFlightRequestCount: Int { active.count }
 
     // MARK: - mapping
 

@@ -445,7 +445,8 @@ func makeLoop(
     hooks: HookPipeline = HookPipeline()
 ) async -> AgentLoop {
     let router = ModelRouter()
-    await router.register(provider: provider, id: "test.provider", models: ["test-model"])
+    // Test fixture: the ids are unique by construction.
+    try? await router.register(provider: provider, id: "test.provider", models: ["test-model"])
     return AgentLoop(
         router: router,
         toolRegistry: registry,

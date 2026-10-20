@@ -36,6 +36,8 @@ public final class PluginProcess: @unchecked Sendable {
     private var nextID = 1
 
     public let executableURL: URL
+    /// Called exactly once when the host exits, for any reason.
+    public var onTermination: (@Sendable (Termination) -> Void)?
     private let clock: any MonotonicClock
 
     public init(executableURL: URL, clock: any MonotonicClock = SystemMonotonicClock()) {
@@ -270,13 +272,16 @@ public final class PluginProcess: @unchecked Sendable {
 
     private func markTerminated(_ termination: Termination) {
         lock.lock()
+        guard terminated == nil else { lock.unlock(); return }
         terminated = termination
         let outstanding = waiters
         waiters.removeAll()
+        let handler = onTermination
         lock.unlock()
         for (_, waiter) in outstanding {
             waiter.resume(throwing: PluginProcessError.exited(termination))
         }
+        handler?(termination)
     }
 
     private func failAllWaiters() {

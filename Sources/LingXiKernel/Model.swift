@@ -159,6 +159,12 @@ public extension ModelProvider {
 public enum ModelRouterError: Error, Equatable {
     case noProviderRegistered
     case modelNotOffered(ModelID)
+    /// A second registration for the same provider id. The first one is left untouched.
+    case duplicateProvider(ProviderID)
+    /// A model id already owned by another provider (or repeated in the same registration). The
+    /// whole registration is refused before anything is mutated, so a failed registration cannot
+    /// leave a partial route behind.
+    case duplicateModel(ModelID, existing: ProviderID)
 
     public var guidance: String {
         switch self {
@@ -166,6 +172,10 @@ public enum ModelRouterError: Error, Equatable {
             "No provider plugin is active. Install and enable a provider plugin to start a conversation; the core runs without one."
         case .modelNotOffered(let model):
             "No active provider offers model \(model.rawValue)."
+        case .duplicateProvider(let provider):
+            "Provider \(provider.rawValue) is already registered."
+        case .duplicateModel(let model, let existing):
+            "Model \(model.rawValue) is already offered by provider \(existing.rawValue)."
         }
     }
 }
@@ -176,11 +186,43 @@ public actor ModelRouter {
 
     public init() {}
 
-    public func register(provider: any ModelProvider, id: ProviderID, models: [ModelID]) {
+    /// Registers a provider and its models atomically: either every route is installed or none is.
+    /// Conflicts are named, never resolved by overwriting someone else's route.
+    public func register(provider: any ModelProvider, id: ProviderID, models: [ModelID]) throws {
+        guard providers[id] == nil else { throw ModelRouterError.duplicateProvider(id) }
+        var seen: Set<ModelID> = []
+        for model in models {
+            if let existing = modelIndex[model] {
+                throw ModelRouterError.duplicateModel(model, existing: existing)
+            }
+            guard seen.insert(model).inserted else {
+                throw ModelRouterError.duplicateModel(model, existing: id)
+            }
+        }
         providers[id] = provider
         for model in models {
             modelIndex[model] = id
         }
+    }
+
+    /// Removes a provider and exactly the routes it owns. Other providers are untouched; a provider
+    /// that is not registered is a no-op.
+    @discardableResult
+    public func unregister(providerID: ProviderID) -> [ModelID] {
+        guard providers.removeValue(forKey: providerID) != nil else { return [] }
+        let owned = modelIndex.filter { $0.value == providerID }.map(\.key)
+        for model in owned {
+            modelIndex.removeValue(forKey: model)
+        }
+        return owned.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    public func providerIDs() -> [ProviderID] {
+        providers.keys.sorted { $0.rawValue < $1.rawValue }
+    }
+
+    public func models(providerID: ProviderID) -> [ModelID] {
+        modelIndex.filter { $0.value == providerID }.map(\.key).sorted { $0.rawValue < $1.rawValue }
     }
 
     public var providerCount: Int { providers.count }
