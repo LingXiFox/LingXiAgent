@@ -43,7 +43,7 @@ enum Key: Equatable {
     case escape, interrupt, endOfInput, clearLine
     case unknown, pasteStart, pasteEnd, commandPalette, newline, toggleThinking
     case lineStart, lineEnd, wordLeft, wordRight, deleteWordBack, killToEnd, redraw
-    case scrollUp, scrollDown
+    case scrollUp, scrollDown, saveSettings
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -137,6 +137,7 @@ final class KeyParser {
         case 0x0C: .redraw
         case 0x0D: .enter
         case 0x10: .commandPalette
+        case 0x13: .saveSettings
         case 0x14: .toggleThinking
         case 0x15: .clearLine
         case 0x17: .deleteWordBack

@@ -190,8 +190,11 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
-- **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器、插件声明的模型思考等级与 Keychain 认证；
+- **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器、插件声明的模型思考等级、`/plugins` 两级导航与插件自绘设置容器、Keychain 认证；
   真实 PTY 覆盖连续会话、草稿、隐藏输入与干净退出。快捷键及协议见 `Frontend-Protocol.md`。
+
+  插件设置：`/plugins` 选中插件按 Enter 打开；Space 立即启停。设置页由插件自绘，宿主负责外框、Esc/Ctrl-S、
+  受约束帧校验、事务保存与 Settings-Only Host 生命周期。示例见 `Plugin-Settings-Example.md`。
 
   启动：`Scripts/tui.sh`（增量构建、按需刷新开发用 MiMo bundle，并以 development 插件策略启动；
   `--no-build` 跳过构建）。数据目录默认 `dist/data`，可用 `LINGXI_DATA_DIR` 覆盖；打包细节仍是

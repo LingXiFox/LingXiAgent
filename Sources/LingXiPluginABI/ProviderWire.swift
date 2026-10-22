@@ -195,10 +195,14 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
     /// Supplied per invocation by the Core from its own environment. The host environment is never
     /// widened, and the value is never logged.
     public let credential: String?
+    /// Kernel execution (Run) this request belongs to. Lets a provider snapshot settings once per
+    /// Run, so a mid-Run settings save cannot change protocol or thinking parameters halfway.
+    public let executionID: String?
 
     public init(
         model: String, instructions: String?, input: [ProviderWireItem],
-        tools: [ProviderWireTool], maxOutputTokens: Int?, credential: String?
+        tools: [ProviderWireTool], maxOutputTokens: Int?, credential: String?,
+        executionID: String? = nil
     ) {
         self.model = model
         self.instructions = instructions
@@ -206,6 +210,7 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
         self.tools = tools
         self.maxOutputTokens = maxOutputTokens
         self.credential = credential
+        self.executionID = executionID
     }
 }
 

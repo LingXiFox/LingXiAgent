@@ -193,3 +193,20 @@ Core 用 bundle ID、provider ID、credential ID 划分 Keychain 项；协调器
 `ProviderWireRequest.credential` 交付这一请求所需的值；不在 adapter 或插件保存跨请求缓存。
 官方插件只把值放入 Authorization header，digest/body/cassette 不含该字段，HTTP 错误也不回传响应正文。
 Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或共享全局凭据入口。
+
+
+## MiMo 双协议与思考参数（Phase 4.2）
+
+`MiMoProvider.lxap` 在同一个 Provider 身份下支持两个 wire family：
+
+- Chat Completions：`POST /v1/chat/completions`，可选 `thinking.type = enabled|disabled`，默认省略。
+- Responses：`POST /v1/responses`，可选 `reasoning.effort`；`none/minimal/low/medium/high/xhigh/max/ultra`
+  为合法输入，`minimal -> low`，`xhigh/max/ultra -> high`，服务端默认时省略。
+- 协议、默认模型与思考模式由插件自绘设置页写入 `<data>/plugin-settings/site.lingxi.provider.mimo.json`；
+  Core 只做 JSON 校验、原子持久化与传递，不写死 MiMo 端点或档位。
+- 每个 Run 首次 Provider 请求按 `executionID` 快照配置；工具轮复用，保存设置只影响后续 Run。
+- Responses 使用 `input` 历史续接，不使用 `previous_response_id`/`background`/`context_management`；
+  事件流按 sequence/output item 去重，`response.incomplete`/`failed` 不当作普通成功。
+
+真实 API 验收需要 `MIMO_API_KEY` 与服务端接受相应参数；离线证据只证明序列化、SSE 归一化和
+请求形状，不把 cassette 回放称为真实 API 已验证。

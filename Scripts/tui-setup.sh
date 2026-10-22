@@ -26,7 +26,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>ABIMajor</key><integer>1</integer>
     <key>MinimumCoreVersion</key><string>2.0.0</string>
     <key>EntryPoint</key><string>LingXiPlugin_Init</string>
-    <key>Capabilities</key><array><string>provider.mimo</string></array>
+    <key>Capabilities</key><array><string>provider.mimo</string><string>settings.view.v1</string></array>
     <key>Permissions</key><array/>
   </dict>
 </dict>

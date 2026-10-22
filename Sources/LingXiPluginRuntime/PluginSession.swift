@@ -24,6 +24,8 @@ public actor PluginSession {
     public private(set) var capabilities: [DeclaredCapability] = []
     public private(set) var bundleID: String?
     public private(set) var providers: [ProviderIdentity] = []
+    /// The settings capability declared in the manifest/identity, when the plugin offers one.
+    public private(set) var settingsCapability: String?
     public private(set) var permissions: [String] = []
     public private(set) var processIdentifier: Int32?
 
@@ -81,6 +83,7 @@ public actor PluginSession {
         bundleID = loaded.bundleID
         capabilities = declared
         providers = loaded.providers ?? []
+        settingsCapability = loaded.capabilities?.first { $0.kind == "settings" }?.id
         permissions = loaded.permissions ?? []
 
         do {
@@ -213,6 +216,7 @@ public actor PluginSession {
         self.process = nil
         capabilities = []
         providers = []
+        settingsCapability = nil
         permissions = []
         state = .disabled
     }

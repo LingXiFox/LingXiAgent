@@ -13,6 +13,7 @@ final class FrontendServer: @unchecked Sendable {
     private let router: ModelRouter
     private let registry: PluginRegistry
     private let coordinator: PluginCoordinator
+    private let settings: PluginSettingsCoordinator
     private let credentials: CredentialAuthority
     private let policy: SignaturePolicy
     private let output = FileHandle.standardOutput
@@ -23,7 +24,7 @@ final class FrontendServer: @unchecked Sendable {
     init(
         loop: AgentLoop, store: SessionStore, router: ModelRouter,
         registry: PluginRegistry, coordinator: PluginCoordinator, policy: SignaturePolicy,
-        credentials: CredentialAuthority
+        credentials: CredentialAuthority, settings: PluginSettingsCoordinator
     ) {
         self.loop = loop
         self.store = store
@@ -32,6 +33,7 @@ final class FrontendServer: @unchecked Sendable {
         self.coordinator = coordinator
         self.policy = policy
         self.credentials = credentials
+        self.settings = settings
         Task { [weak self, coordinator] in
             await coordinator.setStateChangeHandler { [weak self] in
                 Task { await self?.broadcastState() }
@@ -103,6 +105,53 @@ final class FrontendServer: @unchecked Sendable {
             takeRun(runID)?.cancel()
         case .pluginsList:
             reply.plugins = await pluginSummaries()
+        case .pluginSettingsOpen:
+            guard let bundleID = request.bundleID else {
+                return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.open needs bundleID"))
+            }
+            do {
+                reply.settings = try await settings.open(
+                    bundleID: bundleID,
+                    viewport: request.viewport ?? SettingsViewport(width: 72, height: 20)
+                )
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
+            }
+        case .pluginSettingsInput:
+            guard let sessionID = request.settingsSessionID, let input = request.settingsInput else {
+                return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.input needs a session and input"))
+            }
+            do {
+                reply.settings = try await settings.input(sessionID: sessionID, input: input)
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
+            }
+        case .pluginSettingsResize:
+            guard let sessionID = request.settingsSessionID, let viewport = request.viewport else {
+                return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.resize needs a session and viewport"))
+            }
+            do {
+                reply.settings = try await settings.resize(sessionID: sessionID, viewport: viewport)
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
+            }
+        case .pluginSettingsSave:
+            guard let sessionID = request.settingsSessionID else {
+                return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.save needs a session"))
+            }
+            do {
+                try await settings.save(sessionID: sessionID)
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
+            }
+        case .pluginSettingsCancel:
+            if let sessionID = request.settingsSessionID {
+                await settings.cancel(sessionID: sessionID)
+            }
         case .pluginEnable, .pluginDisable:
             guard let bundleID = request.bundleID else {
                 return send(FrontendReply(id: request.id, ok: false, error: "\(request.method.rawValue) needs bundleID"))
@@ -166,6 +215,7 @@ final class FrontendServer: @unchecked Sendable {
             }
         case .shutdown:
             shuttingDown = true
+            await settings.shutdown()
         }
         send(reply)
     }

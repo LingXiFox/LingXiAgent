@@ -219,6 +219,7 @@
 | TUI-002 | 重绘与选择器 | 每帧逐行定位、清除整行并限制单元格宽度；隐藏输入无旧命令残影；Ctrl-P、模型选择和窄终端可用 | 用户截图 2026-10-20 20:19 | 4.1 | L2 | `TUI_002_frameAndPickers` |
 | TUI-003 | 编辑器与会话连续性 | 多行粘贴不自动提交；Ctrl-J/Shift-Enter 换行；草稿与聊天历史独立；思考可折叠；连续发送复用 Core 会话 ID，重启后仍为两轮同一会话 | 对标 OpenCode v2 时发现 TUI 丢弃 chat.send 回复与 reasoning 事件 | 4.1 | L2 | `TUI_003_editorAndSessionContinuity` |
 | TUI-004 | 模型思考等级显示 | Provider 在 `describe` 声明 `modelDetails` 的思考等级与默认值；加载器校验非法声明；Core 按路由透传；TUI 模型区显示默认等级（本版只读） | 用户 2026-10-22 需求；ADR-0005 | 4.1 | L2 | `ModelPresentationTests`；PTY 抓帧验证 `model-a · 思考 中` |
+| TUI-005 | 插件自绘设置容器 | `/plugins` 两级导航；Enter 打开插件设置，Space 立即启停；插件自绘 frame 经校验/裁剪；Ctrl-S 事务保存，Esc 回滚；禁用插件可开 Settings-Only Host；崩溃不带走 Core | 用户 2026-10-22 Phase 4.2 需求；ADR-0006 | 4.2 | L2 | `SETTINGS_001`、`SETTINGS_002`、`SettingsContainerTests` |
 
 ### AUTH 组 — 凭据托管
 

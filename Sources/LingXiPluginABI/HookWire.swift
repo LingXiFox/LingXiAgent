@@ -92,12 +92,27 @@ public struct PluginIdentity: Codable, Sendable, Equatable {
     /// Required, like every other declaration: a plugin that offers models says so, and one that
     /// does not says that too.
     public let providers: [ProviderIdentity]
+    /// Optional self-drawn settings capability. When present the manifest must declare the same
+    /// capability string; the Core then offers a settings session even while the plugin is disabled.
+    public let settings: SettingsDeclaration?
 
-    public init(bundleID: String, version: String, hooks: [DeclaredHook], providers: [ProviderIdentity]) {
+    public init(
+        bundleID: String, version: String, hooks: [DeclaredHook], providers: [ProviderIdentity],
+        settings: SettingsDeclaration? = nil
+    ) {
         self.bundleID = bundleID
         self.version = version
         self.hooks = hooks
         self.providers = providers
+        self.settings = settings
+    }
+}
+
+public struct SettingsDeclaration: Codable, Sendable, Equatable {
+    public let capability: String
+
+    public init(capability: String = "settings.view.v1") {
+        self.capability = capability
     }
 }
 

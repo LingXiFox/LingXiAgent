@@ -65,12 +65,18 @@ do {
         mode: .parse(ProcessInfo.processInfo.environment["LINGXI_CREDENTIAL_SOURCE"]),
         environment: ProcessInfo.processInfo.environment, environmentOverrides: credentialMap
     )
+    let settingsStore = PluginSettingsStore(dataDirectory: dataDirectory)
     let coordinator = PluginCoordinator(
         hostExecutableURL: pluginHostExecutable(), registry: registry, pipeline: pipeline, router: router,
         credential: { bundleID, declaration in
             guard let requirement = declaration.credentials?.first else { return nil }
             return try credentials.secret(bundleID: bundleID, providerID: declaration.id, requirement: requirement)
-        }
+        },
+        settingsProvider: settingsStore
+    )
+    let settingsCoordinator = PluginSettingsCoordinator(
+        registry: registry, hostExecutableURL: pluginHostExecutable(), policy: policy,
+        store: settingsStore, running: coordinator, credentials: credentials
     )
 
     let installed = await registry.all()
@@ -130,7 +136,8 @@ do {
     if ProcessInfo.processInfo.environment["LINGXI_FRONTEND"] == "stdio" {
         let server = FrontendServer(
             loop: loop, store: recovered.store, router: router,
-            registry: registry, coordinator: coordinator, policy: policy, credentials: credentials
+            registry: registry, coordinator: coordinator, policy: policy, credentials: credentials,
+            settings: settingsCoordinator
         )
         await server.serve()
     } else if controlMode {

@@ -1,4 +1,5 @@
 import Foundation
+import LingXiSettingsProtocol
 
 struct RGB: Equatable, Hashable {
     let r: Int, g: Int, b: Int
@@ -115,6 +116,8 @@ struct ViewState {
     var feedback: Message?
     var picker: Picker?
     var completion: Picker?
+    var settings: SettingsSnapshot?
+    var settingsBusy = false
     var auth: AuthPrompt?
     var showThinking = false
     var running = false
@@ -356,6 +359,9 @@ struct Renderer {
         if let auth = view.auth {
             cursor = nil
             drawAuth(auth, feedback: view.feedback, into: &canvas)
+        } else if let settings = view.settings {
+            cursor = nil
+            drawSettings(settings, busy: view.settingsBusy, into: &canvas)
         } else if let picker = view.picker {
             cursor = nil
             drawPicker(picker, into: &canvas)
@@ -372,6 +378,89 @@ struct Renderer {
     }
 
     // MARK: chrome
+
+    /// The host owns the frame: title, identity, footer. Everything between the borders is the
+    /// plugin's validated cell frame, so a plugin can design freely without touching the terminal.
+    private func drawSettings(_ settings: SettingsSnapshot, busy: Bool, into canvas: inout Canvas) {
+        let boxWidth = min(width - 2, max(24, settings.viewport.width + 4))
+        let boxHeight = min(height - 2, max(8, settings.viewport.height + 6))
+        let left = max(0, (width - boxWidth) / 2)
+        let top = max(1, (height - boxHeight) / 2)
+        canvas.fill(row: top, col: left, count: boxWidth, bg: Theme.charcoalRaised)
+        for row in top..<(top + boxHeight) {
+            canvas.fill(row: row, col: left, count: boxWidth, bg: Theme.charcoalRaised)
+        }
+        let border = Style.color(Theme.muted)
+        canvas.draw([Span("┌" + String(repeating: "─", count: max(0, boxWidth - 2)) + "┐", border)], row: top, col: left, limit: boxWidth)
+        canvas.draw([Span("└" + String(repeating: "─", count: max(0, boxWidth - 2)) + "┘", border)], row: top + boxHeight - 1, col: left, limit: boxWidth)
+        for row in (top + 1)..<(top + boxHeight - 1) {
+            canvas.draw([Span("│", border)], row: row, col: left, limit: 1)
+            canvas.draw([Span("│", border)], row: row, col: left + boxWidth - 1, limit: 1)
+        }
+        let titleWidth = max(0, boxWidth - 4)
+        canvas.draw([Span(" " + settings.title + " ", .color(Theme.fox, bold: true))], row: top, col: left + 2, limit: titleWidth)
+        let identity = " \(settings.bundleID) · v\(settings.version) "
+        let identityWidth = TextWidth.width(identity)
+        if identityWidth < boxWidth - 6 {
+            canvas.draw([Span(identity, .color(Theme.dim))], row: top, col: left + boxWidth - identityWidth - 2, limit: identityWidth)
+        }
+        for (offset, row) in settings.frame.rows.enumerated() {
+            guard top + 2 + offset < top + boxHeight - 2 else { break }
+            var spans: [Span] = []
+            for span in row.spans {
+                spans.append(Span(span.text, style(for: span)))
+            }
+            canvas.draw(spans, row: top + 2 + offset, col: left + 2, limit: max(0, boxWidth - 4))
+        }
+        let footerRow = top + boxHeight - 2
+        let hint = busy ? "处理中…" : "Ctrl-S 保存 · Esc 取消"
+        canvas.draw([Span(hint, .color(Theme.muted))], row: footerRow, col: left + 2, limit: max(0, boxWidth - 4))
+        if let status = settings.status, !busy {
+            let statusWidth = min(TextWidth.width(status), max(0, boxWidth - 4 - TextWidth.width(hint) - 2))
+            if statusWidth > 0 {
+                let clipped = SettingsFrameValidator.displayWidth(status) > statusWidth
+                    ? String(status.prefix(max(0, statusWidth - 1))) + "…" : status
+                canvas.draw([Span(clipped, .color(Theme.dim))], row: footerRow,
+                            col: left + boxWidth - TextWidth.width(clipped) - 2, limit: statusWidth)
+            }
+        }
+    }
+
+    private func style(for span: SettingsSpan) -> Style {
+        var style = Style()
+        style.fg = color(span.fg) ?? Theme.cream
+        style.bg = color(span.bg)
+        style.bold = span.bold ?? false
+        style.italic = span.italic ?? false
+        style.underline = span.underline ?? false
+        return style
+    }
+
+    private func color(_ value: String?) -> RGB? {
+        guard let value else { return nil }
+        if value.hasPrefix("#"), value.count == 7 {
+            let hex = value.dropFirst()
+            let number = Int(hex, radix: 16) ?? 0
+            return RGB((number >> 16) & 0xFF, (number >> 8) & 0xFF, number & 0xFF)
+        }
+        switch value {
+        case "charcoal": return Theme.charcoal
+        case "charcoalRaised": return Theme.charcoalRaised
+        case "overlay": return Theme.overlay
+        case "selection": return Theme.selection
+        case "cream": return Theme.cream
+        case "fox": return Theme.fox
+        case "dim": return Theme.dim
+        case "muted": return Theme.muted
+        case "error": return Theme.error
+        case "success": return Theme.success
+        case "link": return Theme.link
+        case "string": return Theme.string
+        case "number": return Theme.number
+        case "type": return Theme.type
+        default: return nil
+        }
+    }
 
     private func drawTopBar(_ view: ViewState, home: Bool, into canvas: inout Canvas) {
         canvas.fill(row: 0, col: 0, count: width, bg: Theme.charcoalRaised)

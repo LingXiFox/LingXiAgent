@@ -1,4 +1,5 @@
 import Foundation
+import LingXiSettingsProtocol
 
 /// The frontend wire protocol. One JSON object per line, same discipline as the plugin host: requests
 /// carry an id, replies echo it, events never do. The TUI speaks only this; it never loads a provider
@@ -14,6 +15,11 @@ public enum FrontendMethod: String, Codable, Sendable {
     case pluginsList = "plugins.list"
     case pluginEnable = "plugin.enable"
     case pluginDisable = "plugin.disable"
+    case pluginSettingsOpen = "plugin.settings.open"
+    case pluginSettingsInput = "plugin.settings.input"
+    case pluginSettingsResize = "plugin.settings.resize"
+    case pluginSettingsSave = "plugin.settings.save"
+    case pluginSettingsCancel = "plugin.settings.cancel"
     /// Credential management. The secret travels **only** in `auth.set`; every reply reports state,
     /// never the value, so a saved key can never be read back through this protocol.
     case authStatus = "auth.status"
@@ -52,6 +58,9 @@ public struct FrontendRequest: Codable, Sendable {
     public var text: String?
     public var runID: String?
     public var bundleID: String?
+    public var settingsSessionID: String?
+    public var settingsInput: SettingsInput?
+    public var viewport: SettingsViewport?
     /// Which provider an `auth.*` request is about. Never a secret.
     public var provider: String?
     /// The secret for `auth.set` only. It is written to the Core, stored once, and never returned:
@@ -157,6 +166,7 @@ public struct FrontendReply: Codable, Sendable {
     public var sessions: [SessionSummary]?
     public var history: [HistoryEntry]?
     public var plugins: [PluginSummary]?
+    public var settings: SettingsSnapshot?
     /// Auth state only. There is deliberately no field that could echo a saved secret.
     public var credentials: [CredentialStatus]?
 

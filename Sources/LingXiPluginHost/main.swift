@@ -165,7 +165,8 @@ final class HostAgent: @unchecked Sendable {
         }
         let declaredHooks = opened.identity.hooks.map { "hook.\($0.id)" }
         let declaredProviders = opened.identity.providers.map { "provider.\($0.id)" }
-        guard Set(manifest.capabilities) == Set(declaredHooks + declaredProviders) else {
+        let declaredSettings = opened.identity.settings.map { [$0.capability] } ?? []
+        guard Set(manifest.capabilities) == Set(declaredHooks + declaredProviders + declaredSettings) else {
             opened.close()
             throw HostFault(code: "protocolViolation", domain: "host", message: "declared capabilities differ from the plugin identity")
         }
@@ -175,6 +176,11 @@ final class HostAgent: @unchecked Sendable {
         reply.abiMajor = opened.abiMajor
         reply.capabilities = opened.declaredHooks.map {
             DeclaredCapability(kind: "hook", id: $0.id, node: $0.node, priority: $0.priority, canVeto: $0.canVeto)
+        }
+        if let settings = opened.identity.settings {
+            reply.capabilities?.append(DeclaredCapability(
+                kind: "settings", id: settings.capability, node: "", priority: 0, canVeto: false
+            ))
         }
         reply.providers = opened.identity.providers
         reply.permissions = manifest.permissions

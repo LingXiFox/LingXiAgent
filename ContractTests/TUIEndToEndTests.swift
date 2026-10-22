@@ -84,7 +84,7 @@ final class PTYProcess: @unchecked Sendable {
 func seedTUI(_ directory: URL, turns: Int = 1, slow: Bool = false) async throws {
     let bundle = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
-        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
+        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo", "settings.view.v1"]
     )
     var cassette = Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")!
     if turns > 1 {
@@ -208,31 +208,29 @@ func TUI_001_ptyChatWithMiMo() async throws {
     tui.write("/plugins\r")
     #expect(await tui.waitFor("site.lingxi.provider.mimo"), "plugins transcript tail: \(tui.transcript.suffix(1500))")
     #expect(tui.transcript.contains("provider.mimo"))
-    // Space only stages a toggle; Esc discards it and the registry is untouched.
-    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    try #require(await waitUntil { tui.screenText.contains("运行中") })
+    // Space toggles immediately; the list detail reports the committed state.
     tui.write(" ")
-    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
-    tui.write("\u{1B}")
-    try #require(await waitUntil { !tui.screenText.contains("esc 关闭") })
-    tui.write("/plugins\r")
-    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
-    tui.write("\r")
-    try #require(await waitUntil { tui.screenText.contains("插件未修改") && !tui.screenText.contains("esc 关闭") })
-
-    // Enter saves a staged toggle: the Core disables the provider, then enables it again.
-    tui.write("/plugins\r")
-    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("已禁用") })
     tui.write(" ")
-    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
-    tui.write("\r")
-    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("已禁用 site.lingxi.provider.mimo") }, "disable notice missing")
-    tui.write("/plugins\r")
-    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
-    tui.write(" ")
-    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
-    tui.write("\r")
-    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("已启用 site.lingxi.provider.mimo") }, "enable notice missing")
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("运行中") })
     #expect(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") }, "model did not return after enabling")
+
+    // Enter opens the plugin-owned settings page, not a save action.
+    tui.write("\r")
+    try #require(await tui.waitFor("MiMo Provider"))
+    try #require(await tui.waitFor("Connection"))
+    // Right/down/Enter selects Responses in MiMo's own page; Ctrl-S commits through Core.
+    tui.write("\u{1B}[C\u{1B}[B\r")
+    try #require(await waitUntil { tui.screenText.contains("Responses") })
+    tui.write("\u{13}")
+    try #require(await tui.waitFor("设置已保存"))
+    try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+    let savedSettings = try String(
+        contentsOf: directory.appendingPathComponent("plugin-settings/site.lingxi.provider.mimo.json"),
+        encoding: .utf8
+    )
+    #expect(savedSettings.contains("\"protocolKind\":\"responses\""))
 
     tui.write("/quit\r")
     #expect(await waitUntil(timeout: .seconds(60)) { tui.isRunning == false })

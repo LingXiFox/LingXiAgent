@@ -111,7 +111,7 @@ private func seedEnabledRegistry(_ dataDirectory: URL) async throws {
     let registry = try PluginRegistry(configURL: dataDirectory.appendingPathComponent("plugins.json"))
     let mimo = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
-        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
+        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo", "settings.view.v1"]
     )
     let deepseek = try makeBundle(
         bundleID: "site.lingxi.provider.deepseek", executableName: "DeepSeekProvider",

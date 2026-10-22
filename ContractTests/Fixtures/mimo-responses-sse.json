@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "provider": "mimo",
+  "exchanges": [
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_text\",\"status\":\"in_progress\"}}",
+        "",
+        "event: response.output_item.added",
+        "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}",
+        "",
+        "event: response.reasoning_text.delta",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"sequence_number\":2,\"item_id\":\"rs_1\",\"delta\":\"think \"}",
+        "",
+        "event: response.reasoning_text.delta",
+        "data: {\"type\":\"response.reasoning_text.delta\",\"sequence_number\":3,\"item_id\":\"rs_1\",\"delta\":\"first\"}",
+        "",
+        "event: response.reasoning_text.done",
+        "data: {\"type\":\"response.reasoning_text.done\",\"sequence_number\":4,\"text\":\"think first\"}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":5,\"item_id\":\"msg_1\",\"delta\":\"Hello\"}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":5,\"item_id\":\"msg_1\",\"delta\":\"Hello\"}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":6,\"item_id\":\"msg_1\",\"delta\":\" world\"}",
+        "",
+        "event: response.output_text.done",
+        "data: {\"type\":\"response.output_text.done\",\"sequence_number\":7,\"text\":\"Hello world\"}",
+        "",
+        "event: response.output_item.done",
+        "data: {\"type\":\"response.output_item.done\",\"sequence_number\":8,\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hello world\"}]}}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":9,\"response\":{\"id\":\"resp_text\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":4,\"output_tokens_details\":{\"reasoning_tokens\":2},\"input_tokens_details\":{\"cached_tokens\":3}}}}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":10,\"response\":{\"id\":\"resp_text\",\"status\":\"completed\"}}",
+        ""
+      ]
+    },
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_incomplete\",\"status\":\"in_progress\"}}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_2\",\"delta\":\"partial\"}",
+        "",
+        "event: response.incomplete",
+        "data: {\"type\":\"response.incomplete\",\"sequence_number\":2,\"response\":{\"id\":\"resp_incomplete\",\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}",
+        ""
+      ]
+    },
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: error",
+        "data: {\"type\":\"error\",\"sequence_number\":0,\"code\":\"rate_limit_exceeded\",\"message\":\"slow down\"}",
+        ""
+      ]
+    },
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_failed\",\"status\":\"in_progress\"}}",
+        "",
+        "event: response.failed",
+        "data: {\"type\":\"response.failed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_failed\",\"status\":\"failed\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}}",
+        ""
+      ]
+    },
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_tool\",\"status\":\"in_progress\"}}",
+        "",
+        "event: response.output_item.added",
+        "data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"echo\",\"arguments\":\"\"}}",
+        "",
+        "event: response.function_call_arguments.delta",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":2,\"item_id\":\"item_1\",\"delta\":\"{\\\"value\\\": \"}",
+        "",
+        "event: response.function_call_arguments.delta",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"sequence_number\":3,\"item_id\":\"item_1\",\"delta\":\"\\\"42\\\"}\"}",
+        "",
+        "event: response.function_call_arguments.done",
+        "data: {\"type\":\"response.function_call_arguments.done\",\"sequence_number\":4,\"item_id\":\"item_1\",\"arguments\":\"{\\\"value\\\": \\\"42\\\"}\"}",
+        "",
+        "event: response.output_item.done",
+        "data: {\"type\":\"response.output_item.done\",\"sequence_number\":5,\"output_index\":0,\"item\":{\"id\":\"item_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"echo\",\"arguments\":\"{\\\"value\\\": \\\"42\\\"}\"}}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":6,\"response\":{\"id\":\"resp_tool\",\"status\":\"completed\",\"usage\":{\"input_tokens\":20,\"output_tokens\":6}}}",
+        ""
+      ]
+    },
+    {
+      "requestDigest": "",
+      "sse": [
+        "event: response.created",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_followup\",\"status\":\"in_progress\"}}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_3\",\"delta\":\"echo accepted 42\"}",
+        "",
+        "event: response.completed",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_followup\",\"status\":\"completed\",\"usage\":{\"input_tokens\":30,\"output_tokens\":5}}}",
+        ""
+      ]
+    }
+  ]
+}

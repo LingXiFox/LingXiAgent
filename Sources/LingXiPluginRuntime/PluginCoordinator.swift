@@ -21,6 +21,7 @@ public actor PluginCoordinator {
     private let pipeline: HookPipeline
     private let router: ModelRouter?
     private let credential: @Sendable (String, ProviderIdentity) throws -> String?
+    private let settingsProvider: (any PluginSettingsProviding)?
     private var sessions: [String: PluginSession] = [:]
     private var handlerIDs: [String: [String]] = [:]
     private var adapters: [String: [PluginProviderAdapter]] = [:]
@@ -34,13 +35,15 @@ public actor PluginCoordinator {
         registry: PluginRegistry,
         pipeline: HookPipeline,
         router: ModelRouter? = nil,
-        credential: @escaping @Sendable (String, ProviderIdentity) throws -> String? = { _, _ in nil }
+        credential: @escaping @Sendable (String, ProviderIdentity) throws -> String? = { _, _ in nil },
+        settingsProvider: (any PluginSettingsProviding)? = nil
     ) {
         self.hostExecutableURL = hostExecutableURL
         self.registry = registry
         self.pipeline = pipeline
         self.router = router
         self.credential = credential
+        self.settingsProvider = settingsProvider
     }
 
     /// Installs a bundle in the registry without starting it. Enabling is a separate, explicit act.
@@ -93,6 +96,17 @@ public actor PluginCoordinator {
                 Task { await self?.handleUnexpectedExit(bundleID: bundleID) }
             }
 
+            // Apply the last committed settings before routes go live, so the first Run already
+            // sees the user's protocol/model/thinking choices.
+            if let settingsProvider, let snapshot = await settingsProvider.settings(for: bundleID),
+               let capability = await session.settingsCapability {
+                _ = try await session.invoke(
+                    capability: capability,
+                    payload: .encode(SettingsInvocation(op: .apply, config: snapshot.config)),
+                    requestID: "settings-apply-\(UUID().uuidString)"
+                )
+            }
+
             let deployments = await session.providers.map { declaration in
                 (
                     declaration,
@@ -121,8 +135,9 @@ public actor PluginCoordinator {
                 mounted.append(bridge.handlerID)
             }
 
-            let capabilityLabels = await session.capabilities.map { "\($0.kind).\($0.id)" }
-                + session.providers.map { "provider.\($0.id)" }
+            let capabilityLabels = await session.capabilities.map {
+                $0.kind == "settings" ? $0.id : "\($0.kind).\($0.id)"
+            } + session.providers.map { "provider.\($0.id)" }
             try await registry.upsert(.init(
                 bundleID: entry.bundleID, version: entry.version, bundlePath: entry.bundlePath,
                 enabled: true, grants: entry.grants,
@@ -223,6 +238,18 @@ public actor PluginCoordinator {
         return result.sorted {
             $0.0 == $1.0 ? $0.1.id < $1.1.id : $0.0 < $1.0
         }
+    }
+
+    /// Applies a committed settings snapshot to a running plugin. A disabled plugin is a no-op:
+    /// its saved configuration is applied by `enable` when it starts again.
+    public func applySettings(bundleID: String, config: JSONValue) async throws {
+        guard let session = sessions[bundleID], await session.isRunning,
+              let capability = await session.settingsCapability else { return }
+        _ = try await session.invoke(
+            capability: capability,
+            payload: .encode(SettingsInvocation(op: .apply, config: config)),
+            requestID: "settings-apply-\(UUID().uuidString)"
+        )
     }
 
     /// Only successfully enabled plugin declarations can authorize secret delivery.

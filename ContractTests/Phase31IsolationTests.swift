@@ -48,7 +48,7 @@ private struct DualHarness {
 private func installProviderBundles(_ coordinator: PluginCoordinator) async throws {
     let mimo = try makeBundle(
         bundleID: mimoBundle, executableName: "MiMoProvider",
-        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
+        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo", "settings.view.v1"]
     )
     let deepseek = try makeBundle(
         bundleID: deepSeekBundle, executableName: "DeepSeekProvider",

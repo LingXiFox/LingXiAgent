@@ -24,12 +24,23 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `run.cancel` | `runID` | —（在途 Run 按内核取消语义收敛） |
 | `plugins.list` | — | `plugins[]`（id、版本、enabled、running、capabilities、permissions） |
 | `plugin.enable` / `plugin.disable` | `bundleID` | `plugins`, `models`, `modelDetails` |
+| `plugin.settings.open` | `bundleID`, `viewport` | `settings`（sessionID、标题、受约束 frame） |
+| `plugin.settings.input` | `settingsSessionID`, `settingsInput` | `settings` |
+| `plugin.settings.resize` | `settingsSessionID`, `viewport` | `settings` |
+| `plugin.settings.save` | `settingsSessionID` | `ok`；成功即关闭设置会话 |
+| `plugin.settings.cancel` | `settingsSessionID` | `ok`；丢弃草稿 |
 | `shutdown` | — | —（Core 在输入 EOF 后退出） |
 
 `modelDetails` 是 `models` 的可选增强，元素形如
 `{"id":"mimo-v2.6-flash","provider":"provider.mimo","thinkingLevels":[{"id":"low","label":"低"}],"defaultThinkingLevel":"low"}`。
 `models` 始终完整；旧前端可以忽略 `modelDetails`。思考等级由 Provider 插件在 `describe` 中声明，
 Core 只做透传和路由过滤，TUI 在模型区显示默认等级（本版只读，不向插件发送选择）。
+
+设置会话的 `settings` 元素包含 `sessionID`、`bundleID`、`title`、`version`、`status`、`viewport` 和
+`frame`。`frame` 是插件自绘的行/spans；宿主在 Core 侧校验控制字符、颜色、尺寸并裁剪到视口。TUI 只负责
+外框、标题、页脚与输入路由，不解释插件字段。`viewport` 由 TUI 提供，插件可据此重排；Resize 走独立
+请求。`settingsInput` 的 `kind` 为 `key`/`paste`/`mouse`/`resize`/`credential`，键名使用
+`up`/`down`/`left`/`right`/`tab`/`enter`/`backspace`/`delete`/`char`/`pageUp`/`pageDown`。
 
 失败时 `ok=false` 且 `error` 是非空的人类可读原因；错误不折叠成单一 `failed`。
 

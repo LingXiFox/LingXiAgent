@@ -4,6 +4,7 @@ import LingXiFrontendProtocol
 import LingXiKernel
 import LingXiPluginABI
 import LingXiPluginRuntime
+import LingXiSettingsProtocol
 import Testing
 
 final class ProtocolCore: @unchecked Sendable {
@@ -65,12 +66,17 @@ final class ProtocolCore: @unchecked Sendable {
 
     func send(_ method: FrontendMethod, sessionID: String? = nil, model: String? = nil,
               text: String? = nil, runID: String? = nil, bundleID: String? = nil,
-              provider: String? = nil, secret: String? = nil) -> Int {
+              provider: String? = nil, secret: String? = nil,
+              settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
+              viewport: SettingsViewport? = nil) -> Int {
         lock.lock(); let id = nextID; nextID += 1; lock.unlock()
         var request = FrontendRequest(id: id, method: method)
         request.sessionID = sessionID; request.model = model; request.text = text
         request.runID = runID; request.bundleID = bundleID
         request.provider = provider; request.secret = secret
+        request.settingsSessionID = settingsSessionID
+        request.settingsInput = settingsInput
+        request.viewport = viewport
         stdin.fileHandleForWriting.write((try! JSONEncoder().encode(request)) + Data([UInt8(ascii: "\n")]))
         return id
     }
@@ -121,7 +127,7 @@ final class ProtocolCore: @unchecked Sendable {
 func seedTUICore(_ directory: URL) async throws {
     let bundle = try makeBundle(
         bundleID: "site.lingxi.provider.mimo", executableName: "MiMoProvider",
-        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo"]
+        dylib: builtProduct("libMiMoProvider.dylib"), capabilities: ["provider.mimo", "settings.view.v1"]
     )
     let cassette = Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")!
     let registry = try PluginRegistry(configURL: directory.appendingPathComponent("plugins.json"))

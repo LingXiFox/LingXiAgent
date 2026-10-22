@@ -155,7 +155,8 @@ public struct PluginProviderAdapter: ModelProvider {
                 ProviderWireTool(name: $0.name, description: nil, parametersJSON: $0.schemaJSON)
             },
             maxOutputTokens: nil,
-            credential: credential
+            credential: credential,
+            executionID: request.executionID.rawValue
         )
     }
 

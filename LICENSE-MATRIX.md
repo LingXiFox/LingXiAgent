@@ -35,6 +35,7 @@ Tracks in use:
 | `LingXiKernelTests` | `Tests/LingXiKernelTests` | Not shipped | n/a | Test target only. |
 | `LingXiCredentialStoreTests` | `Tests/LingXiCredentialStoreTests` | Not shipped | n/a | Test target only: resolution rules against an in-memory backend, and a Keychain round trip behind `LINGXI_RUN_KEYCHAIN_TESTS=1`. |
 | `LingXiFrontendProtocol` | `Sources/LingXiFrontendProtocol` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Frontend wire protocol: request/reply/event types shared by the Core and the TUI. |
+| `LingXiSettingsProtocol` | `Sources/LingXiSettingsProtocol` | MIT (`LICENSE-ABI`) | Yes, verbatim | Shared settings view vocabulary: viewport, bounded cell frame, input events and validation. Deliberately MIT because plugin authors need it to draw their own settings pages. |
 | `LingXiTUI` | `Sources/LingXiTUI` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Terminal frontend. Speaks the protocol only; never loads a provider or a plugin. |
 | `LingXiPluginABIC` | `Sources/LingXiPluginABIC` | MIT (`LICENSE-ABI`) | Yes, verbatim | The C half of the ABI: the header plus one translation unit. Separate because a Swift target cannot export C structs and `@convention(c)` needs them. |
 | `LingXiPluginABI` | `Sources/LingXiPluginABI` | MIT (`LICENSE-ABI`) | Yes, verbatim | The published plugin contract: the C header plus the Core↔Host wire types. Open on purpose — a closed ABI header would leave community authors reading a licence that forbids what they are doing. Declared by the owner on 2026-10-20. |
@@ -43,7 +44,8 @@ Tracks in use:
 | `LingXiContextProbe` | `Plugins/LingXiContextProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Official example plugin used by the L2 contract tests: one `contextPrepare` hook that rewrites the request. Third-party authors write against the same ABI and the same manifest. |
 | `LingXiCProbe` | `Plugins/LingXiCProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | The same capability written in plain C, so the ABI is proven cross-language rather than asserted. |
 | `DeepSeekProvider` | `Plugins/DeepSeekProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | First real provider plugin. DeepSeek Responses API over SSE, normalized to the provider wire events; cassette replay for offline tests. |
-| `MiMoProvider` | `Plugins/MiMoProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Second provider, deliberately a different wire family: OpenAI Chat Completions against MiMo. Same ABI, same runtime, no shared compatibility layer. |
+| `MiMoProvider` | `Plugins/MiMoProvider` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Second provider, deliberately a different wire family: MiMo Chat Completions and Responses behind one provider identity, with a plugin-drawn settings page and thinking parameters. Same ABI, same runtime, no shared compatibility layer. |
+| `LingXiSettingsProbe` | `Plugins/LingXiSettingsProbe` | PolyForm Noncommercial 1.0.0 | Source: no; binary: no | Official example plugin for the self-drawn settings contract: one `settings.view.v1` capability, no provider, hook or tool. |
 | `ContractTests` | `ContractTests` | Not shipped | n/a | L2 contract gate: real Host process, real `dlopen`, real fault injection. |
 
 ---

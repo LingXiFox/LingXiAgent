@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import LingXiFrontendProtocol
+import LingXiSettingsProtocol
 
 nonisolated(unsafe) var resizePending = false
 
@@ -88,7 +89,9 @@ private final class CoreClient: @unchecked Sendable {
 
     func send(_ method: FrontendMethod, sessionID: String? = nil, model: String? = nil,
               text: String? = nil, runID: String? = nil, bundleID: String? = nil,
-              provider: String? = nil, secret: String? = nil) -> Int {
+              provider: String? = nil, secret: String? = nil,
+              settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
+              viewport: SettingsViewport? = nil) -> Int {
         lock.lock()
         let id = nextID
         nextID += 1
@@ -101,6 +104,9 @@ private final class CoreClient: @unchecked Sendable {
         request.bundleID = bundleID
         request.provider = provider
         request.secret = secret
+        request.settingsSessionID = settingsSessionID
+        request.settingsInput = settingsInput
+        request.viewport = viewport
         if let data = try? JSONEncoder().encode(request) {
             stdin.fileHandleForWriting.write(data + Data([UInt8(ascii: "\n")]))
         }
@@ -124,6 +130,16 @@ private enum Pending {
     case enable(String)
     case disable(String)
     case auth(String, String)
+    case settingsOpen
+    case settingsInput
+    case settingsResize
+    case settingsSave
+    case settingsCancel
+}
+
+private struct SettingsPanel {
+    var snapshot: SettingsSnapshot
+    var busy = false
 }
 
 private struct SecretInput {
@@ -153,6 +169,13 @@ private struct App {
     /// Notices fade after a few seconds; errors stay until something replaces them.
     var feedbackExpiry: Date?
     var picker: Picker?
+    /// `/plugins` uses the picker chrome for a two-level navigation: Enter opens settings, Space
+    /// toggles the selected plugin immediately.
+    var pluginList = false
+    var settings: SettingsPanel?
+    var settingsInputQueue: [SettingsInput] = []
+    var settingsSavePending = false
+    var settingsCredentialRefresh = false
     var completionIndex = 0
     var coreGone = false
     var secretInput: SecretInput?
@@ -333,6 +356,8 @@ func draw() {
     view.feedback = app.feedback
     view.picker = app.picker
     view.completion = app.picker == nil ? slashPicker() : nil
+    view.settings = app.settings?.snapshot
+    view.settingsBusy = app.settings?.busy ?? false
     view.auth = app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
     view.showThinking = app.showThinking
     view.running = app.running
@@ -368,6 +393,167 @@ func shutdown() {
 }
 
 @MainActor
+func settingsViewport() -> SettingsViewport {
+    let size = Terminal.size()
+    let width = min(100, max(24, size.columns - 8))
+    let height = min(30, max(8, size.rows - 8))
+    func hex(_ color: RGB) -> String {
+        String(format: "#%02X%02X%02X", color.r, color.g, color.b)
+    }
+    return SettingsViewport(
+        width: width, height: height, focus: true,
+        theme: [
+            "charcoal": hex(Theme.charcoal), "charcoalRaised": hex(Theme.charcoalRaised),
+            "overlay": hex(Theme.overlay), "selection": hex(Theme.selection),
+            "cream": hex(Theme.cream), "fox": hex(Theme.fox), "dim": hex(Theme.dim),
+            "muted": hex(Theme.muted), "error": hex(Theme.error), "success": hex(Theme.success),
+            "link": hex(Theme.link), "string": hex(Theme.string), "number": hex(Theme.number),
+            "type": hex(Theme.type),
+        ]
+    )
+}
+
+@MainActor
+func showPluginList() {
+    app.picker = Picker(title: "插件", items: app.plugins.map { plugin in
+        let state = plugin.enabled ? (plugin.running ? "运行中" : "已启用") : "已禁用"
+        return MenuItem(
+            title: plugin.bundleID,
+            detail: "v\(plugin.version) · \(state) · \(plugin.capabilities.joined(separator: ", "))",
+            command: plugin.bundleID
+        )
+    })
+    app.pluginList = true
+
+}
+
+@MainActor
+func openPluginSettings(_ bundleID: String) {
+    app.picker = nil
+    app.pluginList = false
+    let id = client.send(.pluginSettingsOpen, bundleID: bundleID, viewport: settingsViewport())
+    app.pending[id] = .settingsOpen
+    app.notice("正在打开插件设置…")
+    needsRender = true
+}
+
+@MainActor
+func togglePlugin(_ bundleID: String) {
+    guard let plugin = app.plugins.first(where: { $0.bundleID == bundleID }) else { return }
+    let enable = !plugin.enabled
+    let id = client.send(enable ? .pluginEnable : .pluginDisable, bundleID: bundleID)
+    app.pending[id] = enable ? .enable(bundleID) : .disable(bundleID)
+    app.notice(enable ? "正在启用 \(bundleID)…" : "正在禁用 \(bundleID)…")
+}
+
+@MainActor
+func sendSettingsInput(_ input: SettingsInput) {
+    guard let panel = app.settings else { return }
+    if panel.busy {
+        // Keep fast arrow-key runs in order instead of dropping every key after the first.
+        app.settingsInputQueue.append(input)
+        return
+    }
+    let id = client.send(
+        .pluginSettingsInput, settingsSessionID: panel.snapshot.sessionID, settingsInput: input
+    )
+    app.pending[id] = .settingsInput
+    app.settings?.busy = true
+    needsRender = true
+}
+
+@MainActor
+func saveSettings() {
+    guard let panel = app.settings else { return }
+    if panel.busy {
+        app.settingsSavePending = true
+        return
+    }
+    let id = client.send(.pluginSettingsSave, settingsSessionID: panel.snapshot.sessionID)
+    app.pending[id] = .settingsSave
+    app.settings?.busy = true
+    needsRender = true
+}
+
+@MainActor
+func cancelSettings() {
+    guard let panel = app.settings else { return }
+    // The host keeps the final word: close the container immediately even if the plugin is busy
+    // or its cancellation call is slow. Core tears the settings host down independently.
+    app.settings = nil
+    app.settingsInputQueue.removeAll()
+    app.settingsSavePending = false
+    app.settingsCredentialRefresh = false
+    _ = client.send(.pluginSettingsCancel, settingsSessionID: panel.snapshot.sessionID)
+    needsRender = true
+}
+
+@MainActor
+func handleSettingsKey(_ key: Key) {
+    switch key {
+    case .escape:
+        cancelSettings()
+    case .saveSettings:
+        saveSettings()
+    case .up: sendSettingsInput(SettingsInput(kind: .key, key: "up"))
+    case .down: sendSettingsInput(SettingsInput(kind: .key, key: "down"))
+    case .left: sendSettingsInput(SettingsInput(kind: .key, key: "left"))
+    case .right: sendSettingsInput(SettingsInput(kind: .key, key: "right"))
+    case .tab: sendSettingsInput(SettingsInput(kind: .key, key: "tab"))
+    case .enter, .newline: sendSettingsInput(SettingsInput(kind: .key, key: "enter"))
+    case .backspace: sendSettingsInput(SettingsInput(kind: .key, key: "backspace"))
+    case .delete: sendSettingsInput(SettingsInput(kind: .key, key: "delete"))
+    case .pageUp: sendSettingsInput(SettingsInput(kind: .key, key: "pageUp"))
+    case .pageDown: sendSettingsInput(SettingsInput(kind: .key, key: "pageDown"))
+    case .scrollUp: sendSettingsInput(SettingsInput(kind: .mouse, delta: 1))
+    case .scrollDown: sendSettingsInput(SettingsInput(kind: .mouse, delta: -1))
+    case .character(let character):
+        sendSettingsInput(SettingsInput(kind: .key, key: "char", char: String(character)))
+    case .interrupt:
+        shutdown()
+        exit(0)
+    default:
+        break
+    }
+}
+
+@MainActor
+func handleSettingsCommand(_ command: SettingsCommand?) {
+    guard let command, app.settings != nil else { return }
+    let provider = command.providerID ?? ""
+    switch command.type {
+    case "credential.update":
+        app.settingsCredentialRefresh = true
+        app.authBusy = true
+        let id = client.send(.authStatus, provider: provider)
+        app.pending[id] = .auth(provider, "settings-update")
+    case "credential.remove":
+        app.settingsCredentialRefresh = true
+        app.authBusy = true
+        let id = client.send(.authRemove, provider: provider)
+        app.pending[id] = .auth(provider, "settings-remove")
+    default:
+        app.notice("插件请求了未知操作：\(command.type)")
+    }
+}
+
+/// Credential state lives behind the host's secure input flow. Reopening the settings session is
+/// the simplest way to give the plugin the new status-only view without ever showing it a secret.
+@MainActor
+func refreshSettingsAfterCredential() {
+    guard let panel = app.settings else {
+        app.settingsCredentialRefresh = false
+        return
+    }
+    let bundleID = panel.snapshot.bundleID
+    let sessionID = panel.snapshot.sessionID
+    app.settings = nil
+    app.settingsCredentialRefresh = false
+    _ = client.send(.pluginSettingsCancel, settingsSessionID: sessionID)
+    openPluginSettings(bundleID)
+}
+
+@MainActor
 func handleReply(_ reply: FrontendReply) {
     let pending = app.pending.removeValue(forKey: reply.id)
     if let models = reply.models { app.models = models }
@@ -388,10 +574,8 @@ func handleReply(_ reply: FrontendReply) {
             app.notice("首次使用：/auth 连接模型。已有 Key 只需配置一次。", sticky: true)
         }
     case .plugins:
-        app.picker = Picker(title: "插件", items: app.plugins.map {
-            MenuItem(title: $0.bundleID, detail: ($0.running ? "运行中" : "已停止") + " · " + $0.capabilities.joined(separator: ", "),
-                     command: $0.bundleID, checked: $0.enabled)
-        })
+
+        showPluginList()
     case .sessions:
         app.picker = Picker(title: "切换会话", items: app.sessions.enumerated().map { index, session in
             MenuItem(title: session.title, detail: (session.id == app.activeSession ? "当前 · " : "") + "\(session.turns) 轮",
@@ -426,18 +610,59 @@ func handleReply(_ reply: FrontendReply) {
         } else {
             app.notice("已启用 \(bundleID)。")
         }
+        if app.pluginList { showPluginList() }
     case .disable(let bundleID):
         if !reply.ok {
             app.error("插件操作失败：\(reply.error ?? "未知错误")")
         } else {
             app.notice("已禁用 \(bundleID)。")
         }
+        if app.pluginList { showPluginList() }
+    case .settingsOpen:
+        if let snapshot = reply.settings {
+            app.settings = SettingsPanel(snapshot: snapshot)
+            app.settingsInputQueue.removeAll()
+            app.settingsSavePending = false
+            app.pluginList = false
+            handleSettingsCommand(snapshot.command)
+        } else {
+            app.error(reply.error ?? "无法打开插件设置。")
+        }
+    case .settingsInput, .settingsResize:
+        if let snapshot = reply.settings {
+            app.settings?.snapshot = snapshot
+            app.settings?.busy = false
+            handleSettingsCommand(snapshot.command)
+            if !app.settingsInputQueue.isEmpty, app.settings != nil {
+                let next = app.settingsInputQueue.removeFirst()
+                sendSettingsInput(next)
+            } else if app.settingsSavePending, app.settings != nil {
+                app.settingsSavePending = false
+                saveSettings()
+            }
+        } else {
+            app.settings?.busy = false
+            app.error(reply.error ?? "插件设置更新失败。")
+        }
+    case .settingsSave:
+
+        if reply.ok {
+            app.settings = nil
+            app.settingsCredentialRefresh = false
+            app.notice("设置已保存。")
+        } else {
+            app.settings?.busy = false
+            app.error(reply.error ?? "设置保存失败。")
+        }
+    case .settingsCancel:
+        app.settings = nil
+        app.settingsCredentialRefresh = false
     case .auth(let provider, let action):
         app.authBusy = false
         if !reply.ok {
             app.error("凭据操作失败：\(reply.error ?? "未知错误")")
         } else if let state = reply.credentials?.first {
-            if action == "set" || action == "update" {
+            if action == "set" || action == "update" || action == "settings-update" {
                 if state.configured && action == "set" {
                     app.notice("\(provider) 已配置（\(state.source)）。更新请用 /auth \(provider) update。")
                 } else {
@@ -447,6 +672,9 @@ func handleReply(_ reply: FrontendReply) {
             } else {
                 let stateText = state.configured ? "已配置（\(state.source)）" : "未配置"
                 app.notice("\(provider)：\(stateText)。" + (action == "saved" ? "可立即发送新请求。" : ""))
+                if action == "settings-remove" || action == "settings-saved" {
+                    refreshSettingsAfterCredential()
+                }
             }
         }
     case nil:
@@ -659,6 +887,7 @@ func runCommand(_ raw: String) {
         app.model = argument
         app.notice("模型已切换为 \(argument)。")
     case "/plugins":
+
         let id = client.send(.pluginsList); app.pending[id] = .plugins
     case "/enable", "/disable":
         guard !argument.isEmpty else { app.error("用法：\(command) <bundle id>"); return }
@@ -730,12 +959,15 @@ func slashPicker() -> Picker? {
 
 @MainActor
 func handleKey(_ key: Key) {
+
     if key == .pasteStart { app.pasting = true; app.pastedText = []; return }
     if key == .pasteEnd {
         if app.pasting, !app.authBusy, !app.discardInputBatch, !app.discardPaste, app.secretInput == nil {
             let text = String(app.pastedText).replacingOccurrences(of: "\r\n", with: "\n")
                 .replacingOccurrences(of: "\r", with: "\n")
-            if app.picker != nil {
+            if app.settings != nil {
+                sendSettingsInput(SettingsInput(kind: .paste, text: text))
+            } else if app.picker != nil {
                 app.picker?.query += text.replacingOccurrences(of: "\n", with: " ")
                 app.picker?.selected = 0
             } else { app.insert(text) }
@@ -779,7 +1011,7 @@ func handleKey(_ key: Key) {
             app.secretInput = nil
             app.authBusy = true
             let id = client.send(.authSet, provider: input.provider, secret: String(input.characters))
-            app.pending[id] = .auth(input.provider, "saved")
+            app.pending[id] = .auth(input.provider, app.settingsCredentialRefresh ? "settings-saved" : "saved")
         case .escape, .interrupt, .endOfInput:
             app.secretInput = nil
             app.discardPaste = app.pasting
@@ -787,6 +1019,11 @@ func handleKey(_ key: Key) {
             app.notice("已取消凭据输入。")
         default: break
         }
+        needsRender = true
+        return
+    }
+    if app.settings != nil {
+        handleSettingsKey(key)
         needsRender = true
         return
     }
@@ -799,6 +1036,34 @@ func handleKey(_ key: Key) {
         case .tab: app.pastedText += [" ", " "]
         default: break
         }
+        needsRender = true
+        return
+    }
+    if app.pluginList, var picker = app.picker {
+        switch key {
+        case .up, .scrollUp: picker.selected = max(0, picker.selected - 1)
+        case .down, .scrollDown: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 1)
+        case .pageUp: picker.selected = max(0, picker.selected - 8)
+        case .pageDown: picker.selected = min(max(0, picker.filtered.count - 1), picker.selected + 8)
+        case .character(" "):
+            if picker.filtered.indices.contains(picker.selected) {
+                togglePlugin(picker.filtered[picker.selected].command)
+            }
+        case .enter:
+            if picker.filtered.indices.contains(picker.selected) {
+                openPluginSettings(picker.filtered[picker.selected].command)
+            }
+            needsRender = true
+            return
+        case .escape, .interrupt, .commandPalette:
+            app.picker = nil
+            app.pluginList = false
+            needsRender = true
+            return
+        default:
+            break
+        }
+        app.picker = picker
         needsRender = true
         return
     }
@@ -843,6 +1108,7 @@ func handleKey(_ key: Key) {
     case .newline:
         app.insert("\n")
     case .enter:
+
         if app.running, !String(app.input).trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
             app.notice("仍在生成中；草稿已保留，按 Esc 取消。")
             break
@@ -926,7 +1192,7 @@ func handleKey(_ key: Key) {
             break
         }
         for _ in 0..<2 { app.input.insert(" ", at: app.cursor); app.cursor += 1 }
-    case .unknown, .pasteStart, .pasteEnd, .redraw:
+    case .unknown, .pasteStart, .pasteEnd, .redraw, .saveSettings:
         break
     }
     needsRender = true
@@ -961,6 +1227,16 @@ while true {
     if resizePending {
         resizePending = false
         needsRender = true
+        if let panel = app.settings, !panel.busy {
+            let viewport = settingsViewport()
+            if viewport.width != panel.snapshot.viewport.width || viewport.height != panel.snapshot.viewport.height {
+                let id = client.send(
+                    .pluginSettingsResize, settingsSessionID: panel.snapshot.sessionID, viewport: viewport
+                )
+                app.pending[id] = .settingsResize
+                app.settings?.busy = true
+            }
+        }
     }
     keys.wait(milliseconds: 30)
     app.discardInputBatch = false

@@ -122,6 +122,23 @@ Provider 插件的 `describe` 返回 `ProviderIdentity` JSON。`models` 是路�
 - 加载器负责校验，Core 只透传运行中 Provider 的声明，前端负责显示。本版思考等级**只读**，
   不进入 `ProviderWireRequest`；插件不应把它当作已生效的请求参数。
 
+### 3.5 自绘设置能力 `settings.view.v1`
+
+插件可以在 `PluginIdentity` 中声明可选设置能力：
+
+```json
+{"settings": {"capability": "settings.view.v1"}}
+```
+
+manifest 的 `Capabilities` 必须包含同一字符串。声明后，`invoke` 的 `settings.view.v1` 接收
+`SettingsInvocation`（`open`/`input`/`resize`/`prepareSave`/`commit`/`apply`/`cancel`），返回
+`SettingsResponse`。`open` 会收到 `viewport`、**不含密钥**的凭据状态和已提交配置；插件自己保存草稿。
+`prepareSave` 返回候选配置，由 Core 校验并原子写入 `<data>/plugin-settings/<bundleID>.json`。
+
+插件只能返回受约束的 `SettingsFrame`：行、span、主题 token 或 `#RRGGBB`；禁止控制字符与 ANSI。
+宿主拥有外框、标题、Esc/Ctrl-S 和物理终端，插件不能拦截关闭。设置会话使用独立 Host，不注册路由、
+Hook 或 Tool；禁用插件也可以打开设置页。完整的 frame 限制与事务语义见 ADR-0006。
+
 ## 四、握手与能力注册：定义一次
 
 阶段 0 初稿要求"统一握手与能力注册流程"，原因是 1.x 存在**五套互不一致**的实现：插件 IPC 用 `ipcVersion: Int` + 裸字符串错误、Core 侧 manifest 用 `compatibility.schemaVersion` + 版本字符串区间、browser-host 用真 JSON-RPC + `protocolVersion: "v1"`、MCP 用 `initialize → notifications/initialized → tools/list`、前端 wire 用 `protocolVersion = "2.0"` 字符串。字段名、类型、顺序、失败表达各不相同。
