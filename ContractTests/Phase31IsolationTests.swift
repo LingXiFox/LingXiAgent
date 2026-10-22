@@ -251,7 +251,9 @@ func PLG_018_forceKilledProviderIsScoped() async throws {
     #expect(await waitUntil { await harness.router.offeredModels.map(\.rawValue).sorted() == ["deepseek-flash"] })
     #expect(await harness.coordinator.isRunning(bundleID: deepSeekBundle))
     #expect(await harness.coordinator.processIdentifier(bundleID: deepSeekBundle) == deepSeekPID)
-    #expect(await harness.registry.entry(mimoBundle)?.enabled == false)
+    // The unexpected-exit handler persists enabled=false asynchronously after teardown; poll it
+    // instead of racing the registry write.
+    #expect(await waitUntil { await harness.registry.entry(mimoBundle)?.enabled == false })
 
     let continued = await harness.loop.run(deepSeekTurn("after-kill"), policy: LoopPolicy())
     #expect(continued.status == .completed)
