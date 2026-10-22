@@ -96,6 +96,11 @@ CI TUI/Settings PTY 门禁：6 个测试通过（TUI-001/002/003、SETTINGS-001/
 CI Keychain 门禁：9 个测试通过（4 + 5：AUTH_、settingsDisabledCredentialIsolation、SETTINGS-004）。
 CI settings/MiMo 契约门禁：51 个测试通过。
 `swift test --filter 'MiMo|MIMO'`：21 个测试通过。
+GitHub CI：run `39802253967`（commit `ea6ddfc`，macOS 26 arm64 全部步骤成功，包括 TUI/Settings PTY、
+Keychain/Settings 凭据和 Plugin settings/MiMo 契约门禁）。
+
+提交：`326c083`（P0/P1 主体）、`e7d96cf`（PLG-018 注册表竞态）、`ea6ddfc`（保存后的偏好模型与
+MiMo apply 错误传播）。
 
 ## 未验证 / 需要用户确认
 
