@@ -40,7 +40,12 @@
 ## 已通过真实 API 验收
 
 无。当前环境没有 `MIMO_API_KEY`，`MIMO live smoke` 未执行；Responses 真实端点也未验收。不能把
-cassette / loopback 测试称为真实 API 已生效。
+cassette / loopback 测试称为真实 API 已生效。拿到 Key 后可用：
+
+```sh
+MIMO_API_KEY=... Scripts/mimo-record-responses.sh
+MIMO_API_KEY=... LINGXI_RUN_REAL_PROVIDER_SMOKE=1 swift test --filter MIMO_liveSmoke
+```
 
 ## 目前只有部分支持
 

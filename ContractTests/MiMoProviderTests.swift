@@ -255,6 +255,16 @@ func MIMO_liveSmoke() async throws {
     if let record = ProcessInfo.processInfo.environment["LINGXI_RECORD_MIMO_CASSETTE"] {
         grants.append("record=\(record)")
     }
+    // The same smoke body covers both wire families; the recorder script chooses via env.
+    if ProcessInfo.processInfo.environment["LINGXI_MIMO_PROTOCOL"] == "responses" {
+        var config: [String: Any] = [
+            "protocolKind": "responses",
+            "model": model,
+            "thinkingMode": "enabled",
+        ]
+        config["reasoningEffort"] = ProcessInfo.processInfo.environment["LINGXI_MIMO_REASONING_EFFORT"] ?? "medium"
+        grants.append(try mimoConfigGrant(config))
+    }
     let harness = try await makeMiMoHarness(grants: grants, model: model, credential: { key })
     defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
 
