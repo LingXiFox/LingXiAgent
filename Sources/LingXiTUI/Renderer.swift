@@ -118,6 +118,8 @@ struct ViewState {
     var completion: Picker?
     var settings: SettingsSnapshot?
     var settingsBusy = false
+    var settingsError: String?
+    var confirmation: Confirmation?
     var auth: AuthPrompt?
     var showThinking = false
     var running = false
@@ -361,7 +363,10 @@ struct Renderer {
             drawAuth(auth, feedback: view.feedback, into: &canvas)
         } else if let settings = view.settings {
             cursor = nil
-            drawSettings(settings, busy: view.settingsBusy, into: &canvas)
+            drawSettings(settings, busy: view.settingsBusy, error: view.settingsError, into: &canvas)
+            if let confirmation = view.confirmation {
+                drawConfirmation(confirmation, into: &canvas)
+            }
         } else if let picker = view.picker {
             cursor = nil
             drawPicker(picker, into: &canvas)
@@ -379,9 +384,30 @@ struct Renderer {
 
     // MARK: chrome
 
+    private func drawConfirmation(_ confirmation: Confirmation, into canvas: inout Canvas) {
+        let boxWidth = min(width - 4, max(40, min(72, width - 8)))
+        let boxHeight = 7
+        let left = max(0, (width - boxWidth) / 2)
+        let top = max(1, (height - boxHeight) / 2)
+        for row in top..<(top + boxHeight) {
+            canvas.fill(row: row, col: left, count: boxWidth, bg: Theme.overlay)
+        }
+        canvas.draw([Span("┌" + String(repeating: "─", count: boxWidth - 2) + "┐", .color(Theme.error))], row: top, col: left, limit: boxWidth)
+        canvas.draw([Span("└" + String(repeating: "─", count: boxWidth - 2) + "┘", .color(Theme.error))], row: top + boxHeight - 1, col: left, limit: boxWidth)
+        for row in (top + 1)..<(top + boxHeight - 1) {
+            canvas.draw([Span("│", .color(Theme.error))], row: row, col: left, limit: 1)
+            canvas.draw([Span("│", .color(Theme.error))], row: row, col: left + boxWidth - 1, limit: 1)
+        }
+        canvas.draw([Span(" " + confirmation.title + " ", .color(Theme.error, bold: true))], row: top, col: left + 2, limit: boxWidth - 4)
+        canvas.draw([Span(confirmation.message, .color(Theme.cream))], row: top + 2, col: left + 2, limit: boxWidth - 4)
+        canvas.draw([Span("Enter 确认 · Esc 取消", .color(Theme.dim))], row: top + 4, col: left + 2, limit: boxWidth - 4)
+    }
+
     /// The host owns the frame: title, identity, footer. Everything between the borders is the
     /// plugin's validated cell frame, so a plugin can design freely without touching the terminal.
-    private func drawSettings(_ settings: SettingsSnapshot, busy: Bool, into canvas: inout Canvas) {
+    private func drawSettings(
+        _ settings: SettingsSnapshot, busy: Bool, error: String?, into canvas: inout Canvas
+    ) {
         let boxWidth = min(width - 2, max(24, settings.viewport.width + 4))
         let boxHeight = min(height - 2, max(8, settings.viewport.height + 6))
         let left = max(0, (width - boxWidth) / 2)
@@ -415,7 +441,11 @@ struct Renderer {
         let footerRow = top + boxHeight - 2
         let hint = busy ? "处理中…" : "Ctrl-S 保存 · Esc 取消"
         canvas.draw([Span(hint, .color(Theme.muted))], row: footerRow, col: left + 2, limit: max(0, boxWidth - 4))
-        if let status = settings.status, !busy {
+        if let error, !busy {
+            let message = Renderer.oneLine(error)
+            canvas.draw([Span(message, .color(Theme.error))], row: footerRow, col: left + 2,
+                        limit: max(0, boxWidth - 4))
+        } else if let status = settings.status, !busy {
             let statusWidth = min(TextWidth.width(status), max(0, boxWidth - 4 - TextWidth.width(hint) - 2))
             if statusWidth > 0 {
                 let clipped = SettingsFrameValidator.displayWidth(status) > statusWidth

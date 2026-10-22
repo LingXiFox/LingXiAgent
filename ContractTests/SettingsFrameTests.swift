@@ -47,3 +47,39 @@ func settingsFrameTruncatesRows() throws {
     )
     #expect(clipped.rows.count == 5)
 }
+
+@Test("clipping keeps multi-codepoint graphemes intact")
+func settingsFrameKeepsGraphemes() throws {
+    let family = "👨‍👩‍👧‍👦"
+    let combining = "e\u{301}"
+    let frame = SettingsFrame(rows: [
+        SettingsRow([SettingsSpan(family + family + combining + combining + "tail")]),
+    ])
+    let clipped = try SettingsFrameValidator.validate(
+        frame, viewport: SettingsViewport(width: 20, height: 2)
+    )
+    let text = clipped.rows[0].spans.map(\.text).joined()
+    #expect(SettingsFrameValidator.displayWidth(text) <= 20)
+    #expect(text.contains(family))
+    #expect(!text.contains("\u{200D}\u{FE0F}"))
+}
+
+@Test("zero-width marks do not consume viewport cells")
+func settingsFrameZeroWidthMarks() throws {
+    let text = "a" + String(repeating: "\u{301}", count: 40) + "bcdef"
+    let frame = SettingsFrame(rows: [SettingsRow([SettingsSpan(text)])])
+    let clipped = try SettingsFrameValidator.validate(
+        frame, viewport: SettingsViewport(width: 20, height: 2)
+    )
+    let result = clipped.rows[0].spans.map(\.text).joined()
+    #expect(SettingsFrameValidator.displayWidth(result) <= 20)
+}
+
+@Test("a frame at the size limit is refused before it can grow host memory")
+func settingsFrameSizeLimit() {
+    let huge = String(repeating: "x", count: SettingsWireLimits.maxSpanBytes + 1)
+    let frame = SettingsFrame(rows: [SettingsRow([SettingsSpan(huge)])])
+    #expect(throws: SettingsFrameError.spanTooLarge(row: 0, bytes: huge.utf8.count)) {
+        try SettingsFrameValidator.validate(frame, viewport: SettingsViewport(width: 40, height: 5))
+    }
+}

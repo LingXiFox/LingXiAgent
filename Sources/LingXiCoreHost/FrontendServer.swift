@@ -66,6 +66,9 @@ final class FrontendServer: @unchecked Sendable {
         case .hello:
             reply.models = await offeredModels()
             reply.modelDetails = await offeredModelDetails()
+            reply.preferredModel = await settings.preferredModelHint(
+                bundleIDs: await registry.all().map(\.bundleID)
+            )
             reply.sessions = await sessionSummaries()
             reply.plugins = await pluginSummaries()
         case .modelsList:
@@ -143,7 +146,9 @@ final class FrontendServer: @unchecked Sendable {
                 return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.save needs a session"))
             }
             do {
+                let preferred = await settings.preferredModel(forSessionID: sessionID)
                 try await settings.save(sessionID: sessionID)
+                reply.preferredModel = preferred
             } catch {
                 reply.ok = false
                 reply.error = "\(error)"
@@ -151,6 +156,33 @@ final class FrontendServer: @unchecked Sendable {
         case .pluginSettingsCancel:
             if let sessionID = request.settingsSessionID {
                 await settings.cancel(sessionID: sessionID)
+            }
+        case .pluginSettingsCredential:
+            guard let sessionID = request.settingsSessionID,
+                  let providerID = request.provider, !providerID.isEmpty,
+                  let action = request.settingsCredentialAction else {
+                return send(FrontendReply(
+                    id: request.id, ok: false,
+                    error: "plugin.settings.credential needs a session, provider and action"
+                ))
+            }
+            do {
+                switch action {
+                case "update":
+                    reply.credentials = [try await settings.credentialStatus(
+                        sessionID: sessionID, providerID: providerID
+                    )]
+                case "remove":
+                    reply.credentials = [try await settings.removeCredential(
+                        sessionID: sessionID, providerID: providerID,
+                        confirmed: request.settingsCredentialConfirmed == true
+                    )]
+                default:
+                    throw PluginSettingsCoordinator.SettingsError.rejected("unknown credential action \(action)")
+                }
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
             }
         case .pluginEnable, .pluginDisable:
             guard let bundleID = request.bundleID else {
@@ -178,11 +210,20 @@ final class FrontendServer: @unchecked Sendable {
                 guard let providerID = request.provider, !providerID.isEmpty else {
                     throw AuthError.invalidRequest
                 }
-                let declared = await coordinator.credentialProviders().filter { $0.declaration.id == providerID }
                 let bundleID: String
                 let requirement: CredentialRequirement
-                if declared.count == 1, let provider = declared.first,
-                   let first = provider.declaration.credentials?.first {
+                let declared = await coordinator.credentialProviders()
+                    .filter { $0.declaration.id == providerID }
+                if let settingsSessionID = request.settingsSessionID {
+                    // The settings session is the authority for a disabled plugin's credentials:
+                    // it may not be running, but its declaration still owns this provider.
+                    let binding = try await settings.credentialBinding(
+                        sessionID: settingsSessionID, providerID: providerID
+                    )
+                    bundleID = binding.bundleID
+                    requirement = binding.requirement
+                } else if let provider = declared.first,
+                    let first = provider.declaration.credentials?.first {
                     bundleID = provider.bundleID
                     requirement = first
                 } else {
@@ -287,6 +328,9 @@ final class FrontendServer: @unchecked Sendable {
         var models = FrontendEvent(event: "models.changed")
         models.models = await offeredModels()
         models.modelDetails = await offeredModelDetails()
+        models.preferredModel = await settings.preferredModelHint(
+            bundleIDs: await registry.all().map(\.bundleID)
+        )
         emit(models)
     }
 

@@ -9,6 +9,9 @@ actor PluginSettingsStore: PluginSettingsProviding {
     struct Payload: Codable {
         let version: Int
         let config: JSONValue
+        /// Optional frontend hint: the model this plugin wants selected for new conversations. It
+        /// never changes routing; the Core still rejects a model it does not offer.
+        let preferredModel: String?
     }
 
     enum StoreError: Error, CustomStringConvertible, Equatable {
@@ -35,8 +38,8 @@ actor PluginSettingsStore: PluginSettingsProviding {
         directory = URL(fileURLWithPath: dataDirectory).appendingPathComponent("plugin-settings")
     }
 
-    func settings(for bundleID: String) async -> PluginSettingsSnapshot? {
-        try? load(bundleID: bundleID)
+    func settings(for bundleID: String) async throws -> PluginSettingsSnapshot? {
+        try load(bundleID: bundleID)
     }
 
     func load(bundleID: String) throws -> PluginSettingsSnapshot? {
@@ -47,7 +50,10 @@ actor PluginSettingsStore: PluginSettingsProviding {
             let payload = try JSONDecoder().decode(Payload.self, from: data)
             guard payload.version == 1 else { throw StoreError.unsupportedVersion(payload.version) }
             guard payload.config.object != nil else { throw StoreError.configNotObject }
-            return PluginSettingsSnapshot(version: payload.version, config: payload.config)
+            return PluginSettingsSnapshot(
+                version: payload.version, config: payload.config,
+                preferredModel: payload.preferredModel
+            )
         } catch let error as StoreError {
             throw error
         } catch {
@@ -55,10 +61,15 @@ actor PluginSettingsStore: PluginSettingsProviding {
         }
     }
 
-    func save(bundleID: String, version: Int = 1, config: JSONValue) throws {
+    func save(
+        bundleID: String, version: Int = 1, config: JSONValue,
+        preferredModel: String? = nil
+    ) throws {
         guard version == 1 else { throw StoreError.unsupportedVersion(version) }
         guard config.object != nil else { throw StoreError.configNotObject }
-        let data = try JSONEncoder().encode(Payload(version: version, config: config))
+        let data = try JSONEncoder().encode(
+            Payload(version: version, config: config, preferredModel: preferredModel)
+        )
         guard data.count <= SettingsWireLimits.maxConfigBytes else {
             throw StoreError.configTooLarge(data.count)
         }
@@ -84,5 +95,18 @@ actor PluginSettingsStore: PluginSettingsProviding {
         }
         guard !bundleID.isEmpty, allowed else { throw StoreError.invalidBundleID(bundleID) }
         return directory.appendingPathComponent(bundleID + ".json")
+    }
+}
+
+extension PluginSettingsStore {
+    /// Reads only the frontend hint. A corrupt file is ignored here on purpose: this is a cosmetic
+    /// selection hint, while an explicit open/save surfaces the same corruption as a hard error.
+    func preferredModelHint(bundleIDs: [String]) -> String? {
+        for bundleID in bundleIDs {
+            if let snapshot = try? load(bundleID: bundleID), let model = snapshot.preferredModel {
+                return model
+            }
+        }
+        return nil
     }
 }

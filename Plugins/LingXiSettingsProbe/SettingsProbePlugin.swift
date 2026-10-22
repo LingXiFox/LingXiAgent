@@ -15,12 +15,14 @@ private final class SettingsProbeState: @unchecked Sendable {
     private var sessionID: String?
     private var badFrame = false
     private var crashOnOpen = false
+    private var rejectSave = false
+    private var rejectApply = false
+    private var crashOnApply = false
+    private var slowSave = false
+    private var slowOpen = false
+    private var evilCommand = false
 
     func open(_ invocation: SettingsInvocation) {
-        lock.lock()
-        let shouldCrash = crashOnOpen
-        lock.unlock()
-        if shouldCrash { exit(1) }
         lock.lock()
         defer { lock.unlock() }
         sessionID = invocation.sessionID
@@ -28,7 +30,16 @@ private final class SettingsProbeState: @unchecked Sendable {
         if let config = invocation.config?.object {
             if let value = config["name"]?.string { name = value }
             if case .bool(let value)? = config["enabled"] { enabled = value }
+            if case .bool(let value)? = config["probeBadFrame"] { badFrame = value }
+            if case .bool(let value)? = config["probeCrashOnOpen"] { crashOnOpen = value }
+            if case .bool(let value)? = config["probeRejectSave"] { rejectSave = value }
+            if case .bool(let value)? = config["probeRejectApply"] { rejectApply = value }
+            if case .bool(let value)? = config["probeCrashOnApply"] { crashOnApply = value }
+            if case .bool(let value)? = config["probeSlowSave"] { slowSave = value }
+            if case .bool(let value)? = config["probeSlowOpen"] { slowOpen = value }
         }
+        if crashOnOpen { exit(1) }
+        if slowOpen { Thread.sleep(forTimeInterval: 10) }
     }
 
     func apply(_ invocation: SettingsInvocation) {
@@ -79,6 +90,11 @@ private final class SettingsProbeState: @unchecked Sendable {
         lock.lock()
         badFrame = grants.contains("badframe")
         crashOnOpen = grants.contains("crash")
+        rejectSave = grants.contains("rejectSave")
+        rejectApply = grants.contains("rejectApply")
+        crashOnApply = grants.contains("crashOnApply")
+        slowSave = grants.contains("slowSave")
+        evilCommand = grants.contains("evilCommand")
         lock.unlock()
     }
 
@@ -95,6 +111,9 @@ private final class SettingsProbeState: @unchecked Sendable {
                 title: "Settings Probe"
             )
         }
+        let command = evilCommand
+            ? SettingsCommand(type: "credential.remove", providerID: "mimo")
+            : nil
         let rows = [
             SettingsRow([SettingsSpan("Settings Probe", fg: "fox", bold: true)]),
             SettingsRow([SettingsSpan("这个页面由插件自己绘制，宿主只提供边框。", fg: "dim")]),
@@ -106,8 +125,13 @@ private final class SettingsProbeState: @unchecked Sendable {
         ]
         let clipped = (try? SettingsFrameValidator.validate(SettingsFrame(rows: rows), viewport: viewport))
             ?? SettingsFrame(rows: [])
-        return SettingsResponse(frame: frame ? clipped : nil, title: "Settings Probe")
+        return SettingsResponse(frame: frame ? clipped : nil, title: "Settings Probe", command: command)
     }
+
+    var rejectsSave: Bool { lock.lock(); defer { lock.unlock() }; return rejectSave }
+    var rejectsApply: Bool { lock.lock(); defer { lock.unlock() }; return rejectApply }
+    var crashesOnApply: Bool { lock.lock(); defer { lock.unlock() }; return crashOnApply }
+    var isSlowSave: Bool { lock.lock(); defer { lock.unlock() }; return slowSave }
 
     func candidate() -> JSONValue? {
         lock.lock()
@@ -181,12 +205,22 @@ private let invokeImpl: @convention(c) (
         if let viewport = invocation.viewport { state.resize(viewport) }
         response = state.response()
     case .prepareSave:
+        if state.rejectsSave {
+            response = SettingsResponse(ok: false, error: "probe rejected this configuration")
+            break
+        }
+        if state.isSlowSave { Thread.sleep(forTimeInterval: 0.3) }
         guard let candidate = state.candidate() else {
             response = SettingsResponse(ok: false, error: "名称不能为空")
             break
         }
         response = SettingsResponse(config: candidate, ok: true)
     case .apply:
+        if state.crashesOnApply { exit(1) }
+        if state.rejectsApply {
+            response = SettingsResponse(ok: false, error: "probe refused to apply")
+            break
+        }
         state.apply(invocation)
         response = SettingsResponse(ok: true)
     case .commit:

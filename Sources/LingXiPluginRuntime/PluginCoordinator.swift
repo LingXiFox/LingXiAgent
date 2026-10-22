@@ -98,7 +98,7 @@ public actor PluginCoordinator {
 
             // Apply the last committed settings before routes go live, so the first Run already
             // sees the user's protocol/model/thinking choices.
-            if let settingsProvider, let snapshot = await settingsProvider.settings(for: bundleID),
+            if let settingsProvider, let snapshot = try await settingsProvider.settings(for: bundleID),
                let capability = await session.settingsCapability {
                 _ = try await session.invoke(
                     capability: capability,
@@ -241,15 +241,26 @@ public actor PluginCoordinator {
     }
 
     /// Applies a committed settings snapshot to a running plugin. A disabled plugin is a no-op:
-    /// its saved configuration is applied by `enable` when it starts again.
-    public func applySettings(bundleID: String, config: JSONValue) async throws {
-        guard let session = sessions[bundleID], await session.isRunning,
-              let capability = await session.settingsCapability else { return }
-        _ = try await session.invoke(
+    /// its saved configuration is applied by `enable` when it starts again. The plugin must answer
+    /// `ok: true`; an IPC success carrying a semantic rejection is still a failure here.
+    @discardableResult
+    public func applySettings(bundleID: String, config: JSONValue) async throws -> SettingsResponse {
+        guard let session = sessions[bundleID], await session.isRunning else {
+            return SettingsResponse(ok: true)
+        }
+        guard let capability = await session.settingsCapability else {
+            throw PluginSettingsApplyError.rejected("plugin does not declare a settings capability")
+        }
+        let raw = try await session.invoke(
             capability: capability,
             payload: .encode(SettingsInvocation(op: .apply, config: config)),
             requestID: "settings-apply-\(UUID().uuidString)"
         )
+        let response = try raw.decode(SettingsResponse.self)
+        guard response.ok == true else {
+            throw PluginSettingsApplyError.rejected(response.error ?? "plugin returned ok=false")
+        }
+        return response
     }
 
     /// Only successfully enabled plugin declarations can authorize secret delivery.

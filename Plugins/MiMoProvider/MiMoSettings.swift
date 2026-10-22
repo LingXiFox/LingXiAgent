@@ -90,7 +90,9 @@ final class MiMoSettingsState: @unchecked Sendable {
         defer { lock.unlock() }
         do {
             _ = try draft.validated()
-            return SettingsResponse(config: try JSONValue.encode(draft), ok: true)
+            return SettingsResponse(
+                config: try JSONValue.encode(draft), preferredModel: draft.model, ok: true
+            )
         } catch {
             return SettingsResponse(ok: false, error: "\(error)")
         }
@@ -104,7 +106,7 @@ final class MiMoSettingsState: @unchecked Sendable {
             draft = parsed
         }
         note = "已保存"
-        return response()
+        return SettingsResponse(frame: response().frame, title: "MiMo Provider", ok: true)
     }
 
     func apply(_ invocation: SettingsInvocation) -> SettingsResponse {

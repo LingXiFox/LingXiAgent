@@ -41,11 +41,10 @@ func mimoSettingsPage() async throws {
     #expect(open.ok, "\(open.error ?? "")")
     let snapshot = try #require(open.settings)
     #expect(snapshot.title == "MiMo Provider")
-    #expect(rowsText(snapshot.frame).contains("Connection"))
 
     // Right twice reaches Protocol, select Responses, then save.
     var session = snapshot.sessionID
-    for key in ["right", "down", "enter", "right", "right", "down", "enter"] {
+    for key in ["right", "down", "enter", "right", "down", "enter", "right", "down", "enter"] {
         let reply = try #require(await core.waitReply(core.send(
             .pluginSettingsInput, settingsSessionID: session,
             settingsInput: SettingsInput(kind: .key, key: key)
@@ -63,6 +62,12 @@ func mimoSettingsPage() async throws {
     let root = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     let config = try #require(root["config"] as? [String: Any])
     #expect(config["protocolKind"] as? String == "responses")
-    #expect(config["model"] as? String == "mimo-v2.6-flash")
+    #expect(config["model"] as? String == "mimo-v2.6-pro")
     #expect(config["thinkingMode"] as? String == "enabled")
+    // The preferred model is a hint for the TUI's next selection, never a router override.
+    core.terminate()
+    let restarted = try ProtocolCore(dataDirectory: directory)
+    defer { restarted.terminate() }
+    let hello = try #require(await restarted.waitReply(restarted.send(.hello)))
+    #expect(hello.preferredModel == "mimo-v2.6-pro")
 }

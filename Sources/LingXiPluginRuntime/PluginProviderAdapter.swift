@@ -11,6 +11,7 @@ public struct PluginProviderAdapter: ModelProvider {
     private let capabilityID: String
     private let credential: @Sendable () throws -> String?
     private let active = ActiveRequests()
+    private let reasoning = ReasoningStore()
 
     private final class ActiveRequests: @unchecked Sendable {
         private let lock = NSLock()
@@ -65,7 +66,10 @@ public struct PluginProviderAdapter: ModelProvider {
         }
         let requestID = UUID().uuidString
         active.add(request.executionID, requestID)
-        let wire = Self.wireRequest(from: request, credential: granted)
+        let previousReasoning = reasoning.value(for: request.executionID)
+        let wire = Self.wireRequest(
+            from: request, credential: granted, previousReasoning: previousReasoning
+        )
         let payload = try JSONValue.encode(wire)
         let events = await session.invokeStreaming(
             capability: capabilityID, payload: payload, requestID: requestID, timeout: .seconds(300)
@@ -75,13 +79,33 @@ public struct PluginProviderAdapter: ModelProvider {
         let executionID = request.executionID
         return AsyncThrowingStream { continuation in
             let pump = Task {
+                var sawTerminal = false
                 do {
                     for try await value in events {
                         let envelope = try value.decode(ProviderWireEnvelope.self)
-                        for mapped in Self.map(envelope.event) { continuation.yield(mapped) }
+                        if envelope.event.type == "reasoningDelta", let delta = envelope.event.text {
+                            reasoning.append(delta, for: executionID)
+                        }
+                        for mapped in Self.map(envelope.event) {
+                            switch mapped {
+                            case .completed(let reason):
+                                sawTerminal = true
+                                if reason != .toolCalls { reasoning.finalize(executionID) }
+                            case .failed:
+                                sawTerminal = true
+                                reasoning.finalize(executionID)
+                            default:
+                                break
+                            }
+                            continuation.yield(mapped)
+                        }
                     }
+                    if !sawTerminal { reasoning.finalize(executionID) }
                     continuation.finish()
                 } catch {
+                    // Cancellation after a terminal is the normal stream consumer shutdown; it
+                    // must not erase a tool-round reasoning snapshot retained for the next step.
+                    if !sawTerminal { reasoning.finalize(executionID) }
                     continuation.finish(throwing: error)
                 }
                 active.remove(executionID, requestID)
@@ -95,6 +119,7 @@ public struct PluginProviderAdapter: ModelProvider {
     }
 
     public func endExecution(_ executionID: ExecutionID) async {
+        reasoning.endExecution(executionID)
         for requestID in active.take(executionID) {
             await session.cancel(requestID: requestID)
         }
@@ -102,6 +127,7 @@ public struct PluginProviderAdapter: ModelProvider {
 
     /// Disable/revocation path: every in-flight stream this adapter owns is cancelled.
     public func cancelAll() async {
+        reasoning.clearAll()
         for requestID in active.takeAll() {
             await session.cancel(requestID: requestID)
         }
@@ -111,7 +137,9 @@ public struct PluginProviderAdapter: ModelProvider {
 
     // MARK: - mapping
 
-    static func wireRequest(from request: ModelRequest, credential: String?) -> ProviderWireRequest {
+    static func wireRequest(
+        from request: ModelRequest, credential: String?, previousReasoning: String? = nil
+    ) -> ProviderWireRequest {
         var instructions: [String] = []
         var items: [ProviderWireItem] = []
         for entry in request.entries {
@@ -156,8 +184,68 @@ public struct PluginProviderAdapter: ModelProvider {
             },
             maxOutputTokens: nil,
             credential: credential,
-            executionID: request.executionID.rawValue
+            executionID: request.executionID.rawValue,
+            previousReasoning: previousReasoning
         )
+    }
+
+    private final class ReasoningStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [ExecutionID: String] = [:]
+        private var order: [ExecutionID] = []
+        private var finalized: Set<ExecutionID> = []
+        private static let maxExecutions = 64
+
+        func value(for executionID: ExecutionID) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            return values[executionID]
+        }
+
+        /// Reasoning deltas arrive before the terminal. Keeping them immediately avoids a race
+        /// where the kernel starts the next tool round before the pump task observes the terminal.
+        func append(_ delta: String, for executionID: ExecutionID) {
+            lock.lock()
+            if values[executionID] == nil { order.append(executionID) }
+            let current = (values[executionID] ?? "") + delta
+            values[executionID] = String(current.prefix(16 * 1024))
+            finalized.remove(executionID)
+            while order.count > Self.maxExecutions {
+                let evicted = order.removeFirst()
+                values.removeValue(forKey: evicted)
+                finalized.remove(evicted)
+            }
+            lock.unlock()
+        }
+
+        /// A non-tool terminal ends the Run's reasoning lifetime. A toolCalls terminal does not;
+        /// the next request in the same execution consumes it.
+        func finalize(_ executionID: ExecutionID) {
+            lock.lock()
+            values.removeValue(forKey: executionID)
+            finalized.insert(executionID)
+            lock.unlock()
+        }
+
+        func endExecution(_ executionID: ExecutionID) {
+            lock.lock()
+            if finalized.remove(executionID) != nil {
+                values.removeValue(forKey: executionID)
+                order.removeAll { $0 == executionID }
+            }
+            lock.unlock()
+        }
+
+        func clear(_ executionID: ExecutionID) {
+            lock.lock()
+            values.removeValue(forKey: executionID)
+            finalized.remove(executionID)
+            order.removeAll { $0 == executionID }
+            lock.unlock()
+        }
+
+        func clearAll() {
+            lock.lock(); values.removeAll(); finalized.removeAll(); order.removeAll(); lock.unlock()
+        }
     }
 
     static func map(_ event: ProviderWireEvent) -> [ModelEvent] {

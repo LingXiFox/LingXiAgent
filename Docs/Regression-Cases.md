@@ -220,6 +220,12 @@
 | TUI-003 | 编辑器与会话连续性 | 多行粘贴不自动提交；Ctrl-J/Shift-Enter 换行；草稿与聊天历史独立；思考可折叠；连续发送复用 Core 会话 ID，重启后仍为两轮同一会话 | 对标 OpenCode v2 时发现 TUI 丢弃 chat.send 回复与 reasoning 事件 | 4.1 | L2 | `TUI_003_editorAndSessionContinuity` |
 | TUI-004 | 模型思考等级显示 | Provider 在 `describe` 声明 `modelDetails` 的思考等级与默认值；加载器校验非法声明；Core 按路由透传；TUI 模型区显示默认等级（本版只读） | 用户 2026-10-22 需求；ADR-0005 | 4.1 | L2 | `ModelPresentationTests`；PTY 抓帧验证 `model-a · 思考 中` |
 | TUI-005 | 插件自绘设置容器 | `/plugins` 两级导航；Enter 打开插件设置，Space 立即启停；插件自绘 frame 经校验/裁剪；Ctrl-S 事务保存，Esc 回滚；禁用插件可开 Settings-Only Host；崩溃不带走 Core | 用户 2026-10-22 Phase 4.2 需求；ADR-0006 | 4.2 | L2 | `SETTINGS_001`、`SETTINGS_002`、`SettingsContainerTests` |
+| TUI-006 | 设置保存事务 | prepareSave/apply/commit 任一 ok=false 都必须报错；写盘前失败不落文件；写盘后失败恢复旧文件并重新 apply；回滚失败显式报告；并发保存拒绝旧快照覆盖；保存中取消优先于写入 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsPrepareSaveRejection` 等 |
+| SEC-001 | 设置凭据跨插件隔离 | 插件只能通过自己的 settingsSession 操作自己声明的 provider/credential；删除需宿主确认；伪造 FrontendRequest 不能绕过归属检查 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsCredentialCrossPluginDenied`、`settingsDisabledCredentialIsolation` |
+| SEC-002 | Settings-Only Host 最小授权 | 设置 Host 不继承运行 grants，不注册 Provider/Hook/Tool；Bundle ID 必须与注册表一致 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsOnlyHostDropsRunGrants` |
+| TUI-007 | 设置会话生命周期 | 重复打开旧 session 立即失效；100 次开关不累积；Host 崩溃/超时移除会话；迟到回复不能复活窗口 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsSessionReplaced`、`settingsSessionChurn`、`settingsIPCTimeout` |
+| MIMO-004 | 推理上下文工具续接 | reasoning 只在同一 execution 的工具轮内存中传递，不进入正文/日志；Chat 用 reasoning_content，Responses 用 reasoning item；最终终态清理 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_chatReasoningToolRoundTrip` |
+| MIMO-005 | 双协议错误与去重边界 | HTTP 401/429/500、无终态 EOF、重复 sequence/终态、incomplete/failed 都按 providerFailure 收敛且不重复输出 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_httpFailures`、`MIMO_eofWithoutTerminal`、`MIMO_responsesDuplicateAndReorder` |
 
 ### AUTH 组 — 凭据托管
 

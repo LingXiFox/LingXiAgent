@@ -1115,3 +1115,115 @@ func MIMO_settingsDriveRealRequests() async throws {
     let requests = try #require(server.requests(count: 2))
     #expect(requests[1].body.contains("\"thinking\":{\"type\":\"disabled\"}"))
 }
+
+@Test("MIMO keeps reasoning only for the live tool round and resends it as reasoning_content")
+func MIMO_chatReasoningToolRoundTrip() async throws {
+    let first = mimoSSE([
+        ["data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"private reasoning\"}}]}"],
+        ["data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_r\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\\\"value\\\":\\\"42\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}"],
+        ["data: [DONE]"],
+    ])
+    let second = mimoSSE([
+        ["data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":\"stop\"}]}"],
+        ["data: [DONE]"],
+    ])
+    let server = try MiMoLoopbackServer(responses: [mimoSSEResponse(first), mimoSSEResponse(second)])
+    let harness = try await makeMiMoHarness(
+        grants: ["test.endpoint=http://127.0.0.1:\(server.port)/v1/chat/completions"],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(
+        mimoRequest(turn: 1, prompt: "call the echo tool"), policy: LoopPolicy()
+    )
+    #expect(run.status == .completed, "\(run.detail ?? "")")
+    #expect(run.toolOutcomes == 1)
+    #expect(harness.recorder.events.contains { if case .reasoningDelta = $0 { true } else { false } })
+    _ = await waitUntil { server.requests(count: 2) != nil }
+    let requests = try #require(server.requests(count: 2))
+    #expect(requests[1].body.contains("\"reasoning_content\":\"private reasoning\""), "body=\(requests[1].body)")
+    // The reasoning is not in the assistant's visible text or in a user message.
+    #expect(!run.assistantText.contains("private reasoning"))
+}
+
+private func mimoStatusResponse(_ status: Int, reason: String) -> String {
+    "HTTP/1.1 \(status) \(reason)\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+}
+
+@Test("MIMO maps HTTP 401/429/500 and a terminal-less EOF to provider failures", arguments: [
+    (401, "Unauthorized", "unauthorized"),
+    (429, "Too Many Requests", "rateLimited"),
+    (500, "Internal Server Error", "serverOverloaded"),
+])
+func MIMO_httpFailures(status: Int, reason: String, kind: String) async throws {
+    let server = try MiMoLoopbackServer(responses: [mimoStatusResponse(status, reason: reason)])
+    let harness = try await makeMiMoHarness(
+        grants: ["test.endpoint=http://127.0.0.1:\(server.port)/v1/chat/completions"],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "http failure"), policy: LoopPolicy())
+    #expect(run.status == .failed)
+    #expect(run.cause == .providerFailure)
+    #expect(run.detail?.lowercased().contains("http \(status)") == true)
+    #expect(run.detail?.lowercased().contains("http \(status)") == true)
+}
+
+@Test("MIMO EOF without a terminal event is a protocol failure, not a successful stop")
+func MIMO_eofWithoutTerminal() async throws {
+    let server = try MiMoLoopbackServer(responses: [mimoSSEResponse(mimoSSE([
+        ["data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"}}]}"],
+    ]))])
+    let harness = try await makeMiMoHarness(
+        grants: ["test.endpoint=http://127.0.0.1:\(server.port)/v1/chat/completions"],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "eof"), policy: LoopPolicy())
+    #expect(run.status == .failed)
+    #expect(run.cause == .providerFailure)
+    #expect(run.detail?.contains("terminal") == true)
+}
+
+@Test("MIMO Responses tolerates duplicate and out-of-order events without duplicating output")
+func MIMO_responsesDuplicateAndReorder() async throws {
+    let sse = mimoSSE([
+        mimoSSEEvent("response.created", [
+            "type": "response.created", "sequence_number": 0,
+            "response": ["id": "resp_dup", "status": "in_progress"],
+        ]),
+        mimoSSEEvent("response.output_text.delta", [
+            "type": "response.output_text.delta", "sequence_number": 2,
+            "item_id": "item_d", "output_index": 0, "content_index": 0, "delta": "hello",
+        ]),
+        // Duplicate sequence number must not repeat text.
+        mimoSSEEvent("response.output_text.delta", [
+            "type": "response.output_text.delta", "sequence_number": 2,
+            "item_id": "item_d", "output_index": 0, "content_index": 0, "delta": "hello",
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 4,
+            "response": ["id": "resp_dup", "status": "completed", "usage": ["input_tokens": 2, "output_tokens": 1]],
+        ]),
+        // A terminal repeated after completion must be ignored.
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 5,
+            "response": ["id": "resp_dup", "status": "completed", "usage": ["input_tokens": 2, "output_tokens": 1]],
+        ]),
+    ])
+    let server = try MiMoLoopbackServer(responses: [mimoSSEResponse(sse)])
+    let harness = try await makeMiMoHarness(
+        grants: [
+            try mimoConfigGrant([
+                "protocolKind": "responses", "model": "mimo-v2.6-flash",
+                "thinkingMode": "default",
+            ]),
+            "test.endpoint=http://127.0.0.1:\(server.port)/v1/responses",
+        ],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "dedupe"), policy: LoopPolicy())
+    #expect(run.status == .completed, "\(run.detail ?? "")")
+    #expect(run.assistantText == "hello")
+}

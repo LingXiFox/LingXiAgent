@@ -146,7 +146,34 @@ public enum SettingsFrameValidator {
     }
 
     public static func displayWidth(_ text: String) -> Int {
-        text.unicodeScalars.reduce(0) { $0 + (isWide($1) ? 2 : 1) }
+        text.reduce(0) { $0 + scalarWidth($1) }
+    }
+
+    /// One grapheme cluster's terminal width. Combining marks and variation selectors are zero
+    /// width; a ZWJ sequence or a scalar with emoji presentation occupies one wide cell. Clipping
+    /// iterates graphemes, so a multi-codepoint emoji is never split across a border.
+    public static func scalarWidth(_ character: Character) -> Int {
+        let scalars = character.unicodeScalars
+        if scalars.contains(where: { $0.properties.isVariationSelector }) { return 2 }
+        if scalars.count > 1, scalars.contains(where: { $0.value == 0x200D }) { return 2 }
+        var width = 0
+        for scalar in scalars {
+            if scalar.properties.isVariationSelector { continue }
+            if isZeroWidth(scalar) { continue }
+            width = max(width, isWide(scalar) ? 2 : 1)
+        }
+        return width
+    }
+
+    private static func isZeroWidth(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0300...0x036F, 0x1AB0...0x1AFF, 0x1DC0...0x1DFF,
+             0x20D0...0x20FF, 0xFE00...0xFE0F, 0xFE20...0xFE2F,
+             0x200B...0x200F, 0x2060...0x206F, 0xE0100...0xE01EF:
+            return true
+        default:
+            return false
+        }
     }
 
     public static func isWide(_ scalar: Unicode.Scalar) -> Bool {
@@ -179,9 +206,9 @@ public enum SettingsFrameValidator {
         var used = 0
         var result = ""
         for character in text {
-            let scalarWidth = character.unicodeScalars.reduce(0) { $0 + (isWide($1) ? 2 : 1) }
-            if used + scalarWidth > width { break }
-            used += scalarWidth
+            let cellWidth = scalarWidth(character)
+            if used + cellWidth > width { break }
+            used += cellWidth
             result.append(character)
         }
         return result
@@ -293,18 +320,22 @@ public struct SettingsResponse: Codable, Sendable, Equatable {
     public let command: SettingsCommand?
     /// Candidate configuration for `prepareSave`; ignored for every other operation.
     public let config: JSONValue?
+    /// Optional model the plugin wants the frontend to prefer for new conversations. The Core's
+    /// router still decides which model is actually requested.
+    public let preferredModel: String?
     public let ok: Bool?
     public let error: String?
 
     public init(
         frame: SettingsFrame? = nil, title: String? = nil,
         command: SettingsCommand? = nil, config: JSONValue? = nil,
-        ok: Bool? = nil, error: String? = nil
+        preferredModel: String? = nil, ok: Bool? = nil, error: String? = nil
     ) {
         self.frame = frame
         self.title = title
         self.command = command
         self.config = config
+        self.preferredModel = preferredModel
         self.ok = ok
         self.error = error
     }

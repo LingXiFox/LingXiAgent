@@ -42,6 +42,9 @@ enum MiMoWire {
         var content: String?
         var tool_calls: [ToolCall]?
         var tool_call_id: String?
+        /// MiMo's Chat Completions extension: reasoning of the assistant turn that issued the
+        /// tool calls. Kept only for the live tool loop; never persisted by the Core.
+        var reasoning_content: String?
     }
 
     struct ToolCall: Encodable {
@@ -76,7 +79,10 @@ enum MiMoWire {
         var pendingCalls: [ToolCall] = []
         func flushCalls() {
             guard !pendingCalls.isEmpty else { return }
-            messages.append(Message(role: "assistant", content: nil, tool_calls: pendingCalls))
+            messages.append(Message(
+                role: "assistant", content: nil, tool_calls: pendingCalls,
+                reasoning_content: request.previousReasoning
+            ))
             pendingCalls.removeAll()
         }
         for item in request.input {

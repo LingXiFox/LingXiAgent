@@ -91,7 +91,8 @@ private final class CoreClient: @unchecked Sendable {
               text: String? = nil, runID: String? = nil, bundleID: String? = nil,
               provider: String? = nil, secret: String? = nil,
               settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
-              viewport: SettingsViewport? = nil) -> Int {
+              viewport: SettingsViewport? = nil, settingsCredentialAction: String? = nil,
+              settingsCredentialConfirmed: Bool? = nil) -> Int {
         lock.lock()
         let id = nextID
         nextID += 1
@@ -107,6 +108,8 @@ private final class CoreClient: @unchecked Sendable {
         request.settingsSessionID = settingsSessionID
         request.settingsInput = settingsInput
         request.viewport = viewport
+        request.settingsCredentialAction = settingsCredentialAction
+        request.settingsCredentialConfirmed = settingsCredentialConfirmed
         if let data = try? JSONEncoder().encode(request) {
             stdin.fileHandleForWriting.write(data + Data([UInt8(ascii: "\n")]))
         }
@@ -135,11 +138,20 @@ private enum Pending {
     case settingsResize
     case settingsSave
     case settingsCancel
+    case settingsCredential(String)
 }
 
 private struct SettingsPanel {
     var snapshot: SettingsSnapshot
     var busy = false
+    var error: String?
+}
+
+struct Confirmation {
+    let title: String
+    let message: String
+    let providerID: String
+    let settingsSessionID: String
 }
 
 private struct SecretInput {
@@ -175,6 +187,7 @@ private struct App {
     var settings: SettingsPanel?
     var settingsInputQueue: [SettingsInput] = []
     var settingsSavePending = false
+    var confirmation: Confirmation?
     var settingsCredentialRefresh = false
     var completionIndex = 0
     var coreGone = false
@@ -233,11 +246,14 @@ private struct App {
     /// otherwise the declared set. `nil` means the plugin declared no levels.
     func thinkingLabel(for id: String) -> String? {
         guard let summary = modelDetails[id], !summary.thinkingLevels.isEmpty else { return nil }
-        if let fallback = summary.defaultThinkingLevel,
-           let level = summary.thinkingLevels.first(where: { $0.id == fallback }) {
-            return level.label
+        // Only a declared default is a claim about the effective request. A provider that declares
+        // a set without a default (MiMo) is configured in its own settings page, so the composer
+        // must not imply one level is active.
+        guard let fallback = summary.defaultThinkingLevel,
+              let level = summary.thinkingLevels.first(where: { $0.id == fallback }) else {
+            return nil
         }
-        return summary.thinkingLevels.map(\.label).joined(separator: "/")
+        return level.label
     }
 
     var sessionTitle: String {
@@ -358,6 +374,7 @@ func draw() {
     view.completion = app.picker == nil ? slashPicker() : nil
     view.settings = app.settings?.snapshot
     view.settingsBusy = app.settings?.busy ?? false
+    view.settingsError = app.settings?.error
     view.auth = app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
     view.showThinking = app.showThinking
     view.running = app.running
@@ -519,22 +536,50 @@ func handleSettingsKey(_ key: Key) {
 
 @MainActor
 func handleSettingsCommand(_ command: SettingsCommand?) {
-    guard let command, app.settings != nil else { return }
+    guard let command, let panel = app.settings else { return }
     let provider = command.providerID ?? ""
     switch command.type {
     case "credential.update":
-        app.settingsCredentialRefresh = true
         app.authBusy = true
-        let id = client.send(.authStatus, provider: provider)
-        app.pending[id] = .auth(provider, "settings-update")
+        let id = client.send(
+            .pluginSettingsCredential, provider: provider,
+            settingsSessionID: panel.snapshot.sessionID,
+            settingsCredentialAction: "update"
+        )
+        app.pending[id] = .settingsCredential("update")
     case "credential.remove":
-        app.settingsCredentialRefresh = true
-        app.authBusy = true
-        let id = client.send(.authRemove, provider: provider)
-        app.pending[id] = .auth(provider, "settings-remove")
+        app.confirmation = Confirmation(
+            title: "删除凭据",
+            message: "插件请求删除 \(provider) 的 API Key。确认后无法恢复。",
+            providerID: provider,
+            settingsSessionID: panel.snapshot.sessionID
+        )
     default:
         app.notice("插件请求了未知操作：\(command.type)")
     }
+}
+
+@MainActor
+func handleConfirmationKey(_ key: Key) {
+    guard let confirmation = app.confirmation else { return }
+    switch key {
+    case .enter:
+        app.confirmation = nil
+        app.authBusy = true
+        let id = client.send(
+            .pluginSettingsCredential, provider: confirmation.providerID,
+            settingsSessionID: confirmation.settingsSessionID,
+            settingsCredentialAction: "remove",
+            settingsCredentialConfirmed: true
+        )
+        app.pending[id] = .settingsCredential("remove")
+    case .escape, .interrupt:
+        app.confirmation = nil
+        app.notice("已取消删除凭据。")
+    default:
+        break
+    }
+    needsRender = true
 }
 
 /// Credential state lives behind the host's secure input flow. Reopening the settings session is
@@ -566,6 +611,7 @@ func handleReply(_ reply: FrontendReply) {
     switch pending {
     case .hello:
         if app.model == nil || !(app.models.contains(app.model!)) { app.model = app.models.first }
+        if let preferred = reply.preferredModel, app.models.contains(preferred) { app.model = preferred }
         if app.models.isEmpty {
             app.notice("没有可用模型。请安装并启用 Provider 插件；本地构建的插件需要显式设置 LINGXI_PLUGIN_POLICY=development。用 /plugins 查看状态。", sticky: true)
         } else if !app.sessions.isEmpty {
@@ -632,6 +678,7 @@ func handleReply(_ reply: FrontendReply) {
         if let snapshot = reply.settings {
             app.settings?.snapshot = snapshot
             app.settings?.busy = false
+            app.settings?.error = nil
             handleSettingsCommand(snapshot.command)
             if !app.settingsInputQueue.isEmpty, app.settings != nil {
                 let next = app.settingsInputQueue.removeFirst()
@@ -648,15 +695,32 @@ func handleReply(_ reply: FrontendReply) {
 
         if reply.ok {
             app.settings = nil
+            app.settingsInputQueue.removeAll()
+            app.settingsSavePending = false
             app.settingsCredentialRefresh = false
+            if let preferred = reply.preferredModel, app.models.contains(preferred) { app.model = preferred }
             app.notice("设置已保存。")
         } else {
             app.settings?.busy = false
+            app.settings?.error = reply.error ?? "设置保存失败。"
             app.error(reply.error ?? "设置保存失败。")
         }
     case .settingsCancel:
         app.settings = nil
         app.settingsCredentialRefresh = false
+    case .settingsCredential(let action):
+        app.authBusy = false
+        if !reply.ok {
+            app.error(reply.error ?? "凭据操作被拒绝。")
+        } else if let state = reply.credentials?.first {
+            if action == "update" {
+                app.settingsCredentialRefresh = true
+                app.secretInput = SecretInput(provider: state.providerID, label: state.label)
+                app.feedback = nil
+            } else if action == "remove" {
+                refreshSettingsAfterCredential()
+            }
+        }
     case .auth(let provider, let action):
         app.authBusy = false
         if !reply.ok {
@@ -758,6 +822,9 @@ func handleEvent(_ event: FrontendEvent) {
                 if !isPluginFeedback(app.feedback) {
                     app.notice("模型 \(current) 已不可用；当前模型：\(app.model ?? "无")")
                 }
+            }
+            if app.model == nil, let preferred = event.preferredModel, models.contains(preferred) {
+                app.model = preferred
             }
         }
     default:
@@ -1010,7 +1077,10 @@ func handleKey(_ key: Key) {
             }
             app.secretInput = nil
             app.authBusy = true
-            let id = client.send(.authSet, provider: input.provider, secret: String(input.characters))
+            let id = client.send(
+                .authSet, provider: input.provider, secret: String(input.characters),
+                settingsSessionID: app.settings?.snapshot.sessionID
+            )
             app.pending[id] = .auth(input.provider, app.settingsCredentialRefresh ? "settings-saved" : "saved")
         case .escape, .interrupt, .endOfInput:
             app.secretInput = nil
@@ -1020,6 +1090,10 @@ func handleKey(_ key: Key) {
         default: break
         }
         needsRender = true
+        return
+    }
+    if app.confirmation != nil {
+        handleConfirmationKey(key)
         return
     }
     if app.settings != nil {

@@ -29,6 +29,7 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `plugin.settings.resize` | `settingsSessionID`, `viewport` | `settings` |
 | `plugin.settings.save` | `settingsSessionID` | `ok`；成功即关闭设置会话 |
 | `plugin.settings.cancel` | `settingsSessionID` | `ok`；丢弃草稿 |
+| `plugin.settings.credential` | `settingsSessionID`, `provider`, `settingsCredentialAction`(`update`/`remove`), `settingsCredentialConfirmed` | `credentials[]`；`remove` 必须显式确认 |
 | `shutdown` | — | —（Core 在输入 EOF 后退出） |
 
 `modelDetails` 是 `models` 的可选增强，元素形如
@@ -41,6 +42,10 @@ Core 只做透传和路由过滤，TUI 在模型区显示默认等级（本版�
 外框、标题、页脚与输入路由，不解释插件字段。`viewport` 由 TUI 提供，插件可据此重排；Resize 走独立
 请求。`settingsInput` 的 `kind` 为 `key`/`paste`/`mouse`/`resize`/`credential`，键名使用
 `up`/`down`/`left`/`right`/`tab`/`enter`/`backspace`/`delete`/`char`/`pageUp`/`pageDown`。
+
+`auth.set` 携带 `settingsSessionID` 时，Core 用该设置会话的 Bundle ID 与插件声明解析凭据归属：
+允许禁用插件首次配置自己的 Key，但其他插件不能借会话操作它。伪造 `provider` 而不带会话只会走
+运行中 Provider 的既有路径，无法跨插件读写。
 
 失败时 `ok=false` 且 `error` 是非空的人类可读原因；错误不折叠成单一 `failed`。
 

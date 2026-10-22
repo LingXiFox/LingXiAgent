@@ -198,11 +198,15 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
     /// Kernel execution (Run) this request belongs to. Lets a provider snapshot settings once per
     /// Run, so a mid-Run settings save cannot change protocol or thinking parameters halfway.
     public let executionID: String?
+    /// Reasoning from the previous assistant turn of the same execution. It is kept only in memory
+    /// for a tool loop; it is never written to the session journal. Providers that do not accept
+    /// reasoning history ignore it.
+    public let previousReasoning: String?
 
     public init(
         model: String, instructions: String?, input: [ProviderWireItem],
         tools: [ProviderWireTool], maxOutputTokens: Int?, credential: String?,
-        executionID: String? = nil
+        executionID: String? = nil, previousReasoning: String? = nil
     ) {
         self.model = model
         self.instructions = instructions
@@ -211,6 +215,7 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
         self.maxOutputTokens = maxOutputTokens
         self.credential = credential
         self.executionID = executionID
+        self.previousReasoning = previousReasoning
     }
 }
 

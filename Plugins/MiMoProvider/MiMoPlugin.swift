@@ -314,7 +314,18 @@ private let describeImpl: @convention(c) (
                 label: "MiMo API Key",
                 envVariable: "MIMO_API_KEY",
                 helpURL: nil
-            )]
+            )],
+            modelDetails: MiMoWire.models.map { model in
+                ProviderModel(
+                    id: model,
+                    thinkingLevels: [
+                        ProviderThinkingLevel(id: "default", label: "服务端默认"),
+                        ProviderThinkingLevel(id: "enabled", label: "开启思考"),
+                        ProviderThinkingLevel(id: "disabled", label: "关闭思考"),
+                    ],
+                    defaultThinkingLevel: nil
+                )
+            }
         )],
         settings: SettingsDeclaration(capability: MiMoSettingsState.capability)
     )

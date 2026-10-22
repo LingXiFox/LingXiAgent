@@ -68,7 +68,8 @@ final class ProtocolCore: @unchecked Sendable {
               text: String? = nil, runID: String? = nil, bundleID: String? = nil,
               provider: String? = nil, secret: String? = nil,
               settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
-              viewport: SettingsViewport? = nil) -> Int {
+              viewport: SettingsViewport? = nil, settingsCredentialAction: String? = nil,
+              settingsCredentialConfirmed: Bool? = nil) -> Int {
         lock.lock(); let id = nextID; nextID += 1; lock.unlock()
         var request = FrontendRequest(id: id, method: method)
         request.sessionID = sessionID; request.model = model; request.text = text
@@ -77,6 +78,8 @@ final class ProtocolCore: @unchecked Sendable {
         request.settingsSessionID = settingsSessionID
         request.settingsInput = settingsInput
         request.viewport = viewport
+        request.settingsCredentialAction = settingsCredentialAction
+        request.settingsCredentialConfirmed = settingsCredentialConfirmed
         stdin.fileHandleForWriting.write((try! JSONEncoder().encode(request)) + Data([UInt8(ascii: "\n")]))
         return id
     }
@@ -154,7 +157,8 @@ func FE_007_protocolEndToEnd() async throws {
     #expect(hello.models == ["mimo-v2.6-flash", "mimo-v2.6-pro"])
     // Every offered model gets a detail entry even when the plugin declares no thinking levels.
     #expect(hello.modelDetails?.map(\.id) == hello.models)
-    #expect(hello.modelDetails?.allSatisfy { $0.thinkingLevels.isEmpty } == true)
+    #expect(hello.modelDetails?.allSatisfy { $0.thinkingLevels.count == 3 } == true)
+    #expect(hello.modelDetails?.allSatisfy { $0.defaultThinkingLevel == nil } == true)
     let plugin = try #require(hello.plugins?.first)
     #expect(plugin.bundleID == "site.lingxi.provider.mimo")
     #expect(plugin.running)

@@ -20,6 +20,9 @@ public enum FrontendMethod: String, Codable, Sendable {
     case pluginSettingsResize = "plugin.settings.resize"
     case pluginSettingsSave = "plugin.settings.save"
     case pluginSettingsCancel = "plugin.settings.cancel"
+    /// Credential actions requested by a plugin's settings page. The Core verifies that the
+    /// session's bundle declares the provider and credential before anything is read or removed.
+    case pluginSettingsCredential = "plugin.settings.credential"
     /// Credential management. The secret travels **only** in `auth.set`; every reply reports state,
     /// never the value, so a saved key can never be read back through this protocol.
     case authStatus = "auth.status"
@@ -59,6 +62,11 @@ public struct FrontendRequest: Codable, Sendable {
     public var runID: String?
     public var bundleID: String?
     public var settingsSessionID: String?
+    /// `update` or `remove` for `plugin.settings.credential`. The provider is carried separately and
+    /// is never trusted on its own: the Core resolves it against the session's own declaration.
+    public var settingsCredentialAction: String?
+    /// Explicit user confirmation for a destructive credential action (Keychain removal).
+    public var settingsCredentialConfirmed: Bool?
     public var settingsInput: SettingsInput?
     public var viewport: SettingsViewport?
     /// Which provider an `auth.*` request is about. Never a secret.
@@ -163,6 +171,7 @@ public struct FrontendReply: Codable, Sendable {
     public var models: [String]?
     /// Optional enrichment for `models`; consumers that only understand ids keep using `models`.
     public var modelDetails: [ModelSummary]?
+    public var preferredModel: String?
     public var sessions: [SessionSummary]?
     public var history: [HistoryEntry]?
     public var plugins: [PluginSummary]?
@@ -206,6 +215,7 @@ public struct FrontendEvent: Codable, Sendable {
     public var detail: String?
     public var models: [String]?
     public var modelDetails: [ModelSummary]?
+    public var preferredModel: String?
     public var sessions: [SessionSummary]?
     public var plugins: [PluginSummary]?
     public var message: String?
@@ -219,7 +229,7 @@ public struct FrontendEvent: Codable, Sendable {
         runID: String? = nil, sessionID: String? = nil, delta: String? = nil,
         reasoning: String? = nil, status: String? = nil, cause: String? = nil,
         detail: String? = nil, models: [String]? = nil, modelDetails: [ModelSummary]? = nil,
-        sessions: [SessionSummary]? = nil, plugins: [PluginSummary]? = nil, message: String? = nil
+        preferredModel: String? = nil, sessions: [SessionSummary]? = nil, plugins: [PluginSummary]? = nil, message: String? = nil
     ) {
         self.event = event
         self.runID = runID
@@ -231,6 +241,7 @@ public struct FrontendEvent: Codable, Sendable {
         self.detail = detail
         self.models = models
         self.modelDetails = modelDetails
+        self.preferredModel = preferredModel
         self.sessions = sessions
         self.plugins = plugins
         self.message = message
