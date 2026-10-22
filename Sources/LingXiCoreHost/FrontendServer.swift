@@ -146,9 +146,11 @@ final class FrontendServer: @unchecked Sendable {
                 return send(FrontendReply(id: request.id, ok: false, error: "plugin.settings.save needs a session"))
             }
             do {
-                let preferred = await settings.preferredModel(forSessionID: sessionID)
+                let bundleID = await settings.bundleID(forSessionID: sessionID)
                 try await settings.save(sessionID: sessionID)
-                reply.preferredModel = preferred
+                if let bundleID {
+                    reply.preferredModel = await settings.preferredModel(forBundleID: bundleID)
+                }
             } catch {
                 reply.ok = false
                 reply.error = "\(error)"

@@ -318,6 +318,10 @@ actor PluginSettingsCoordinator {
         for live in all { await close(live, cancel: true) }
     }
 
+    func bundleID(forSessionID sessionID: String) -> String? {
+        sessions[sessionID]?.bundleID
+    }
+
     func preferredModel(forBundleID bundleID: String) -> String? {
         preferredModels[bundleID]
     }

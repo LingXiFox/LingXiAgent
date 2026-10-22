@@ -365,10 +365,15 @@ private let invokeImpl: @convention(c) (
         }
         out?.pointee = nil
         outLength?.pointee = 0
-        let response = settingsState.handle(invocation)
+        var response = settingsState.handle(invocation)
         if invocation.op == .apply || invocation.op == .commit,
            let config = invocation.config {
-            _ = try? core.applySettings(config)
+            do {
+                try core.applySettings(config)
+            } catch {
+                // An IPC-ok frame must not hide a semantic rejection of the candidate config.
+                response = SettingsResponse(ok: false, error: "\(error)")
+            }
         }
         let result = emitJSON(response, out: out, length: outLength)
         status?.pointee = .make(result == 0 ? .ok : .capabilityFailed)
