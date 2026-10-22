@@ -111,7 +111,7 @@ func AUTH_003_hiddenInputPTY() async throws {
     try #require(await second.waitFor("pong"))
     try #require(await waitUntil { !second.screenText.contains("生成中") })
     second.write("\u{1B}[A")
-    try #require(await waitUntil { second.screenText.contains("┃  你好") })
+    try #require(await waitUntil { second.screenText.contains("▌  你好") })
     #expect(!second.screenText.contains(newKey) && !second.screenText.contains(cancelledKey))
     second.write("\u{15}")
     second.write("/quit\r")
