@@ -82,7 +82,7 @@ Host 退出与协调器异步移除 Hook 并非同一时刻。已改为等待 Ho
 与 [session](https://github.com/anomalyco/opencode/blob/v2/packages/tui/src/routes/session/index.tsx) 的交互分层，
 沿用现有 Swift 渲染器，不增加依赖、不改变 Kernel、Core 协议或 Plugin Host。
 
-- 多行编辑、Ctrl-J 换行、独立序列的 Shift/Alt-Enter；输入区最多显示 6 行，随光标滚动。
+- 多行编辑：Enter 发送，Shift-Enter 换行（kitty 键盘协议）；行尾 `\`、Alt-Enter 与 Ctrl-J 作为兼容；输入区最多显示 6 行，随光标滚动。
 - 带括号粘贴仅插入文字；CRLF/CR/LF 统一为换行。选择器粘贴只过滤，不能触发确认。
 - 本进程最多 100 条聊天输入召回并保留原草稿；命令和隐藏凭据不进入召回。
 - 思考与正式回答按到达顺序显示，默认折叠，Ctrl-T 展开；无持久化的推理不伪造历史。

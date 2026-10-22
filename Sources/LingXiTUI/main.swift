@@ -247,6 +247,13 @@ private func formatTokens(_ count: Int) -> String {
     count >= 1000 ? String(format: "%.1fk", Double(count) / 1000) : "\(count)"
 }
 
+/// A plugin save/result notice outranks the automatic "model went away" notice: both come from the
+/// same save, and the plugin result is the one the user asked for.
+private func isPluginFeedback(_ feedback: Message?) -> Bool {
+    guard let text = feedback?.text else { return false }
+    return text.hasPrefix("正在保存") || text.hasPrefix("已启用 ") || text.hasPrefix("已禁用 ") || text == "插件未修改。"
+}
+
 // MARK: - entry
 
 private func coreExecutable() -> URL {
@@ -500,7 +507,9 @@ func handleEvent(_ event: FrontendEvent) {
             app.models = models
             if let current = app.model, !models.contains(current) {
                 app.model = models.first
-                app.notice("模型 \(current) 已不可用；当前模型：\(app.model ?? "无")")
+                if !isPluginFeedback(app.feedback) {
+                    app.notice("模型 \(current) 已不可用；当前模型：\(app.model ?? "无")")
+                }
             }
         }
     default:

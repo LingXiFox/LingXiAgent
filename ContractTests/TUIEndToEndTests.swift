@@ -219,6 +219,21 @@ func TUI_001_ptyChatWithMiMo() async throws {
     tui.write("\r")
     try #require(await waitUntil { tui.screenText.contains("插件未修改") && !tui.screenText.contains("esc 关闭") })
 
+    // Enter saves a staged toggle: the Core disables the provider, then enables it again.
+    tui.write("/plugins\r")
+    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    tui.write(" ")
+    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
+    tui.write("\r")
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("已禁用 site.lingxi.provider.mimo") }, "disable notice missing")
+    tui.write("/plugins\r")
+    try #require(await waitUntil { tui.screenText.contains("[ ] site.lingxi.provider.mimo") })
+    tui.write(" ")
+    try #require(await waitUntil { tui.screenText.contains("[✓] site.lingxi.provider.mimo") })
+    tui.write("\r")
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("已启用 site.lingxi.provider.mimo") }, "enable notice missing")
+    #expect(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") }, "model did not return after enabling")
+
     tui.write("/quit\r")
     #expect(await waitUntil(timeout: .seconds(60)) { tui.isRunning == false })
     #expect(tui.status == 0, "transcript tail: \(tui.transcript.suffix(800))")
