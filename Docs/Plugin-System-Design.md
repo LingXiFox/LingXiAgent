@@ -99,6 +99,29 @@ Host 只用这一个符号找到插件；插件生命周期其余入口都在 `L
 
 具体结构体字段在阶段 2 实现时定稿并冻结为 `ABI-MANIFEST`，同时钉 SHA-256——沿用 1.x `Vendor/OpenTUI/0.5.10/ABI-MANIFEST.txt` 的那份做法，它写清了"ad-hoc 签名、未公证、不得发布分发、加载被阻时不得绕过 macOS 安全控制"，这个立场 2.0 继续持有。
 
+### 3.4 Provider 模型元数据
+
+Provider 插件的 `describe` 返回 `ProviderIdentity` JSON。`models` 是路由键的权威列表；可选字段
+`modelDetails` 为每个模型补充展示元数据：
+
+```json
+{
+  "id": "provider.mimo",
+  "models": ["mimo-v2.6-flash"],
+  "modelDetails": [{
+    "id": "mimo-v2.6-flash",
+    "thinkingLevels": [{"id": "low", "label": "低"}, {"id": "high", "label": "高"}],
+    "defaultThinkingLevel": "low"
+  }]
+}
+```
+
+- `modelDetails` 出现时必须与 `models` 的 id 顺序完全一致；不一致在握手阶段拒绝，不静默修补。
+- `thinkingLevels` 按推理强度从低到高排列，`id` 稳定、`label` 仅用于显示；`defaultThinkingLevel`
+  必须属于该集合。
+- 加载器负责校验，Core 只透传运行中 Provider 的声明，前端负责显示。本版思考等级**只读**，
+  不进入 `ProviderWireRequest`；插件不应把它当作已生效的请求参数。
+
 ## 四、握手与能力注册：定义一次
 
 阶段 0 初稿要求"统一握手与能力注册流程"，原因是 1.x 存在**五套互不一致**的实现：插件 IPC 用 `ipcVersion: Int` + 裸字符串错误、Core 侧 manifest 用 `compatibility.schemaVersion` + 版本字符串区间、browser-host 用真 JSON-RPC + `protocolVersion: "v1"`、MCP 用 `initialize → notifications/initialized → tools/list`、前端 wire 用 `protocolVersion = "2.0"` 字符串。字段名、类型、顺序、失败表达各不相同。

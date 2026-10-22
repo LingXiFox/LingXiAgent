@@ -63,10 +63,12 @@ final class FrontendServer: @unchecked Sendable {
         switch request.method {
         case .hello:
             reply.models = await offeredModels()
+            reply.modelDetails = await offeredModelDetails()
             reply.sessions = await sessionSummaries()
             reply.plugins = await pluginSummaries()
         case .modelsList:
             reply.models = await offeredModels()
+            reply.modelDetails = await offeredModelDetails()
         case .sessionsList:
             reply.sessions = await sessionSummaries()
         case .sessionNew:
@@ -116,6 +118,7 @@ final class FrontendServer: @unchecked Sendable {
                 }
                 reply.plugins = await pluginSummaries()
                 reply.models = await offeredModels()
+                reply.modelDetails = await offeredModelDetails()
             } catch {
                 reply.ok = false
                 reply.error = "\(error)"
@@ -233,11 +236,32 @@ final class FrontendServer: @unchecked Sendable {
         emit(plugins)
         var models = FrontendEvent(event: "models.changed")
         models.models = await offeredModels()
+        models.modelDetails = await offeredModelDetails()
         emit(models)
     }
 
     private func offeredModels() async -> [String] {
         await router.offeredModels.map(\.rawValue).sorted()
+    }
+
+    /// Model metadata for the frontend. Filtered by the router's accepted routes so a declaration
+    /// that lost a duplicate-id race never appears as an offered model.
+    private func offeredModelDetails() async -> [ModelSummary] {
+        let offered = Set(await router.offeredModels.map(\.rawValue))
+        var seen = Set<String>()
+        var result: [ModelSummary] = []
+        for entry in await coordinator.modelDeclarations() {
+            guard offered.contains(entry.model.id), seen.insert(entry.model.id).inserted else { continue }
+            result.append(ModelSummary(
+                id: entry.model.id,
+                provider: entry.providerID,
+                thinkingLevels: (entry.model.thinkingLevels ?? []).map {
+                    ModelThinkingLevel(id: $0.id, label: $0.label)
+                },
+                defaultThinkingLevel: entry.model.defaultThinkingLevel
+            ))
+        }
+        return result.sorted { $0.id < $1.id }
     }
 
     private func sessionSummaries() async -> [SessionSummary] {

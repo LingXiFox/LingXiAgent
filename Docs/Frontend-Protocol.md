@@ -15,16 +15,21 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 
 | method | 参数 | 回复字段 |
 |---|---|---|
-| `hello` | — | `models`, `sessions`, `plugins`（启动快照） |
-| `models.list` | — | `models` |
+| `hello` | — | `models`, `modelDetails`, `sessions`, `plugins`（启动快照） |
+| `models.list` | — | `models`, `modelDetails` |
 | `sessions.list` | — | `sessions[]`（id、标题、轮数） |
 | `session.history` | `sessionID` | `history[]`（role、text、kind: message/tool/toolCall） |
 | `session.new` | — | `sessionID`（新会话在下一条消息落盘前不写日志） |
 | `chat.send` | `sessionID?`, `model?`, `text` | `sessionID`, `runID`（随后以事件流返回内容） |
 | `run.cancel` | `runID` | —（在途 Run 按内核取消语义收敛） |
 | `plugins.list` | — | `plugins[]`（id、版本、enabled、running、capabilities、permissions） |
-| `plugin.enable` / `plugin.disable` | `bundleID` | `plugins`, `models` |
+| `plugin.enable` / `plugin.disable` | `bundleID` | `plugins`, `models`, `modelDetails` |
 | `shutdown` | — | —（Core 在输入 EOF 后退出） |
+
+`modelDetails` 是 `models` 的可选增强，元素形如
+`{"id":"mimo-v2.6-flash","provider":"provider.mimo","thinkingLevels":[{"id":"low","label":"低"}],"defaultThinkingLevel":"low"}`。
+`models` 始终完整；旧前端可以忽略 `modelDetails`。思考等级由 Provider 插件在 `describe` 中声明，
+Core 只做透传和路由过滤，TUI 在模型区显示默认等级（本版只读，不向插件发送选择）。
 
 失败时 `ok=false` 且 `error` 是非空的人类可读原因；错误不折叠成单一 `failed`。
 
@@ -41,7 +46,7 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `usage` | `runID`, `usage` | 单次 Provider 调用的 token 计数（input/output/reasoning/cacheRead，缺失不等于 0）；一个 Run 可有多条 |
 | `run.terminal` | `runID`, `status`, `cause`, `detail`, `sessions` | 终态；`status != completed` 时 TUI 明确提示 cause/detail |
 | `plugins.changed` | `plugins` | 启停、崩溃或外部变化后的快照 |
-| `models.changed` | `models` | 路由变化后的可用模型 |
+| `models.changed` | `models`, `modelDetails` | 路由变化后的可用模型与元数据 |
 
 ## 所有权与顺序
 

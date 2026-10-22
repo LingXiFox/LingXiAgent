@@ -122,7 +122,7 @@ func TUI_003_editorAndSessionContinuity() async throws {
     let prompt = "第一行 e\u{301}🙂\n/quit\n第三行"
     tui.write("\u{1B}[200~第一行 e\u{301}🙂\r\n/quit\n第三行\u{1B}[201~")
     try #require(await waitUntil { tui.screenText.contains("3 行") && tui.screenText.contains("第三行") })
-    #expect(tui.screenText.contains("L I N G X I"))
+    #expect(tui.screenText.contains("泠溪 · 2.0"))
     #expect(tui.isRunning)
     #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("events.jsonl").path))
     // Edit the previous logical line using real cursor keys, then undo that insertion.
@@ -255,7 +255,7 @@ func TUI_002_frameAndPickers() async throws {
     defer { tui.terminate() }
     // Core boot includes the existing 30-second plugin handshake.
     try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") })
-    #expect(tui.screenText.contains("L I N G X I"))
+    #expect(tui.screenText.contains("泠溪 · 2.0"))
 
     tui.write("/auth mimo")
     try #require(await waitUntil { tui.screenText.contains("/auth mimo") })

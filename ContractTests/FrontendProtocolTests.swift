@@ -146,6 +146,9 @@ func FE_007_protocolEndToEnd() async throws {
     let hello = try #require(await core.waitReply(helloID), "stderr: \(core.stderrText)")
     #expect(hello.ok)
     #expect(hello.models == ["mimo-v2.6-flash", "mimo-v2.6-pro"])
+    // Every offered model gets a detail entry even when the plugin declares no thinking levels.
+    #expect(hello.modelDetails?.map(\.id) == hello.models)
+    #expect(hello.modelDetails?.allSatisfy { $0.thinkingLevels.isEmpty } == true)
     let plugin = try #require(hello.plugins?.first)
     #expect(plugin.bundleID == "site.lingxi.provider.mimo")
     #expect(plugin.running)

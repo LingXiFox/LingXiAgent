@@ -114,6 +114,37 @@ public struct PluginSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// One thinking level reported for a model. The TUI only displays these in this version; the id is
+/// stable so a later selection can travel back without changing the shape.
+public struct ModelThinkingLevel: Codable, Sendable, Equatable {
+    public let id: String
+    public let label: String
+
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// A model as reported to the frontend: routing key plus plugin-declared capability metadata.
+public struct ModelSummary: Codable, Sendable, Equatable {
+    public let id: String
+    public let provider: String
+    /// Ordered from least to most reasoning effort; empty when the plugin declares nothing.
+    public let thinkingLevels: [ModelThinkingLevel]
+    public let defaultThinkingLevel: String?
+
+    public init(
+        id: String, provider: String, thinkingLevels: [ModelThinkingLevel] = [],
+        defaultThinkingLevel: String? = nil
+    ) {
+        self.id = id
+        self.provider = provider
+        self.thinkingLevels = thinkingLevels
+        self.defaultThinkingLevel = defaultThinkingLevel
+    }
+}
+
 public struct FrontendReply: Codable, Sendable {
     public var id: Int
     public var ok: Bool
@@ -121,6 +152,8 @@ public struct FrontendReply: Codable, Sendable {
     public var sessionID: String?
     public var runID: String?
     public var models: [String]?
+    /// Optional enrichment for `models`; consumers that only understand ids keep using `models`.
+    public var modelDetails: [ModelSummary]?
     public var sessions: [SessionSummary]?
     public var history: [HistoryEntry]?
     public var plugins: [PluginSummary]?
@@ -162,6 +195,7 @@ public struct FrontendEvent: Codable, Sendable {
     public var cause: String?
     public var detail: String?
     public var models: [String]?
+    public var modelDetails: [ModelSummary]?
     public var sessions: [SessionSummary]?
     public var plugins: [PluginSummary]?
     public var message: String?
@@ -174,8 +208,8 @@ public struct FrontendEvent: Codable, Sendable {
         event: String,
         runID: String? = nil, sessionID: String? = nil, delta: String? = nil,
         reasoning: String? = nil, status: String? = nil, cause: String? = nil,
-        detail: String? = nil, models: [String]? = nil, sessions: [SessionSummary]? = nil,
-        plugins: [PluginSummary]? = nil, message: String? = nil
+        detail: String? = nil, models: [String]? = nil, modelDetails: [ModelSummary]? = nil,
+        sessions: [SessionSummary]? = nil, plugins: [PluginSummary]? = nil, message: String? = nil
     ) {
         self.event = event
         self.runID = runID
@@ -186,6 +220,7 @@ public struct FrontendEvent: Codable, Sendable {
         self.cause = cause
         self.detail = detail
         self.models = models
+        self.modelDetails = modelDetails
         self.sessions = sessions
         self.plugins = plugins
         self.message = message

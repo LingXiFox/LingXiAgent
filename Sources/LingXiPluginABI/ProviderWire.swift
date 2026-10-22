@@ -23,11 +23,67 @@ public struct CredentialRequirement: Codable, Sendable, Equatable {
     }
 }
 
+
+/// One reasoning-effort level a model accepts. `id` is stable and is what a future selection is sent
+/// back as; `label` is display text owned by the plugin.
+public struct ProviderThinkingLevel: Codable, Sendable, Equatable {
+    public let id: String
+    public let label: String
+
+    public init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// One model offered by a provider, with optional capability metadata. The model id remains the
+/// router key; everything else is display metadata and never changes routing.
+public struct ProviderModel: Codable, Sendable, Equatable {
+    public let id: String
+    /// Ordered from least to most reasoning effort. `nil` means the plugin does not declare levels.
+    public let thinkingLevels: [ProviderThinkingLevel]?
+    public let defaultThinkingLevel: String?
+
+    public init(
+        id: String, thinkingLevels: [ProviderThinkingLevel]? = nil, defaultThinkingLevel: String? = nil
+    ) {
+        self.id = id
+        self.thinkingLevels = thinkingLevels
+        self.defaultThinkingLevel = defaultThinkingLevel
+    }
+}
+
+public enum ProviderDeclarationError: Error, Equatable, CustomStringConvertible, Sendable {
+    case emptyModel
+    case duplicateModel(String)
+    case modelDetailsMismatch
+    case emptyThinkingLevel(model: String)
+    case duplicateThinkingLevel(model: String, level: String)
+    case defaultThinkingLevelWithoutLevels(model: String)
+    case unknownDefaultThinkingLevel(model: String, level: String)
+
+    public var description: String {
+        switch self {
+        case .emptyModel: "model id must not be empty"
+        case .duplicateModel(let model): "duplicate model id: \(model)"
+        case .modelDetailsMismatch: "modelDetails must list exactly the same ids, in the same order, as models"
+        case .emptyThinkingLevel(let model): "model \(model) declares an empty thinking level id or label"
+        case .duplicateThinkingLevel(let model, let level): "model \(model) declares thinking level \(level) twice"
+        case .defaultThinkingLevelWithoutLevels(let model): "model \(model) declares a default thinking level without levels"
+        case .unknownDefaultThinkingLevel(let model, let level): "model \(model) default thinking level \(level) is not declared"
+        }
+    }
+}
+
 /// A provider capability as declared by a plugin and reported by the host. No defaults: the models a
 /// plugin offers and the request shape it accepts are explicit, not assumed.
 public struct ProviderIdentity: Codable, Sendable, Equatable {
     public let id: String
     public let models: [String]
+    /// Optional per-model metadata. When present it must list exactly the same ids as `models`, in
+    /// the same order; the loader rejects a declaration that drifts instead of guessing which side
+    /// is authoritative.
+    public let modelDetails: [ProviderModel]?
     public let supportsParallelToolCalls: Bool
     public let toolResultPlacement: String
     /// What the provider needs before it can reach its upstream. `nil` means "declares nothing",
@@ -37,13 +93,52 @@ public struct ProviderIdentity: Codable, Sendable, Equatable {
 
     public init(
         id: String, models: [String], supportsParallelToolCalls: Bool, toolResultPlacement: String,
-        credentials: [CredentialRequirement]? = nil
+        credentials: [CredentialRequirement]? = nil, modelDetails: [ProviderModel]? = nil
     ) {
         self.id = id
         self.models = models
+        self.modelDetails = modelDetails
         self.supportsParallelToolCalls = supportsParallelToolCalls
         self.toolResultPlacement = toolResultPlacement
         self.credentials = credentials
+    }
+}
+
+public extension ProviderIdentity {
+    /// Rejects ambiguous declarations: duplicate model ids, metadata that disagrees with `models`,
+    /// duplicate or empty thinking levels, and a default level that was never declared.
+    func validate() throws {
+        var seenModels = Set<String>()
+        for model in models {
+            guard !model.isEmpty else { throw ProviderDeclarationError.emptyModel }
+            guard seenModels.insert(model).inserted else {
+                throw ProviderDeclarationError.duplicateModel(model)
+            }
+        }
+        guard let modelDetails else { return }
+        guard modelDetails.map(\.id) == models else {
+            throw ProviderDeclarationError.modelDetailsMismatch
+        }
+        for model in modelDetails {
+            guard let levels = model.thinkingLevels else {
+                if model.defaultThinkingLevel != nil {
+                    throw ProviderDeclarationError.defaultThinkingLevelWithoutLevels(model: model.id)
+                }
+                continue
+            }
+            var seenLevels = Set<String>()
+            for level in levels {
+                guard !level.id.isEmpty, !level.label.isEmpty else {
+                    throw ProviderDeclarationError.emptyThinkingLevel(model: model.id)
+                }
+                guard seenLevels.insert(level.id).inserted else {
+                    throw ProviderDeclarationError.duplicateThinkingLevel(model: model.id, level: level.id)
+                }
+            }
+            if let fallback = model.defaultThinkingLevel, !seenLevels.contains(fallback) {
+                throw ProviderDeclarationError.unknownDefaultThinkingLevel(model: model.id, level: fallback)
+            }
+        }
     }
 }
 

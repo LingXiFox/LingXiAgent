@@ -140,6 +140,8 @@ private struct App {
     var scroll = 0
     var sessions: [SessionSummary] = []
     var models: [String] = []
+    /// Plugin-declared metadata for each offered model, keyed by model id.
+    var modelDetails: [String: ModelSummary] = [:]
     var plugins: [PluginSummary] = []
     var activeSession: String?
     var model: String?
@@ -202,6 +204,17 @@ private struct App {
             while index < input.count, !input[index].isWhitespace { index += 1 }
         }
         return index
+    }
+
+    /// Display text for a model's thinking levels: the plugin-declared default when present,
+    /// otherwise the declared set. `nil` means the plugin declared no levels.
+    func thinkingLabel(for id: String) -> String? {
+        guard let summary = modelDetails[id], !summary.thinkingLevels.isEmpty else { return nil }
+        if let fallback = summary.defaultThinkingLevel,
+           let level = summary.thinkingLevels.first(where: { $0.id == fallback }) {
+            return level.label
+        }
+        return summary.thinkingLevels.map(\.label).joined(separator: "/")
     }
 
     var sessionTitle: String {
@@ -313,6 +326,7 @@ func draw() {
     view.input = app.secretInput == nil ? app.input : []
     view.cursor = app.secretInput == nil ? app.cursor : 0
     view.model = app.model
+    view.modelThinking = app.model.flatMap { app.thinkingLabel(for: $0) }
     view.sessionTitle = app.sessionTitle
     view.workspace = FileManager.default.currentDirectoryPath
     view.status = app.status
@@ -334,7 +348,7 @@ func draw() {
         app.scroll = limit
     }
     app.lastFrame = frame.info
-    let title = "泠溪 · " + (app.messages.isEmpty ? "lingxi" : app.sessionTitle)
+    let title = "泠溪 · " + app.sessionTitle
     if title != windowTitle {
         windowTitle = title
         let safe = title.unicodeScalars.filter { $0.properties.generalCategory != .control }
@@ -357,6 +371,9 @@ func shutdown() {
 func handleReply(_ reply: FrontendReply) {
     let pending = app.pending.removeValue(forKey: reply.id)
     if let models = reply.models { app.models = models }
+    if let details = reply.modelDetails {
+        app.modelDetails = Dictionary(details.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
     if let sessions = reply.sessions { app.sessions = sessions }
     if let plugins = reply.plugins { app.plugins = plugins }
 
@@ -503,6 +520,9 @@ func handleEvent(_ event: FrontendEvent) {
             app.plugins = plugins
         }
     case "models.changed":
+        if let details = event.modelDetails {
+            app.modelDetails = Dictionary(details.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        }
         if let models = event.models {
             app.models = models
             if let current = app.model, !models.contains(current) {
@@ -629,8 +649,10 @@ func runCommand(_ raw: String) {
         app.scroll = 0
         app.notice("新会话。输入消息开始。")
     case "/models":
-        app.picker = Picker(title: "切换模型", items: app.models.map {
-            MenuItem(title: $0, detail: $0 == app.model ? "当前模型" : "", command: "/model " + $0)
+        app.picker = Picker(title: "切换模型", items: app.models.map { model in
+            let status = [model == app.model ? "当前模型" : nil, app.thinkingLabel(for: model).map { "思考 " + $0 }]
+                .compactMap { $0 }.joined(separator: " · ")
+            return MenuItem(title: model, detail: status, command: "/model " + model)
         }, selected: app.models.firstIndex { $0 == app.model } ?? 0)
     case "/model":
         guard app.models.contains(argument) else { app.error("用法：/model <id>，可选：\(app.models.joined(separator: ", "))"); return }

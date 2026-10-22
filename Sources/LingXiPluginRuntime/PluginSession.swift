@@ -83,6 +83,15 @@ public actor PluginSession {
         providers = loaded.providers ?? []
         permissions = loaded.permissions ?? []
 
+        do {
+            for provider in providers { try provider.validate() }
+        } catch {
+            process.terminate()
+            self.process = nil
+            state = .failed
+            throw SessionError.handshake("invalid provider declaration: \(error)")
+        }
+
         var start = HostRequest(id: nil, method: .start)
         start.grantedPermissions = grantedPermissions
         let started = try await send(start, process: process, timeout: handshakeTimeout)

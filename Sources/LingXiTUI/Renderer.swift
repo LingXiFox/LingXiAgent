@@ -107,6 +107,8 @@ struct ViewState {
     var input: [Character] = []
     var cursor = 0
     var model: String?
+    /// Plugin-declared thinking level of the current model, when one was declared.
+    var modelThinking: String?
     var sessionTitle = ""
     var workspace = ""
     var status = StatusLine(left: [], right: "")
@@ -262,7 +264,7 @@ struct Renderer {
         if home {
             if height >= 16, composerRow >= 6 {
                 let logoRow = max(2, composerRow - 4)
-                center([Span("L I N G X I", .color(Theme.fox, bold: true))], row: logoRow, into: &canvas)
+                center([Span("泠溪", .color(Theme.fox, bold: true))], row: logoRow, into: &canvas)
                 center([Span("泠溪 · 2.0", .color(Theme.dim))], row: logoRow + 2, into: &canvas)
             }
             var below = composerRow + composerHeight + 1
@@ -337,6 +339,7 @@ struct Renderer {
             }
             // The footer is the model area: which model answers, plus editor state.
             var footer: [Span] = [Span(view.model ?? "无模型", .color(view.model == nil ? Theme.error : Theme.fox))]
+            if let thinking = view.modelThinking { footer.append(Span("  ·  思考 \(thinking)", .color(Theme.dim))) }
             if editor.lines.count > 1 { footer.append(Span("  ·  \(editor.lines.count) 行", .color(Theme.dim))) }
             let footerRow = composerRow + composerHeight - 1
             canvas.draw(footer, row: footerRow, col: composerLeft + 3, limit: panelWidth - 4)
@@ -372,7 +375,7 @@ struct Renderer {
 
     private func drawTopBar(_ view: ViewState, home: Bool, into canvas: inout Canvas) {
         canvas.fill(row: 0, col: 0, count: width, bg: Theme.charcoalRaised)
-        var spans: [Span] = [Span(" ◆ ", .color(Theme.fox)), Span("lingxi", .color(Theme.fox, bold: true))]
+        var spans: [Span] = [Span(" ◆ ", .color(Theme.fox)), Span("LingXi", .color(Theme.fox, bold: true))]
         if !home {
             spans += [Span("  │  ", .color(Theme.muted)), Span(Renderer.oneLine(view.sessionTitle))]
         }

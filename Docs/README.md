@@ -190,7 +190,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   启停/重启用/卸载零残留、崩溃隔离、默认受限策略、环境隔离、Mach-O 运行时检查、在途取消与超时清理；
   16 个契约测试。
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
-- **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器与 Keychain 认证；
+- **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器、插件声明的模型思考等级与 Keychain 认证；
   真实 PTY 覆盖连续会话、草稿、隐藏输入与干净退出。快捷键及协议见 `Frontend-Protocol.md`，一键打包 `Scripts/tui-setup.sh`。
 - **两个真实 Provider**：DeepSeek（Responses API）与 MiMo（Chat Completions），各自独立插件、不同 wire family，共用同一 ABI/宿主；均覆盖真流式、工具循环、usage、在途取消与脱敏 cassette。模型路由按插件归属，启停/崩溃只影响所属插件（ADR-0004）。MiMo 已完成真实 API 录制（`mimo-chat-live.json`，离线按 digest 重放）；DeepSeek 等候真实录制。详见 `Validation/Provider-DeepSeek.md`、`Validation/Provider-MiMo.md`。
 

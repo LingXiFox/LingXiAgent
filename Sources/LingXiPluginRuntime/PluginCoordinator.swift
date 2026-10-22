@@ -203,6 +203,28 @@ public actor PluginCoordinator {
         return Array(zip(providers, built)).map { ProviderBinding(declaration: $0.0, adapter: $0.1) }
     }
 
+    /// Model metadata declared by running providers, for the frontend's model area. Routing
+    /// authority stays with `ModelRouter`; this only reports what plugins declared.
+    public func modelDeclarations() async -> [(providerID: String, model: ProviderModel)] {
+        var result: [(String, ProviderModel)] = []
+        for (_, session) in sessions {
+            for declaration in await session.providers {
+                let details = Dictionary(
+                    (declaration.modelDetails ?? []).map { ($0.id, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                for modelID in declaration.models {
+                    // Plugins that have not declared metadata still get an entry, so the frontend
+                    // never has to treat "absent from details" as a different kind of model.
+                    result.append((declaration.id, details[modelID] ?? ProviderModel(id: modelID)))
+                }
+            }
+        }
+        return result.sorted {
+            $0.0 == $1.0 ? $0.1.id < $1.1.id : $0.0 < $1.0
+        }
+    }
+
     /// Only successfully enabled plugin declarations can authorize secret delivery.
     public func credentialProviders() async -> [(bundleID: String, declaration: ProviderIdentity)] {
         var result: [(String, ProviderIdentity)] = []
