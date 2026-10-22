@@ -39,7 +39,7 @@
 
 ## 已通过真实 API 验收
 
-无。当前环境没有 `MIMO_API_KEY`，`MIMO live smoke` 未执行；Respones 真实端点也未验收。不能把
+无。当前环境没有 `MIMO_API_KEY`，`MIMO live smoke` 未执行；Responses 真实端点也未验收。不能把
 cassette / loopback 测试称为真实 API 已生效。
 
 ## 目前只有部分支持
