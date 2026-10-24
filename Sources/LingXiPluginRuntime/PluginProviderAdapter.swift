@@ -85,19 +85,30 @@ public struct PluginProviderAdapter: ModelProvider {
     public var reasoningOverride: String? { selection.level }
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
+        let credentialStart = ContinuousClock.now
         let granted: String?
         do { granted = try credential() } catch {
             throw ModelFailure(kind: .unauthorized, message: "credential store access failed; use /auth <provider> status")
         }
+        // Keychain/secret-store access happens in the Core before the plugin is invoked, so it is not
+        // part of the plugin's own report. Emit it as a setup timing so the frontend can tell local
+        // credential latency apart from upstream delay instead of blaming the provider.
+        let credentialDuration = credentialStart.duration(to: .now)
+        let credentialMs = Int(credentialDuration.components.seconds * 1000
+            + credentialDuration.components.attoseconds / 1_000_000_000_000_000)
+        let setupTiming = ModelTiming(credentialMs: max(0, credentialMs))
         let requestID = UUID().uuidString
         active.add(request.executionID, requestID)
+        // The frontend's selection is captured once per Run. A tool round must send the same
+        // thinking configuration as the first request, even if `/reasoning` changed meanwhile.
+        let reasoningLevel = selection.level(for: request.executionID)
         let previousReasoningTurns = reasoning.turns(for: request.executionID)
         let wire = Self.wireRequest(
             from: request, credential: granted,
             previousReasoning: previousReasoningTurns
                 .flatMap { $0.items.map(\.text) }.joined(separator: "\n\n").nilIfEmpty,
             previousReasoningTurns: previousReasoningTurns.isEmpty ? nil : previousReasoningTurns,
-            reasoningLevel: selection.level
+            reasoningLevel: reasoningLevel
         )
         let payload = try JSONValue.encode(wire)
         let events = await session.invokeStreaming(
@@ -107,6 +118,8 @@ public struct PluginProviderAdapter: ModelProvider {
         let session = self.session
         let executionID = request.executionID
         return AsyncThrowingStream { continuation in
+            // A setup-only timing event: no totalMs, so the Core does not count it as a call.
+            continuation.yield(.timing(setupTiming))
             let pump = Task {
                 var sawTerminal = false
                 var currentItems: [ProviderReasoningItem] = []
@@ -195,8 +208,12 @@ public struct PluginProviderAdapter: ModelProvider {
     /// Test/diagnostic visibility for the bounded per-execution reasoning cache.
     public var cachedReasoningExecutionCount: Int { reasoning.cachedExecutionCount }
 
+    /// Test/diagnostic visibility for the bounded per-Run thinking snapshot table.
+    public var cachedReasoningSelectionCount: Int { selection.cachedExecutionCount }
+
     public func finishExecution(_ executionID: ExecutionID) async {
         reasoning.clearExecution(executionID)
+        selection.clear(executionID)
         await endExecution(executionID)
     }
 
@@ -210,6 +227,7 @@ public struct PluginProviderAdapter: ModelProvider {
     /// Disable/revocation path: every in-flight stream this adapter owns is cancelled.
     public func cancelAll() async {
         reasoning.clearAll()
+        selection.clearAll()
         for requestID in active.takeAll() {
             await session.cancel(requestID: requestID)
         }
@@ -278,16 +296,57 @@ public struct PluginProviderAdapter: ModelProvider {
 
     /// Shared mutable selection. The adapter is a value type copied around by the router and the
     /// coordinator; the level must be one value, not per-copy state.
+    ///
+    /// `pending` is what the frontend last chose and therefore what the *next* Run will use. Each
+    /// execution captures that value on its first request and keeps it until `finishExecution`, so a
+    /// tool loop cannot switch thinking halfway and a stale execution cannot leak into the next Run.
     final class ReasoningSelection: @unchecked Sendable {
-        private let lock = NSLock()
-        private var stored: String?
-
-        func set(_ level: String?) {
-            lock.lock(); stored = level; lock.unlock()
+        private struct Captured {
+            let level: String?
         }
 
+        private let lock = NSLock()
+        private var pending: String?
+        private var captured: [ExecutionID: Captured] = [:]
+        private var order: [ExecutionID] = []
+        private static let maxExecutions = 64
+
+        func set(_ level: String?) {
+            lock.lock(); pending = level; lock.unlock()
+        }
+
+        /// The frontend's current choice, for the footer. Not the snapshot of a running execution.
         var level: String? {
-            lock.lock(); defer { lock.unlock() }; return stored
+            lock.lock(); defer { lock.unlock() }; return pending
+        }
+
+        func level(for executionID: ExecutionID) -> String? {
+            lock.lock(); defer { lock.unlock() }
+            if let existing = captured[executionID] { return existing.level }
+            let snapshot = pending
+            captured[executionID] = Captured(level: snapshot)
+            order.append(executionID)
+            if order.count > Self.maxExecutions {
+                let evicted = order.removeFirst()
+                captured.removeValue(forKey: evicted)
+            }
+            return snapshot
+        }
+
+        func clear(_ executionID: ExecutionID) {
+            lock.lock()
+            captured.removeValue(forKey: executionID)
+            order.removeAll { $0 == executionID }
+            lock.unlock()
+        }
+
+        func clearAll() {
+            lock.lock(); captured.removeAll(); order.removeAll(); lock.unlock()
+        }
+
+        /// Test/diagnostic visibility for the bounded per-execution snapshot table.
+        var cachedExecutionCount: Int {
+            lock.lock(); defer { lock.unlock() }; return captured.count
         }
     }
 

@@ -376,10 +376,10 @@ func TUI_010_footerReasoningDiagnosticsAndWheel() async throws {
     #expect(tui.screenText.contains("思考模式"))
     tui.write("\u{1B}[B\r")
     try #require(await tui.waitFor("已临时切换思考模式"))
-    try #require(await waitUntil { tui.screenText.contains("·临时") })
+    try #require(await waitUntil { tui.screenText.contains("（临时）") })
     tui.write("/reasoning follow\r")
     try #require(await tui.waitFor("已恢复跟随插件"))
-    try #require(await waitUntil { !tui.screenText.contains("·临时") })
+    try #require(await waitUntil { !tui.screenText.contains("（临时）") })
 
     // A second turn makes the conversation taller than the body, so the wheel has somewhere to go.
     // The earlier reply may already have scrolled out of a short terminal, so wait on the transcript.

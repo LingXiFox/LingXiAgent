@@ -81,13 +81,14 @@ jobs:
             swift test --filter 'AUTH_|settingsDisabledCredentialIsolation|SETTINGS_004' | tee /tmp/keychain.log
           grep -E 'Test run with' /tmp/keychain.log
 
-      - name: Reasoning selection and run diagnostics acceptance
-        # Proves the temporary thinking level reaches the real HTTP body (loopback) and that the
-        # timing report is one small numeric event per run. No network, no API key.
-        timeout-minutes: 20
+      - name: Reasoning selection, run diagnostics and kernel accounting
+        # Proves each protocol-scoped level reaches the real HTTP body (loopback), that the timing
+        # report is one small numeric event per run, and that kernel phases account for the whole
+        # run on a file-backed journal. No network, no API key.
+        timeout-minutes: 25
         run: |
           set -euo pipefail
-          swift test --no-parallel --filter 'REASONING_|TIMING_' | tee /tmp/diagnostics.log
+          swift test --no-parallel --filter 'REASONING_|TIMING_|PERF_' | tee /tmp/diagnostics.log
           grep -E 'Test run with' /tmp/diagnostics.log
 
       - name: Plugin settings and MiMo offline contract

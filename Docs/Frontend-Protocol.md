@@ -34,7 +34,9 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `shutdown` | — | —（Core 在输入 EOF 后退出） |
 
 `modelDetails` 是 `models` 的可选增强，元素形如
-`{"id":"mimo-v2.6-flash","provider":"provider.mimo","thinkingLevels":[{"id":"low","label":"低"}],"defaultThinkingLevel":"low"}`。
+`{"id":"mimo-v2.6-flash","provider":"mimo","thinkingLevels":[],"thinkingProfiles":[{"protocolKind":"responses","protocolLabel":"Responses","axisLabel":"effort","levels":[{"id":"high","label":"high"}],"defaultLevel":"default","note":"…"}]}`。
+`thinkingProfiles` 是「模型 × 协议」的思考阶梯：TUI 用 `providerStates.protocolKind` 选匹配项，
+绝不合并两条阶梯；`axisLabel` 为 `effort` 时底栏显示 `effort: high（临时）`。
 `models` 始终完整；旧前端可以忽略 `modelDetails`。思考等级由 Provider 插件在 `describe` 中声明，
 Core 只做透传和路由过滤。`providerStates` 是 Provider 的实时状态：
 
@@ -74,11 +76,15 @@ Core 只做透传和路由过滤。`providerStates` 是 Provider 的实时状态
 | `plugins.changed` | `plugins` | 启停、崩溃或外部变化后的快照 |
 | `models.changed` | `models`, `modelDetails`, `providerStates` | 路由变化后的可用模型与元数据 |
 | `providers.state` | `providerStates` | Provider 实时状态变化（保存设置、启停后） |
-| `timing` | `runID`, `timing` | 一次 Run 一条，终态前到达：Core 准备、插件 HTTP 各阶段、Run 总耗时（整数毫秒，只含数字） |
+| `timing` | `runID`, `timing` | 一次 Run 一条，终态前到达：Core 准备、内核各阶段、插件 HTTP 各阶段、Run 总耗时（整数毫秒，只含数字） |
 
 `timing` 的字段：`corePrepareMs`、`prepareMs`、`httpSendMs`、`firstResponseMs`、`firstSSEMs`、
-`firstReasoningMs`、`firstTextMs`、`providerTotalMs`、`runTotalMs`、`renderMs`（`renderMs` 仅 TUI 本地
-填充，不经协议传输）。缺失表示未观测到，**不是 0**。
+`firstReasoningMs`、`firstTextMs`、`providerTotalMs`（本 Run 所有 Provider 请求之和）、
+`providerCalls`、`providerLastCallMs`、`credentialMs`、`runTotalMs`、`renderMs`（仅 TUI 本地填充），以及内核阶段
+`assemblyMs`、`budgetMs`、`contextHookMs`、`requestHookMs`、`providerWaitMs`、`toolMs`、
+`logWriteMs`（journal 写入+fsync）、`terminalCommitMs`、`providerCleanupMs`、`unaccountedMs`、
+`loopTotalMs`、`steps`。`credentialMs` 是 Core 侧 Keychain/环境读取时间，属于本地成本，不是上游延迟。
+缺失表示未观测到，**不是 0**；`unaccountedMs` 是总耗时减所有已知阶段的余量，必须被当作缺陷信号。
 
 ## 所有权与顺序
 
@@ -149,6 +155,9 @@ Enter 保存并关闭（只对与当前状态不同的插件发送 `plugin.enabl
   不写设置文件；`/reasoning follow` 清除临时值。Core 拒绝未声明的等级。
 - 每次 Run 结束后，回复 meta 下方有一行 `上游 xms · 思考 xms · 本地 xms/N 帧`（缺项省略）；
   `/perf` 展开为“本地阶段 / 上游延迟 / 总计”三段明细。数值只含毫秒与帧数。
+- 主界面鼠标：点击底栏模型名打开模型选择器；点击思考状态打开该协议的完整档位选择器；
+  点击状态栏右下角“Ctrl-P 命令”打开命令面板；输入区右侧 `[ 发送 ]` 与 Enter 走同一发送路径，
+  生成中不产生命中区域（按钮禁用），草稿保留。全部经 Renderer 命中图，不硬编码坐标。
 - 设置窗口：Ctrl-S 保存；Esc 在 `dirty == false` 时直接关闭，`true`/`null` 时弹出宿主三按钮
   `[ 保存 ] [ 放弃 ] [ 继续编辑 ]`（←→/Tab 移动、Enter 确认、Esc 继续编辑，均可点击）。
   保存失败保留窗口与草稿；设置 Host 死亡时关闭窗口并提示，不阻塞 `/quit` 或 Ctrl-C。

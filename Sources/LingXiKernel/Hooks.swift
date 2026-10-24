@@ -95,6 +95,10 @@ public actor HookPipeline {
 
     public var mountedHandlerIDs: [String] { handlers.map(\.handlerID) }
 
+    /// Method form for callers that build a status line: some toolchains emit a false
+    /// "no async operations" warning for `await` of an actor property in that position.
+    public func mountedHandlerIDsSnapshot() -> [String] { handlers.map(\.handlerID) }
+
     public func hooks(for node: HookNode) -> [ContextHook] {
         handlers.filter { $0.node == node }
     }

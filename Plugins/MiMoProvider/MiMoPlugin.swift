@@ -223,14 +223,11 @@ final class MiMoCore: @unchecked Sendable {
         return snapshot
     }
 
-    /// The saved settings snapshot plus the frontend's temporary thinking selection for this request
-    /// only. An unknown level keeps the saved configuration: a stale or hostile id must never crash
-    /// the plugin or silently change what the user configured.
+    /// The saved settings snapshot plus the frontend's temporary thinking selection for this request.
+    /// An unknown level, or a level from the other protocol's ladder, keeps the saved configuration:
+    /// a stale or hostile id must never crash the plugin or silently change what the user configured.
     private func effectiveConfig(for request: ProviderWireRequest) -> MiMoConfig {
-        let saved = config(for: request)
-        guard let level = request.reasoningLevel,
-              let mode = MiMoThinkingMode(rawValue: level) else { return saved }
-        return saved.applyingThinking(mode)
+        config(for: request).applying(level: request.reasoningLevel)
     }
 
     /// What the plugin would send next. Display data only: protocol family, thinking level and a
@@ -239,27 +236,44 @@ final class MiMoCore: @unchecked Sendable {
         lock.lock()
         let config = currentConfig
         lock.unlock()
+        // The reported level id belongs to the ladder for the protocol this plugin currently speaks.
+        // Chat has modes; Responses has an effort ladder that merges "off" (none) and the server
+        // default. Reporting the raw thinkingMode here would show the wrong ladder to the frontend.
+        let level: String
+        let label: String
         let detail: String
-        switch config.thinkingMode {
-        case .default:
-            detail = "服务端默认"
-        case .disabled:
-            detail = "思考已关闭"
-        case .enabled:
-            if config.protocolKind == .responses {
-                let effort = config.reasoningEffort
-                    .flatMap(MiMoReasoningEffort.init(rawValue:))?.wireValue
-                detail = effort.map { "effort=\($0)" } ?? "服务端默认 effort"
-            } else {
-                detail = "thinking.type=enabled"
+        switch config.protocolKind {
+        case .chatCompletions:
+            level = config.thinkingMode.rawValue
+            label = config.thinkingMode.label
+            switch config.thinkingMode {
+            case .default: detail = "服务端默认"
+            case .disabled: detail = "thinking.type=disabled"
+            case .enabled: detail = "thinking.type=enabled"
+            }
+        case .responses:
+            switch config.thinkingMode {
+            case .default:
+                level = "default"
+                label = "服务端默认"
+                detail = "服务端默认"
+            case .disabled:
+                level = "none"
+                label = "none"
+                detail = "reasoning.effort=none"
+            case .enabled:
+                let effort = config.reasoningEffort.flatMap(MiMoReasoningEffort.init(rawValue:))
+                level = effort?.rawValue ?? "default"
+                label = effort?.rawValue ?? "服务端默认"
+                detail = effort.map { "reasoning.effort=\($0.wireValue)" } ?? "服务端默认 effort"
             }
         }
         return ProviderState(
             protocolKind: config.protocolKind.rawValue,
             protocolLabel: config.protocolKind == .chatCompletions ? "Chat Completions" : "Responses",
-            thinkingLevel: config.thinkingMode.rawValue,
-            thinkingLabel: config.thinkingMode.label,
-            source: config.thinkingMode == .default ? "server-default" : "plugin-settings",
+            thinkingLevel: level,
+            thinkingLabel: label,
+            source: level == "default" ? "server-default" : "plugin-settings",
             detail: detail
         )
     }
@@ -377,8 +391,9 @@ private let describeImpl: @convention(c) (
             modelDetails: MiMoWire.models.map { model in
                 ProviderModel(
                     id: model,
-                    thinkingLevels: MiMoWire.thinkingLevels,
-                    defaultThinkingLevel: nil
+                    thinkingLevels: nil,
+                    defaultThinkingLevel: nil,
+                    thinkingProfiles: MiMoWire.thinkingProfiles
                 )
             },
             state: ProviderStateDeclaration(capability: MiMoWire.stateCapability)

@@ -177,10 +177,35 @@ struct MiMoConfig: Equatable, Sendable, Codable {
     /// effective mode actually sends one, so the cassette digest describes the same body that goes
     /// on the wire. The saved configuration is never mutated.
     func applyingThinking(_ mode: MiMoThinkingMode) -> MiMoConfig {
-        guard mode != thinkingMode else { return self }
+        applying(mode: mode, effort: mode == .enabled ? reasoningEffort : nil)
+    }
+
+    /// Resolves one declared level id for the protocol this configuration speaks. Levels are
+    /// protocol-scoped: Chat only knows default/enabled/disabled, Responses only knows the effort
+    /// ladder. An id from the other ladder (a stale frontend, a hostile request) is ignored, not
+    /// guessed: the saved configuration stays authoritative.
+    func applying(level: String?) -> MiMoConfig {
+        guard let level else { return self }
+        switch protocolKind {
+        case .chatCompletions:
+            guard let mode = MiMoThinkingMode(rawValue: level) else { return self }
+            return applyingThinking(mode)
+        case .responses:
+            if level == "default" {
+                return applying(mode: .default, effort: nil)
+            }
+            if level == "none" {
+                return applying(mode: .disabled, effort: nil)
+            }
+            guard let effort = MiMoReasoningEffort(rawValue: level) else { return self }
+            return applying(mode: .enabled, effort: effort.rawValue)
+        }
+    }
+
+    private func applying(mode: MiMoThinkingMode, effort: String?) -> MiMoConfig {
         var effective = self
         effective.thinkingMode = mode
-        effective.reasoningEffort = mode == .enabled ? reasoningEffort : nil
+        effective.reasoningEffort = effort
         return effective
     }
 }

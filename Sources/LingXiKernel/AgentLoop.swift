@@ -32,6 +32,67 @@ public struct RunRequest: Sendable {
     }
 }
 
+/// Where a Run's wall time went, in milliseconds. Every phase is measured with the loop's monotonic
+/// clock; `unaccountedMs` is what the named phases cannot explain, so a regression shows up as a
+/// number instead of a guess. Observation only: nothing here changes execution or durability.
+public struct LoopTiming: Sendable, Equatable {
+    /// Pre-flight, run admission, duplicate checks and store append (journal writes excluded).
+    public var admissionMs: Int?
+    /// Router resolve, context assembly and tool manifest, summed over steps.
+    public var assemblyMs: Int?
+    /// `contextPrepare` hooks plus request validation, summed over steps.
+    public var contextHooksMs: Int?
+    /// Budget planning plus validation, summed over steps.
+    public var budgetMs: Int?
+    /// `beforeModelRequest` hooks plus validation, summed over steps.
+    public var requestHooksMs: Int?
+    /// Waiting for the provider stream to report its terminal event, summed over steps.
+    public var providerWaitMs: Int?
+    /// Tool execution itself (provider rounds excluded).
+    public var toolExecutionMs: Int?
+    /// Journal appends and their fsync, summed over every write in the Run.
+    public var logWriteMs: Int?
+    /// Durable terminal record (journal append + registry close).
+    public var terminalCommitMs: Int?
+    /// Provider `finishExecution` (cancellation and per-execution state release).
+    public var providerCleanupMs: Int?
+    /// Entire `run` call.
+    public var totalMs: Int?
+    /// Total minus every named phase. A large number is the bug signal, not an excuse.
+    public var unaccountedMs: Int?
+    public var steps: Int
+
+    public init(
+        admissionMs: Int? = nil, assemblyMs: Int? = nil, contextHooksMs: Int? = nil,
+        budgetMs: Int? = nil, requestHooksMs: Int? = nil, providerWaitMs: Int? = nil,
+        toolExecutionMs: Int? = nil, logWriteMs: Int? = nil, terminalCommitMs: Int? = nil,
+        providerCleanupMs: Int? = nil, totalMs: Int? = nil, unaccountedMs: Int? = nil,
+        steps: Int = 0
+    ) {
+        self.admissionMs = admissionMs
+        self.assemblyMs = assemblyMs
+        self.contextHooksMs = contextHooksMs
+        self.budgetMs = budgetMs
+        self.requestHooksMs = requestHooksMs
+        self.providerWaitMs = providerWaitMs
+        self.toolExecutionMs = toolExecutionMs
+        self.logWriteMs = logWriteMs
+        self.terminalCommitMs = terminalCommitMs
+        self.providerCleanupMs = providerCleanupMs
+        self.totalMs = totalMs
+        self.unaccountedMs = unaccountedMs
+        self.steps = steps
+    }
+
+    /// Sum of the named phases; the caller subtracts that from the measured total.
+    public var accountedMs: Int {
+        [
+            admissionMs, assemblyMs, contextHooksMs, budgetMs, requestHooksMs,
+            providerWaitMs, toolExecutionMs, logWriteMs, terminalCommitMs, providerCleanupMs,
+        ].reduce(0) { $0 + ($1 ?? 0) }
+    }
+}
+
 public struct RunResult: Sendable {
     public let runID: RunID
     public let status: RunStatus
@@ -44,6 +105,8 @@ public struct RunResult: Sendable {
     /// False when the run never reached a durable terminal record (rejected, pre-flight failed, or
     /// the terminal write failed). Such a run stays non-terminal in memory for a later attempt.
     public let terminalCommitted: Bool
+    /// Phase breakdown for diagnostics; nil for runs rejected before the loop started.
+    public let timing: LoopTiming?
 }
 
 private struct LoopState {
@@ -108,6 +171,8 @@ public actor AgentLoop {
         policy: LoopPolicy,
         observe: (@Sendable (ModelEvent) -> Void)? = nil
     ) async -> RunResult {
+        let timingStart = clock.now()
+        var timing = LoopTiming()
         var state = LoopState()
 
         // Pre-flight: a core without a provider is a configuration state, not a failed run. Report
@@ -152,6 +217,7 @@ public actor AgentLoop {
 
         // The run exists in the journal only when this transaction committed. On failure the marker
         // is rolled back and the in-memory record discarded: no orphan terminal record is written.
+        let admissionStart = clock.now()
         let userEntry = ContextEntry(
             id: userEntryID,
             segment: .currentUser,
@@ -159,6 +225,7 @@ public actor AgentLoop {
             payload: .text(request.prompt)
         )
         let marker = await log.beginMarker()
+        let journalStart = clock.now()
         do {
             try await log.append(.runCreated(request.runID, request.sessionID, request.turnID))
             try await log.append(.runStarted(request.runID))
@@ -172,6 +239,7 @@ public actor AgentLoop {
             }
             return rejectedResult(request, cause: .runtimeFailure, detail: detail)
         }
+        timing.logWriteMs = milliseconds(clock.now() - journalStart)
         await store.append(userEntry, to: request.sessionID)
         // A failed run may have persisted its tool-call entry but not its result. Repair the
         // pairing before the next request so one failed Run cannot poison the whole session. The
@@ -182,7 +250,12 @@ public actor AgentLoop {
         let outcome: (RunStatus, TerminalCause, String?)
         do {
             try await runs.markRunning(request.runID)
-            outcome = try await drive(request, policy: policy, state: &state, observe: observe)
+            timing.admissionMs = max(
+                0, milliseconds(clock.now() - admissionStart) - (timing.logWriteMs ?? 0)
+            )
+            outcome = try await drive(
+                request, policy: policy, state: &state, timing: &timing, observe: observe
+            )
         } catch let failure as ModelFailure {
             outcome = (.failed, .providerFailure, failure.message)
         } catch let error as ModelRouterError {
@@ -194,13 +267,20 @@ public actor AgentLoop {
             outcome = (cancelled ? .cancelled : .failed, cancelled ? .cancelledByUser : .runtimeFailure, cancelled ? nil : "\(error)")
         }
 
+        let commitStart = clock.now()
         let committed = await commit(request, outcome: outcome)
+        timing.terminalCommitMs = milliseconds(clock.now() - commitStart)
+        let cleanupStart = clock.now()
         // Release the provider's per-execution state on every path that reached the loop: completion,
         // provider failure, cancellation and deadline all end here. Without this the provider keeps
         // continuation state for a run that will never produce another event (LOOP-026).
         if let provider = try? await router.resolve(model: request.model) {
             await provider.finishExecution(request.executionID)
         }
+        timing.providerCleanupMs = milliseconds(clock.now() - cleanupStart)
+        timing.steps = state.steps
+        timing.totalMs = milliseconds(clock.now() - timingStart)
+        timing.unaccountedMs = max(0, (timing.totalMs ?? 0) - timing.accountedMs)
         // Skipped transform hooks are reported, never silently swallowed (PLG-006).
         var detail = committed.detail
         if !state.hookDiagnostics.isEmpty {
@@ -216,7 +296,8 @@ public actor AgentLoop {
             assistantText: state.assistantText,
             toolOutcomes: state.toolOutcomeCount,
             usage: state.usage,
-            terminalCommitted: committed.committed
+            terminalCommitted: committed.committed,
+            timing: timing
         )
     }
 
@@ -230,7 +311,8 @@ public actor AgentLoop {
             assistantText: "",
             toolOutcomes: 0,
             usage: nil,
-            terminalCommitted: false
+            terminalCommitted: false,
+            timing: nil
         )
     }
 
@@ -238,6 +320,7 @@ public actor AgentLoop {
         _ request: RunRequest,
         policy: LoopPolicy,
         state: inout LoopState,
+        timing: inout LoopTiming,
         observe: (@Sendable (ModelEvent) -> Void)?
     ) async throws -> (RunStatus, TerminalCause, String?) {
         let origin = clock.now()
@@ -263,14 +346,17 @@ public actor AgentLoop {
                 remainingTimeout = timeout - elapsed
             }
 
+            let assemblyStart = clock.now()
             let provider = try await router.resolve(model: request.model)
             let capabilities = provider.capabilities
             let assembled = try await assemble(request)
             let manifest = await toolRegistry.manifest()
+            timing.assemblyMs = (timing.assemblyMs ?? 0) + milliseconds(clock.now() - assemblyStart)
 
             // Context preparation hooks see the assembled history before validation. A denial here
             // stops the run before anything reaches the provider (PLG-006: the node must be able to
             // change execution, not just report).
+            let contextHookStart = clock.now()
             let requestEntries: [ContextEntry]
             switch await hooks.apply(
                 .contextPrepare, base: assembled, sessionID: request.sessionID,
@@ -287,7 +373,9 @@ public actor AgentLoop {
             } catch {
                 return (.failed, .streamProtocolViolation, "context preparation hook produced an invalid request: \(error)")
             }
+            timing.contextHooksMs = (timing.contextHooksMs ?? 0) + milliseconds(clock.now() - contextHookStart)
 
+            let budgetStart = clock.now()
             let plan: BudgetPlan
             do {
                 plan = try planner.plan(
@@ -305,9 +393,11 @@ public actor AgentLoop {
             } catch {
                 return (.failed, .streamProtocolViolation, "budget plan violates the request protocol: \(error)")
             }
+            timing.budgetMs = (timing.budgetMs ?? 0) + milliseconds(clock.now() - budgetStart)
 
             // The last seam before the wire. It runs after budgeting so a rewrite is still held to
             // the same protocol and size rules as the planner's output.
+            let requestHookStart = clock.now()
             let selected: [ContextEntry]
             switch await hooks.apply(
                 .beforeModelRequest, base: plan.selected, sessionID: request.sessionID,
@@ -324,7 +414,9 @@ public actor AgentLoop {
             } catch {
                 return (.failed, .streamProtocolViolation, "hook rewrite violates the request protocol: \(error)")
             }
+            timing.requestHooksMs = (timing.requestHooksMs ?? 0) + milliseconds(clock.now() - requestHookStart)
 
+            let providerStart = clock.now()
             let step = await consumeStream(
                 provider: provider,
                 modelRequest: ModelRequest(
@@ -340,13 +432,19 @@ public actor AgentLoop {
                 state: &state,
                 observe: observe
             )
+            timing.providerWaitMs = (timing.providerWaitMs ?? 0) + milliseconds(clock.now() - providerStart)
 
             switch step {
             case .completed(let stop, let text):
-                return try await finish(stop: stop, text: text, request: request, state: &state)
+                return try await finish(
+                    stop: stop, text: text, request: request, state: &state, timing: &timing
+                )
             case .toolCalls(let calls, let text):
                 do {
-                    try await settle(calls: calls, text: text, request: request, state: &state, allowParallel: capabilities.supportsParallelToolCalls)
+                    try await settle(
+                        calls: calls, text: text, request: request, state: &state,
+                        timing: &timing, allowParallel: capabilities.supportsParallelToolCalls
+                    )
                 } catch let error as ToolBatchError {
                     return (.failed, .streamProtocolViolation, "\(error)")
                 }
@@ -369,19 +467,26 @@ public actor AgentLoop {
         stop: ModelStopReason,
         text: String,
         request: RunRequest,
-        state: inout LoopState
+        state: inout LoopState,
+        timing: inout LoopTiming
     ) async throws -> (RunStatus, TerminalCause, String?) {
         switch stop {
         case .stop:
             state.assistantText = text
             if !text.isEmpty {
-                try await record(Self.assistantEntry(text, run: request.runID), run: request.runID, into: request.sessionID)
+                try await record(
+                    Self.assistantEntry(text, run: request.runID), run: request.runID,
+                    into: request.sessionID, timing: &timing
+                )
             }
             return (.completed, text.isEmpty ? .completedWithEmptyText : .completedWithText, "stopReason=stop")
         case .maxTokens:
             state.assistantText = text
             if !text.isEmpty {
-                try await record(Self.assistantEntry(text, run: request.runID), run: request.runID, into: request.sessionID)
+                try await record(
+                    Self.assistantEntry(text, run: request.runID), run: request.runID,
+                    into: request.sessionID, timing: &timing
+                )
             }
             return (.failed, .outputTruncated, "stopReason=maxTokens: the reply is incomplete because the output token limit was reached")
         case .contentFilter:
@@ -562,6 +667,7 @@ public actor AgentLoop {
         text: String,
         request: RunRequest,
         state: inout LoopState,
+        timing: inout LoopTiming,
         allowParallel: Bool
     ) async throws {
         // Validate the batch before anything becomes durable: a duplicate call id would make the
@@ -592,18 +698,23 @@ public actor AgentLoop {
                 unit: batchID.rawValue
             )
         }
-        try await record(callEntry, run: request.runID, into: request.sessionID)
+        try await record(
+            callEntry, run: request.runID, into: request.sessionID, timing: &timing
+        )
 
         // Durable intent before any side effect: recovery can distinguish "may have partially
         // executed" from "never started" (LOOP-025).
         let startMarker = await log.beginMarker()
+        let batchLogStart = clock.now()
         do {
             try await log.append(.batchStarted(request.runID, batchID, calls))
         } catch {
             try? await log.rollBack(to: startMarker)
             throw error
         }
+        timing.logWriteMs = (timing.logWriteMs ?? 0) + milliseconds(clock.now() - batchLogStart)
 
+        let toolStart = clock.now()
         let outcomes = try await ToolBatchRunner.settle(
             calls: calls,
             registry: toolRegistry,
@@ -618,7 +729,9 @@ public actor AgentLoop {
             unit: batchID.rawValue
         )
 
+        timing.toolExecutionMs = (timing.toolExecutionMs ?? 0) + milliseconds(clock.now() - toolStart)
         let marker = await log.beginMarker()
+        let settleLogStart = clock.now()
         do {
             try await log.append(.batchSettled(request.runID, batchID, outcomes))
             try await log.append(.entryRecorded(request.runID, resultEntry))
@@ -627,6 +740,7 @@ public actor AgentLoop {
             try? await log.rollBack(to: marker)
             throw error
         }
+        timing.logWriteMs = (timing.logWriteMs ?? 0) + milliseconds(clock.now() - settleLogStart)
         await store.append(resultEntry, to: request.sessionID)
 
         state.toolOutcomeCount += outcomes.count
@@ -634,14 +748,18 @@ public actor AgentLoop {
         state.lastToolCall = calls.last.map { "\($0.toolName)(\($0.argumentsJSON))" } ?? state.lastToolCall
     }
 
-    private func record(_ entry: ContextEntry, run: RunID, into sessionID: SessionID) async throws {
+    private func record(
+        _ entry: ContextEntry, run: RunID, into sessionID: SessionID, timing: inout LoopTiming
+    ) async throws {
         let marker = await log.beginMarker()
+        let logStart = clock.now()
         do {
             try await log.append(.entryRecorded(run, entry))
         } catch {
             try? await log.rollBack(to: marker)
             throw error
         }
+        timing.logWriteMs = (timing.logWriteMs ?? 0) + milliseconds(clock.now() - logStart)
         await store.append(entry, to: sessionID)
     }
 
@@ -668,6 +786,12 @@ public actor AgentLoop {
             payload: .text(text)
         )
     }
+}
+
+/// Monotonic duration to whole milliseconds, clamped at zero (a test clock can be coarse).
+private func milliseconds(_ duration: Duration) -> Int {
+    let components = duration.components
+    return max(0, Int(components.seconds * 1000 + components.attoseconds / 1_000_000_000_000_000))
 }
 
 /// Sums usage field by field across steps. Absent (nil) is not zero: a field stays nil only when no

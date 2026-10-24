@@ -84,6 +84,8 @@ struct MenuItem {
 struct Picker {
     let title: String
     var items: [MenuItem]
+    /// Plugin-owned hint (for example an official limitation) drawn under the query row.
+    var note: String?
     var query = ""
     var selected = 0
     var isToggleList: Bool { items.contains { $0.checked != nil } }
@@ -114,6 +116,8 @@ struct ViewState {
     var modelProtocol: String?
     /// Plugin-declared thinking level of the current model, when one was declared.
     var modelThinking: String?
+    /// Plugin-owned ladder name (`effort`), shown as `effort: high` instead of a vague mode.
+    var modelThinkingAxis: String?
     /// True when that level is a temporary frontend selection instead of the plugin's own setting.
     var modelThinkingTemporary = false
     var sessionTitle = ""
@@ -148,6 +152,14 @@ struct HitRegion: Equatable {
         /// The plugin-owned cell area inside the settings frame. Row 0 / column 0 of this region is
         /// the origin the plugin's own mouse coordinates count from.
         case settingsFrame
+        /// The model name in the composer footer; opens the model picker.
+        case modelName
+        /// The effective thinking status in the composer footer; opens the thinking picker.
+        case thinkingStatus
+        /// The right side of the status bar while it advertises the command palette.
+        case commandHint
+        /// The composer's send button. Absent while a run is live, so it cannot be clicked.
+        case sendButton
     }
 
     var kind: Kind
@@ -301,7 +313,7 @@ struct Renderer {
         let left = max(0, (width - contentWidth) / 2)
 
         drawTopBar(view, home: home, into: &canvas)
-        if height > 2 { drawStatus(view.status, into: &canvas) }
+        if height > 2 { info.hits += drawStatus(view.status, into: &canvas) }
 
         let panelWidth = home ? min(76, contentWidth) : contentWidth
         let composerLeft = max(0, (width - panelWidth) / 2)
@@ -392,21 +404,55 @@ struct Renderer {
             }
             // The footer is the model area: which model answers, which wire protocol it uses, and the
             // thinking mode the Core reports as effective. A temporary selection is marked so it is
-            // never mistaken for the plugin's own configuration.
+            // never mistaken for the plugin's own configuration. The model name and the thinking
+            // status are clickable; the renderer owns their exact cells.
             var footer: [Span] = [Span(view.model ?? "无模型", .color(view.model == nil ? Theme.error : Theme.fox))]
+            let modelCells = spanWidth(footer)
             if let protocolKind = view.modelProtocol {
                 footer.append(Span("  ·  协议 \(protocolKind)", .color(Theme.dim)))
             }
+            var thinkingStart = -1
+            var thinkingCells = 0
             if let thinking = view.modelThinking {
-                footer.append(Span("  ·  思考 \(thinking)", .color(Theme.dim)))
-                if view.modelThinkingTemporary { footer.append(Span("·临时", .color(Theme.fox))) }
+                thinkingStart = spanWidth(footer)
+                if let axis = view.modelThinkingAxis {
+                    footer.append(Span("  ·  \(axis): \(thinking)", .color(Theme.dim)))
+                } else {
+                    footer.append(Span("  ·  思考 \(thinking)", .color(Theme.dim)))
+                }
+                if view.modelThinkingTemporary { footer.append(Span("（临时）", .color(Theme.fox))) }
+                thinkingCells = spanWidth(footer) - thinkingStart
             }
             if editor.lines.count > 1 { footer.append(Span("  ·  \(editor.lines.count) 行", .color(Theme.dim))) }
             let footerRow = composerRow + composerHeight - 1
             canvas.draw(footer, row: footerRow, col: composerLeft + 3, limit: panelWidth - 4)
+            info.hits.append(HitRegion(
+                kind: .modelName, row: footerRow + 1, column: composerLeft + 4, columns: modelCells
+            ))
+            if thinkingStart >= 0 {
+                info.hits.append(HitRegion(
+                    kind: .thinkingStatus, row: footerRow + 1,
+                    column: composerLeft + 3 + thinkingStart + 1, columns: thinkingCells
+                ))
+            }
             let hint = [Span("Shift-Enter 换行", .color(Theme.muted))]
-            if spanWidth(footer) + spanWidth(hint) + 6 < panelWidth {
-                canvas.draw(hint, row: footerRow, col: composerLeft + panelWidth - spanWidth(hint) - 2, limit: spanWidth(hint))
+            let sendWidth = 8
+            let sendColumn = composerLeft + panelWidth - sendWidth - 2
+            if sendColumn >= composerLeft + 3 + spanWidth(footer) + 1 {
+                let enabled = !view.running
+                canvas.draw(
+                    [Span("[ 发送 ]", .color(enabled ? Theme.fox : Theme.muted))],
+                    row: footerRow, col: sendColumn, limit: sendWidth
+                )
+                if enabled {
+                    info.hits.append(HitRegion(
+                        kind: .sendButton, row: footerRow + 1, column: sendColumn + 1, columns: sendWidth
+                    ))
+                }
+                let hintColumn = sendColumn - spanWidth(hint) - 2
+                if hintColumn > composerLeft + 3 + spanWidth(footer) {
+                    canvas.draw(hint, row: footerRow, col: hintColumn, limit: spanWidth(hint))
+                }
             }
             if let completion = view.completion {
                 info.hits += drawCompletion(completion, left: composerLeft, width: panelWidth,
@@ -632,14 +678,18 @@ struct Renderer {
         }
     }
 
-    private func drawStatus(_ status: StatusLine, into canvas: inout Canvas) {
+    /// Draws the status bar. The bottom-right hint is a clickable region only while it advertises
+    /// the command palette; "Esc 取消" or "Ctrl-C 退出" must stay plain text.
+    private func drawStatus(_ status: StatusLine, into canvas: inout Canvas) -> [HitRegion] {
         let row = height - 1
         let used = canvas.draw([Span(" ")] + status.left, row: row, col: 0, limit: width)
         let right = Renderer.oneLine(status.right)
         let rightWidth = TextWidth.width(right)
-        if used + rightWidth + 4 <= width {
-            canvas.draw([Span(right, .color(Theme.muted))], row: row, col: width - rightWidth - 1, limit: rightWidth)
-        }
+        guard used + rightWidth + 4 <= width else { return [] }
+        let column = width - rightWidth - 1
+        canvas.draw([Span(right, .color(Theme.muted))], row: row, col: column, limit: rightWidth)
+        guard right.contains("命令") else { return [] }
+        return [HitRegion(kind: .commandHint, row: row + 1, column: column + 1, columns: rightWidth)]
     }
 
     private func drawScrollbar(total: Int, visible: Int, scroll: Int, top: Int, col: Int, into canvas: inout Canvas) {
@@ -724,6 +774,13 @@ struct Renderer {
         let selected = min(max(0, picker.selected), max(0, items.count - 1))
         let start = max(0, min(selected - visible / 2, items.count - visible))
         var body: [[Span]] = [[Span("› ", .color(Theme.fox)), Span(Renderer.oneLine(picker.query) + "▏")], [Span(String(repeating: "─", count: inner), .color(Theme.muted))]]
+        let noteRows: Int
+        if let note = picker.note, !note.isEmpty {
+            body.append([Span(Renderer.truncate(Renderer.oneLine(note), to: inner), .color(Theme.muted))])
+            noteRows = 1
+        } else {
+            noteRows = 0
+        }
         var highlight: Int?
         if items.isEmpty { body.append([Span("没有匹配项", .color(Theme.dim))]) }
         for (offset, item) in items.dropFirst(start).prefix(visible).enumerated() {
@@ -753,7 +810,7 @@ struct Renderer {
         // toggle row keep the checkbox and the rest of the row distinguishable for a click.
         var hits: [HitRegion] = []
         for (offset, item) in items.dropFirst(start).prefix(visible).enumerated() {
-            let bodyIndex = 2 + offset
+            let bodyIndex = 2 + noteRows + offset
             guard bodyIndex < geometry.bodyRows else { break }
             let row = geometry.top + 3 + bodyIndex + 1
             let column = geometry.left + 3

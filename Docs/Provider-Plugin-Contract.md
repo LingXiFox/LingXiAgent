@@ -213,6 +213,16 @@ Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或�
 
 ## 临时思考选择、状态查询与耗时（Phase 4.3）
 
+### 思考档位声明（`thinkingProfiles`）
+
+- `ProviderModel.thinkingProfiles` 为每个协议声明一条阶梯：`protocolKind`、`protocolLabel`、
+  `axisLabel`（如 `effort`；普通开关为 `nil`）、`levels`、`defaultLevel`、`note`。加载器拒绝空协议、
+  重复协议、空档位、重复档位和不在档位里的默认值。
+- 同一模型在两种协议下可以有不同的档位；前端按实时协议选择，不会合并。旧插件仍可用扁平
+  `thinkingLevels`，Core 两种都透传。
+- MiMo：Chat 声明 `default/enabled/disabled`；Responses 声明 `default/none/minimal/low/medium/high/
+  xhigh/max/ultra`，并声明官方限制（除 `none` 外目前推理强度相同，仍按官方映射发送）。
+
 ### 临时思考选择（`reasoningLevel`）
 
 - TUI 的 `/reasoning` 只列出当前模型在 `describe` 里声明的 `thinkingLevels`，另有“跟随插件设置”。
@@ -225,6 +235,10 @@ Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或�
   未识别的 id 必须保持原配置（安全失败），不能崩、不能发明参数。
 - 有效配置在 digest 与 HTTP body 之前应用，因此临时选择既改变实际请求也改变 cassette digest；
   未携带 override 的旧 cassette 不受影响。
+- id 按插件当前协议解析：Chat 只接受 `default/enabled/disabled`，Responses 只接受
+  `default/none/effort…`；来自另一条阶梯的 id 被安全忽略（保持保存配置），不崩溃、不猜参数。
+- **Run 级快照**：适配器在 Run 的首个请求捕获临时选择，工具轮复用，Run 结束/取消时释放；
+  `/reasoning` 的变更只影响下一轮 Run。
 - 本字段是临时覆盖，不是配置事务的一部分：不写设置文件、不触发 `apply`/`commit`、不改权限。
 
 ### 生效状态查询（`provider.state.v1`，可选）
@@ -247,6 +261,8 @@ Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或�
   一次请求只发一条 `ProviderWireEvent(type:"timing", timing:{prepareMs,sendMs,firstResponseMs,
   firstSSEMs,firstReasoningMs,firstTextMs,terminalMs,totalMs})`，紧挨终态事件之前。
 - 全部字段是整数毫秒；事件不含 prompt、回复、header、凭据。录制器显式跳过 `timing`，不写入 cassette。
+- Core 侧另有一条 setup-only timing（只有 `credentialMs`，没有 total），用于把 Keychain/环境读取
+  时间与上游延迟分开；它不是一次 Provider 调用，不计入 `providerCalls`。
 - 回放路径可只发 `totalMs`：离线测试据此显示“生成总耗时”，不伪造不存在的 HTTP 阶段。
 
 ### 设置 Dirty 与鼠标相对坐标

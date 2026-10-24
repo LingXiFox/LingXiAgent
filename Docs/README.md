@@ -197,6 +197,10 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
   设置窗口由插件报告 dirty，Esc 在无修改时直接退出、有修改时弹“保存/放弃/继续编辑”；鼠标点击、
   滚轮与焦点切换覆盖列表、设置 Tab/单选项与宿主弹窗按钮，插件只收到帧内相对坐标，
   `/mouse` 仍可关闭捕获以保留终端原生拖选（ADR-0010）。
+  阶段 4.3.1：思考档位改为按「模型 × 协议」声明（Chat 开关 / Responses effort 阶梯，官方限制随声明
+  展示），主界面可选择完整档位并显示 `effort: high（临时）`，临时选择在 Run 首个请求快照、工具轮
+  不变化；`/perf` 增加内核阶段与“未分解”耗时，Provider 时间按 Run 聚合（ADR-0011）；
+  模型名、思考状态、右下角命令提示与发送按钮均可点击。
 
   插件设置：`/plugins` 选中插件按 Enter 打开；Space 立即启停。设置页由插件自绘，宿主负责外框、Esc/Ctrl-S、
   受约束帧校验、事务保存与 Settings-Only Host 生命周期。示例见 `Plugin-Settings-Example.md`。
@@ -227,7 +231,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
 | `Provider-Plugin-Contract.md` | Provider 契约：wire family、事件流终态、错误分类、用量与缓存 |
 | `Testing-and-Acceptance.md` | 测试分层（L0–L4）与完成标准判定 |
 | `Regression-Cases.md` | 回归台账：带 ID 的场景 → 期望行为 → 证据 → 阶段归属 |
-| `Decisions/` | ADR：ABI 许可轨道、阶段范围前移、插件状态为配置、模型思考等级、插件自绘设置、MiMo 双协议、设置安全加固、Responses 推理历史、TUI 交互与诊断 |
+| `Decisions/` | ADR：ABI 许可轨道、阶段范围前移、插件状态为配置、模型思考等级、插件自绘设置、MiMo 双协议、设置安全加固、Responses 推理历史、TUI 交互与诊断、按协议思考档位与可分解耗时 |
 | `Validation/` | 各阶段验收记录：计数、逐 ID 证据、反例、CI 记录 |
 
 阅读路径：理解设计读 `Kernel-Design.md` → `Plugin-System-Design.md`；动手实现读

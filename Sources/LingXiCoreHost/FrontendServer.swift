@@ -330,7 +330,7 @@ final class FrontendServer: @unchecked Sendable {
                 case .reasoningDelta(let delta):
                     self.emit(FrontendEvent(event: "reasoning", runID: runID, sessionID: sessionID, reasoning: delta))
                 case .timing(let timing):
-                    providerTiming.set(timing)
+                    providerTiming.add(timing)
                 case .toolCallStarted(let start):
                     var tool = FrontendEvent(event: "tool", runID: runID, sessionID: sessionID, status: "started")
                     tool.tool = start.toolName
@@ -353,17 +353,33 @@ final class FrontendServer: @unchecked Sendable {
                 }
             }
             let finished = ContinuousClock.now
-            let provider = providerTiming.current
+            let provider = providerTiming.snapshot
+            let loopTiming = result.timing
             let timing = RunTiming(
                 corePrepareMs: FrontendTiming.milliseconds(from: acceptedAt, to: runStarted),
-                prepareMs: provider?.prepareMs,
-                httpSendMs: provider?.sendMs,
-                firstResponseMs: provider?.firstResponseMs,
-                firstSSEMs: provider?.firstSSEMs,
-                firstReasoningMs: provider?.firstReasoningMs,
-                firstTextMs: provider?.firstTextMs,
-                providerTotalMs: provider?.totalMs,
-                runTotalMs: FrontendTiming.milliseconds(from: acceptedAt, to: finished)
+                prepareMs: provider.last?.prepareMs,
+                httpSendMs: provider.last?.sendMs,
+                firstResponseMs: provider.last?.firstResponseMs,
+                firstSSEMs: provider.last?.firstSSEMs,
+                firstReasoningMs: provider.last?.firstReasoningMs,
+                firstTextMs: provider.last?.firstTextMs,
+                providerTotalMs: provider.calls == 0 ? nil : provider.totalMs,
+                providerCalls: provider.calls,
+                providerLastCallMs: provider.last?.totalMs,
+                credentialMs: provider.credentialMs,
+                runTotalMs: FrontendTiming.milliseconds(from: acceptedAt, to: finished),
+                assemblyMs: loopTiming?.assemblyMs,
+                budgetMs: loopTiming?.budgetMs,
+                contextHookMs: loopTiming?.contextHooksMs,
+                requestHookMs: loopTiming?.requestHooksMs,
+                providerWaitMs: loopTiming?.providerWaitMs,
+                toolMs: loopTiming?.toolExecutionMs,
+                logWriteMs: loopTiming?.logWriteMs,
+                terminalCommitMs: loopTiming?.terminalCommitMs,
+                providerCleanupMs: loopTiming?.providerCleanupMs,
+                unaccountedMs: loopTiming?.unaccountedMs,
+                loopTotalMs: loopTiming?.totalMs,
+                steps: loopTiming?.steps
             )
             var timingEvent = FrontendEvent(event: "timing", runID: runID, sessionID: sessionID)
             timingEvent.timing = timing
@@ -407,14 +423,24 @@ final class FrontendServer: @unchecked Sendable {
     private func providerStates() async -> [ProviderStateSummary] {
         let declarations = await coordinator.modelDeclarations()
         var labels: [String: [String: String]] = [:]
+        var axes: [String: [String: String]] = [:]
         for entry in declarations {
             for level in entry.model.thinkingLevels ?? [] {
                 labels[entry.providerID, default: [:]][level.id] = level.label
+            }
+            for profile in entry.model.thinkingProfiles ?? [] {
+                for level in profile.levels {
+                    labels[entry.providerID, default: [:]][level.id] = level.label
+                }
+                if let axis = profile.axisLabel {
+                    axes[entry.providerID, default: [:]][profile.protocolKind] = axis
+                }
             }
         }
         var result: [ProviderStateSummary] = []
         for report in await coordinator.providerStates() {
             let override = report.reasoningOverride
+            let axis = report.state?.protocolKind.flatMap { axes[report.providerID]?[$0] }
             result.append(ProviderStateSummary(
                 providerID: report.providerID,
                 protocolKind: report.state?.protocolKind,
@@ -422,7 +448,8 @@ final class FrontendServer: @unchecked Sendable {
                 thinkingLevel: override ?? report.state?.thinkingLevel,
                 thinkingLabel: override.flatMap { labels[report.providerID]?[$0] } ?? report.state?.thinkingLabel,
                 source: override != nil ? "session-override" : report.state?.source,
-                overridden: override != nil ? true : nil
+                overridden: override != nil ? true : nil,
+                thinkingAxisLabel: axis
             ))
         }
         return result
@@ -446,7 +473,17 @@ final class FrontendServer: @unchecked Sendable {
                 thinkingLevels: (entry.model.thinkingLevels ?? []).map {
                     ModelThinkingLevel(id: $0.id, label: $0.label)
                 },
-                defaultThinkingLevel: entry.model.defaultThinkingLevel
+                defaultThinkingLevel: entry.model.defaultThinkingLevel,
+                thinkingProfiles: (entry.model.thinkingProfiles ?? []).map { profile in
+                    ModelThinkingProfile(
+                        protocolKind: profile.protocolKind,
+                        protocolLabel: profile.protocolLabel,
+                        axisLabel: profile.axisLabel,
+                        levels: profile.levels.map { ModelThinkingLevel(id: $0.id, label: $0.label) },
+                        defaultLevel: profile.defaultLevel,
+                        note: profile.note
+                    )
+                }
             ))
         }
         return result.sorted { $0.id < $1.id }
@@ -559,17 +596,33 @@ enum FrontendTiming {
     }
 }
 
-/// The provider's timing event arrives inside the loop's observation callback; the report is read
-/// after the loop returns. A tiny lock keeps that hand-off Sendable without touching the kernel.
+/// Provider timing events arrive inside the loop's observation callback; the report is read after
+/// the loop returns. It aggregates across steps on purpose: reporting only the last request made a
+/// multi-step tool loop look like unexplained Core time in Phase 4.3.
 private final class TimingBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: ModelTiming?
-
-    func set(_ timing: ModelTiming) {
-        lock.lock(); value = timing; lock.unlock()
+    struct Snapshot {
+        var calls = 0
+        var totalMs = 0
+        var credentialMs = 0
+        var last: ModelTiming?
     }
 
-    var current: ModelTiming? {
+    private let lock = NSLock()
+    private var value = Snapshot()
+
+    func add(_ timing: ModelTiming) {
+        lock.lock()
+        value.credentialMs += timing.credentialMs ?? 0
+        // A setup-only event (credential timing) has no total: it is not a provider call.
+        if timing.totalMs != nil || timing.terminalMs != nil {
+            value.calls += 1
+            value.totalMs += timing.totalMs ?? 0
+            value.last = timing
+        }
+        lock.unlock()
+    }
+
+    var snapshot: Snapshot {
         lock.lock(); defer { lock.unlock() }; return value
     }
 }

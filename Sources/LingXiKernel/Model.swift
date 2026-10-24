@@ -99,6 +99,9 @@ public struct ToolCallDelta: Hashable, Sendable {
 /// observer; it never persists it and never treats it as execution state. Numbers only, so no
 /// request content can be mistaken for diagnostics.
 public struct ModelTiming: Sendable, Equatable {
+    /// Time the Core spent resolving the provider credential (Keychain or explicit environment)
+    /// before the request reached the plugin. It is local cost, not upstream latency.
+    public let credentialMs: Int?
     public let prepareMs: Int?
     public let sendMs: Int?
     public let firstResponseMs: Int?
@@ -109,10 +112,11 @@ public struct ModelTiming: Sendable, Equatable {
     public let totalMs: Int?
 
     public init(
-        prepareMs: Int? = nil, sendMs: Int? = nil, firstResponseMs: Int? = nil,
-        firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil, firstTextMs: Int? = nil,
-        terminalMs: Int? = nil, totalMs: Int? = nil
+        credentialMs: Int? = nil, prepareMs: Int? = nil, sendMs: Int? = nil,
+        firstResponseMs: Int? = nil, firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil,
+        firstTextMs: Int? = nil, terminalMs: Int? = nil, totalMs: Int? = nil
     ) {
+        self.credentialMs = credentialMs
         self.prepareMs = prepareMs
         self.sendMs = sendMs
         self.firstResponseMs = firstResponseMs
@@ -263,6 +267,11 @@ public actor ModelRouter {
 
     public var providerCount: Int { providers.count }
     public var offeredModels: [ModelID] { Array(modelIndex.keys) }
+
+    /// Snapshot helpers for callers that build a status line. Methods avoid an old-toolchain
+    /// false-positive diagnostic on `await` of an actor property inside top-level async code.
+    public func providerCountSnapshot() -> Int { providers.count }
+    public func offeredModelIDs() -> [ModelID] { modelIndex.keys.sorted { $0.rawValue < $1.rawValue } }
 
     public func resolve(model: ModelID) throws -> any ModelProvider {
         guard !providers.isEmpty else { throw ModelRouterError.noProviderRegistered }

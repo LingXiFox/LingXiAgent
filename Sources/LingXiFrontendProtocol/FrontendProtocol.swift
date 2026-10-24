@@ -152,6 +152,31 @@ public struct ModelThinkingLevel: Codable, Sendable, Equatable {
     }
 }
 
+/// One thinking control ladder for one API protocol, as declared by the provider. The frontend picks
+/// the profile whose protocol matches the live provider state and never merges two ladders.
+public struct ModelThinkingProfile: Codable, Sendable, Equatable {
+    public let protocolKind: String
+    public let protocolLabel: String?
+    /// Display name of the ladder (`effort`); nil for a plain switch.
+    public let axisLabel: String?
+    public let levels: [ModelThinkingLevel]
+    public let defaultLevel: String?
+    /// Official limitation or hint, plugin-owned.
+    public let note: String?
+
+    public init(
+        protocolKind: String, protocolLabel: String? = nil, axisLabel: String? = nil,
+        levels: [ModelThinkingLevel], defaultLevel: String? = nil, note: String? = nil
+    ) {
+        self.protocolKind = protocolKind
+        self.protocolLabel = protocolLabel
+        self.axisLabel = axisLabel
+        self.levels = levels
+        self.defaultLevel = defaultLevel
+        self.note = note
+    }
+}
+
 /// A model as reported to the frontend: routing key plus plugin-declared capability metadata.
 public struct ModelSummary: Codable, Sendable, Equatable {
     public let id: String
@@ -159,15 +184,18 @@ public struct ModelSummary: Codable, Sendable, Equatable {
     /// Ordered from least to most reasoning effort; empty when the plugin declares nothing.
     public let thinkingLevels: [ModelThinkingLevel]
     public let defaultThinkingLevel: String?
+    /// Per-protocol ladders. Empty when the plugin only declares the legacy flat list.
+    public let thinkingProfiles: [ModelThinkingProfile]
 
     public init(
         id: String, provider: String, thinkingLevels: [ModelThinkingLevel] = [],
-        defaultThinkingLevel: String? = nil
+        defaultThinkingLevel: String? = nil, thinkingProfiles: [ModelThinkingProfile] = []
     ) {
         self.id = id
         self.provider = provider
         self.thinkingLevels = thinkingLevels
         self.defaultThinkingLevel = defaultThinkingLevel
+        self.thinkingProfiles = thinkingProfiles
     }
 }
 
@@ -184,11 +212,13 @@ public struct ProviderStateSummary: Codable, Sendable, Equatable {
     public let source: String?
     /// True when `thinkingLevel` comes from the temporary selection rather than the plugin.
     public let overridden: Bool?
+    /// Display name of the thinking ladder for this protocol (`effort`), when the plugin declared one.
+    public let thinkingAxisLabel: String?
 
     public init(
         providerID: String, protocolKind: String? = nil, protocolLabel: String? = nil,
         thinkingLevel: String? = nil, thinkingLabel: String? = nil, source: String? = nil,
-        overridden: Bool? = nil
+        overridden: Bool? = nil, thinkingAxisLabel: String? = nil
     ) {
         self.providerID = providerID
         self.protocolKind = protocolKind
@@ -197,6 +227,7 @@ public struct ProviderStateSummary: Codable, Sendable, Equatable {
         self.thinkingLabel = thinkingLabel
         self.source = source
         self.overridden = overridden
+        self.thinkingAxisLabel = thinkingAxisLabel
     }
 }
 
@@ -218,18 +249,47 @@ public struct RunTiming: Codable, Sendable, Equatable {
     public let firstReasoningMs: Int?
     /// Invoke entry to the first text delta.
     public let firstTextMs: Int?
-    /// Invoke entry to the provider terminal event.
+    /// Sum of every provider request's total time in this Run. One request is the common case; a
+    /// tool loop makes this the sum, which is what the run-level total can be compared with.
     public let providerTotalMs: Int?
+    /// How many provider requests the Run made; the single-request report never hid a tool loop.
+    public let providerCalls: Int?
+    /// The last request's own total, kept so a single call still has its exact number.
+    public let providerLastCallMs: Int?
+    /// Core-side credential resolution (Keychain/environment) summed over the Run's provider calls.
+    public let credentialMs: Int?
     /// Frontend request accepted to the run terminal.
     public let runTotalMs: Int?
     /// TUI-only: total time spent rendering this run's frames.
     public let renderMs: Int?
+    /// Kernel phase breakdown, in milliseconds, measured inside the loop. All optional so an older
+    /// Core stays readable; a missing value is "not measured", never zero.
+    public let assemblyMs: Int?
+    public let budgetMs: Int?
+    public let contextHookMs: Int?
+    public let requestHookMs: Int?
+    public let providerWaitMs: Int?
+    public let toolMs: Int?
+    public let logWriteMs: Int?
+    public let terminalCommitMs: Int?
+    public let providerCleanupMs: Int?
+    /// Measured run total minus every named phase. A large value is a bug signal.
+    public let unaccountedMs: Int?
+    /// The kernel's own total for the `run` call, so the frontend can also show the time between
+    /// the request being accepted and the loop starting (queueing) plus the tiny tail afterwards.
+    public let loopTotalMs: Int?
+    public let steps: Int?
 
     public init(
         corePrepareMs: Int? = nil, prepareMs: Int? = nil, httpSendMs: Int? = nil,
         firstResponseMs: Int? = nil, firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil,
-        firstTextMs: Int? = nil, providerTotalMs: Int? = nil, runTotalMs: Int? = nil,
-        renderMs: Int? = nil
+        firstTextMs: Int? = nil, providerTotalMs: Int? = nil, providerCalls: Int? = nil,
+        providerLastCallMs: Int? = nil, credentialMs: Int? = nil, runTotalMs: Int? = nil,
+        renderMs: Int? = nil, assemblyMs: Int? = nil, budgetMs: Int? = nil,
+        contextHookMs: Int? = nil, requestHookMs: Int? = nil, providerWaitMs: Int? = nil,
+        toolMs: Int? = nil, logWriteMs: Int? = nil, terminalCommitMs: Int? = nil,
+        providerCleanupMs: Int? = nil, unaccountedMs: Int? = nil, loopTotalMs: Int? = nil,
+        steps: Int? = nil
     ) {
         self.corePrepareMs = corePrepareMs
         self.prepareMs = prepareMs
@@ -239,8 +299,23 @@ public struct RunTiming: Codable, Sendable, Equatable {
         self.firstReasoningMs = firstReasoningMs
         self.firstTextMs = firstTextMs
         self.providerTotalMs = providerTotalMs
+        self.providerCalls = providerCalls
+        self.providerLastCallMs = providerLastCallMs
+        self.credentialMs = credentialMs
         self.runTotalMs = runTotalMs
         self.renderMs = renderMs
+        self.assemblyMs = assemblyMs
+        self.budgetMs = budgetMs
+        self.contextHookMs = contextHookMs
+        self.requestHookMs = requestHookMs
+        self.providerWaitMs = providerWaitMs
+        self.toolMs = toolMs
+        self.logWriteMs = logWriteMs
+        self.terminalCommitMs = terminalCommitMs
+        self.providerCleanupMs = providerCleanupMs
+        self.unaccountedMs = unaccountedMs
+        self.loopTotalMs = loopTotalMs
+        self.steps = steps
     }
 }
 

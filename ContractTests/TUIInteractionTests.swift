@@ -263,3 +263,71 @@ func TUI_013_ctrlCneverBlocksOnDeadSettingsHost() async throws {
     #expect(Date().timeIntervalSince(started) < 5)
     #expect(tui.status == 0)
 }
+
+@Test(
+    "TUI-015 main-view clicks open the model/thinking/command pickers and the send button follows Enter",
+    .enabled(if: interactionPTYEnabled)
+)
+func TUI_015_mainViewClickTargets() async throws {
+    let directory = try makeProbeDirectory("tui-main-mouse")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedTUI(directory, turns: 2, slow: true)
+    let tui = try PTYProcess(environment: probeEnvironment(directory))
+    defer { tui.terminate() }
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") })
+    tui.write("/mouse\r")
+    try #require(await tui.waitFor("已开启鼠标"))
+
+    // Model name -> model picker. The picker title proves which action ran, not just that a click
+    // landed somewhere.
+    var target = try #require(locate("mimo-v2.6-flash", in: frameRows(tui.latestFrame)))
+    tui.write(sgrPress(row: target.row, column: target.column) + sgrRelease(row: target.row, column: target.column))
+    try #require(await tui.waitFor("切换模型"))
+    tui.write("\u{1B}")
+    try #require(await waitUntil { tui.screenText.contains("思考 服务端默认") })
+
+    // Thinking status -> thinking picker for the live protocol, with the plugin-owned hint.
+    target = try #require(locate("思考 服务端默认", in: frameRows(tui.latestFrame)))
+    tui.write(sgrPress(row: target.row, column: target.column) + sgrRelease(row: target.row, column: target.column))
+    try #require(await tui.waitFor("思考模式"))
+    try #require(await tui.waitFor("thinking.type"))
+    tui.write("\u{1B}")
+    try #require(await waitUntil { tui.screenText.contains("Ctrl-P 命令") })
+
+    // Bottom-right command hint -> the command palette.
+    target = try #require(locate("Ctrl-P 命令", in: frameRows(tui.latestFrame)))
+    tui.write(sgrPress(row: target.row, column: target.column) + sgrRelease(row: target.row, column: target.column))
+    try #require(await tui.waitFor("连接模型"))
+    tui.write("\u{1B}")
+    try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+
+    // Send button: same path as Enter, and the draft is cleared by the send.
+    tui.write("第一段")
+    try #require(await waitUntil { tui.screenText.contains("[ 发送 ]") })
+    target = try #require(locate("[ 发送 ]", in: frameRows(tui.latestFrame)))
+    tui.write(sgrPress(row: target.row, column: target.column) + sgrRelease(row: target.row, column: target.column))
+    try #require(await waitUntil { tui.screenText.contains("生成中") })
+
+    // While the run is live the button is disabled: a click at the same cell must not submit, and the
+    // draft typed during generation stays in the composer.
+    tui.write("第二段")
+    try #require(await waitUntil { tui.screenText.contains("第二段") })
+    if let send = locate("[ 发送 ]", in: frameRows(tui.latestFrame)) {
+        tui.write(sgrPress(row: send.row, column: send.column) + sgrRelease(row: send.row, column: send.column))
+    }
+    try await Task.sleep(for: .milliseconds(400))
+    #expect(tui.screenText.contains("生成中"))
+    #expect(tui.screenText.contains("第二段"))
+    try #require(await waitUntil(timeout: .seconds(30)) { !tui.screenText.contains("生成中") })
+
+    // Once the run is over the button works again and the preserved draft is submitted.
+    target = try #require(locate("[ 发送 ]", in: frameRows(tui.latestFrame)))
+    tui.write(sgrPress(row: target.row, column: target.column) + sgrRelease(row: target.row, column: target.column))
+    try #require(await waitUntil { tui.screenText.contains("生成中") })
+    try #require(await waitUntil(timeout: .seconds(30)) { !tui.screenText.contains("生成中") })
+    #expect(!tui.screenText.contains("[ 发送 ]第二段"))
+
+    tui.write("/quit\r")
+    #expect(await waitUntil(timeout: .seconds(60)) { !tui.isRunning })
+    #expect(tui.status == 0)
+}

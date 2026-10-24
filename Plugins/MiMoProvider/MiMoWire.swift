@@ -15,9 +15,42 @@ enum MiMoWire {
     /// without interpreting any vendor vocabulary; the C ABI table is untouched.
     static let stateCapability = "provider.state.v1"
 
-    /// The thinking levels every MiMo model declares, in the order the settings page shows them.
-    static var thinkingLevels: [ProviderThinkingLevel] {
+    /// Chat Completions only knows a switch: default / enabled / disabled.
+    static var chatThinkingLevels: [ProviderThinkingLevel] {
         MiMoThinkingMode.allCases.map { ProviderThinkingLevel(id: $0.rawValue, label: $0.label) }
+    }
+
+    /// Responses sends `reasoning.effort`. The ids are the documented input vocabulary; the wire
+    /// mapping folds aliases (`minimal -> low`, `xhigh/max/ultra -> high`) before sending.
+    static var responsesThinkingLevels: [ProviderThinkingLevel] {
+        [ProviderThinkingLevel(id: "default", label: "服务端默认")]
+            + MiMoReasoningEffort.allCases.map { ProviderThinkingLevel(id: $0.rawValue, label: $0.rawValue) }
+    }
+
+    /// Per-model, per-protocol declarations. The same model exposes a different ladder for each wire
+    /// family; the frontend picks the one that matches the live protocol instead of merging them.
+    /// The note is the official limitation: the upstream service currently treats every non-`none`
+    /// tier the same, but the documented mapping is still sent so a provider change needs no client
+    /// update.
+    static var thinkingProfiles: [ProviderThinkingProfile] {
+        [
+            ProviderThinkingProfile(
+                protocolKind: MiMoProtocolKind.chatCompletions.rawValue,
+                protocolLabel: "Chat Completions",
+                axisLabel: nil,
+                levels: chatThinkingLevels,
+                defaultLevel: MiMoThinkingMode.default.rawValue,
+                note: "Chat Completions 通过 thinking.type 开关思考。"
+            ),
+            ProviderThinkingProfile(
+                protocolKind: MiMoProtocolKind.responses.rawValue,
+                protocolLabel: "Responses",
+                axisLabel: "effort",
+                levels: responsesThinkingLevels,
+                defaultLevel: "default",
+                note: "MiMo 官方当前除 none 外各档位实际推理强度相同；仍按官方映射发送（minimal→low，xhigh/max/ultra→high）。"
+            ),
+        ]
     }
 
     static func endpoint(for config: MiMoConfig) -> URL {

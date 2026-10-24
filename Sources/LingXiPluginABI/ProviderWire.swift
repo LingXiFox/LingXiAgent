@@ -36,6 +36,34 @@ public struct ProviderThinkingLevel: Codable, Sendable, Equatable {
     }
 }
 
+/// One thinking control ladder for one API protocol. A provider may declare different ladders per
+/// model and protocol (Chat Completions exposes a switch; Responses exposes an effort ladder), and
+/// the frontend never merges them or invents a level. `axisLabel` names the ladder for display
+/// (`effort`), `note` carries an official limitation the plugin wants shown, and every id stays
+/// opaque to the Core.
+public struct ProviderThinkingProfile: Codable, Sendable, Equatable {
+    public let protocolKind: String
+    public let protocolLabel: String?
+    /// Display name of the ladder, e.g. `effort`. `nil` means the levels are plain modes.
+    public let axisLabel: String?
+    public let levels: [ProviderThinkingLevel]
+    public let defaultLevel: String?
+    /// Optional official limitation/hint, e.g. "current tiers are equivalent upstream".
+    public let note: String?
+
+    public init(
+        protocolKind: String, protocolLabel: String? = nil, axisLabel: String? = nil,
+        levels: [ProviderThinkingLevel], defaultLevel: String? = nil, note: String? = nil
+    ) {
+        self.protocolKind = protocolKind
+        self.protocolLabel = protocolLabel
+        self.axisLabel = axisLabel
+        self.levels = levels
+        self.defaultLevel = defaultLevel
+        self.note = note
+    }
+}
+
 /// A provider may expose a read-only state capability so the Core can report what is actually in
 /// effect (protocol family, thinking level) without knowing anything vendor-specific. The plugin
 /// answers an invoke with `ProviderState`; the capability string lives in its own namespace, so the
@@ -119,16 +147,22 @@ public struct ProviderTiming: Codable, Sendable, Equatable {
 /// router key; everything else is display metadata and never changes routing.
 public struct ProviderModel: Codable, Sendable, Equatable {
     public let id: String
-    /// Ordered from least to most reasoning effort. `nil` means the plugin does not declare levels.
+    /// Legacy flat level list for plugins that declare one ladder for every protocol. New plugins
+    /// declare `thinkingProfiles` instead; the Core keeps both so an older plugin stays usable.
     public let thinkingLevels: [ProviderThinkingLevel]?
     public let defaultThinkingLevel: String?
+    /// Per-protocol thinking ladders, validated by the loader. When present the frontend shows the
+    /// ladder that matches the live provider state instead of the flat list.
+    public let thinkingProfiles: [ProviderThinkingProfile]?
 
     public init(
-        id: String, thinkingLevels: [ProviderThinkingLevel]? = nil, defaultThinkingLevel: String? = nil
+        id: String, thinkingLevels: [ProviderThinkingLevel]? = nil, defaultThinkingLevel: String? = nil,
+        thinkingProfiles: [ProviderThinkingProfile]? = nil
     ) {
         self.id = id
         self.thinkingLevels = thinkingLevels
         self.defaultThinkingLevel = defaultThinkingLevel
+        self.thinkingProfiles = thinkingProfiles
     }
 }
 
@@ -140,6 +174,10 @@ public enum ProviderDeclarationError: Error, Equatable, CustomStringConvertible,
     case duplicateThinkingLevel(model: String, level: String)
     case defaultThinkingLevelWithoutLevels(model: String)
     case unknownDefaultThinkingLevel(model: String, level: String)
+    case emptyThinkingProfile(model: String)
+    case duplicateThinkingProtocol(model: String, protocol: String)
+    case emptyThinkingProfileLevels(model: String, protocol: String)
+    case unknownProfileDefaultLevel(model: String, protocol: String, level: String)
 
     public var description: String {
         switch self {
@@ -150,6 +188,13 @@ public enum ProviderDeclarationError: Error, Equatable, CustomStringConvertible,
         case .duplicateThinkingLevel(let model, let level): "model \(model) declares thinking level \(level) twice"
         case .defaultThinkingLevelWithoutLevels(let model): "model \(model) declares a default thinking level without levels"
         case .unknownDefaultThinkingLevel(let model, let level): "model \(model) default thinking level \(level) is not declared"
+        case .emptyThinkingProfile(let model): "model \(model) declares an empty thinking profile"
+        case .duplicateThinkingProtocol(let model, let protocolKind):
+            "model \(model) declares thinking profile for \(protocolKind) twice"
+        case .emptyThinkingProfileLevels(let model, let protocolKind):
+            "model \(model) thinking profile \(protocolKind) has no levels"
+        case .unknownProfileDefaultLevel(let model, let protocolKind, let level):
+            "model \(model) thinking profile \(protocolKind) default level \(level) is not declared"
         }
     }
 }
@@ -204,23 +249,52 @@ public extension ProviderIdentity {
             throw ProviderDeclarationError.modelDetailsMismatch
         }
         for model in modelDetails {
-            guard let levels = model.thinkingLevels else {
-                if model.defaultThinkingLevel != nil {
-                    throw ProviderDeclarationError.defaultThinkingLevelWithoutLevels(model: model.id)
+            if let levels = model.thinkingLevels {
+                var seenLevels = Set<String>()
+                for level in levels {
+                    guard !level.id.isEmpty, !level.label.isEmpty else {
+                        throw ProviderDeclarationError.emptyThinkingLevel(model: model.id)
+                    }
+                    guard seenLevels.insert(level.id).inserted else {
+                        throw ProviderDeclarationError.duplicateThinkingLevel(model: model.id, level: level.id)
+                    }
                 }
-                continue
+                if let fallback = model.defaultThinkingLevel, !seenLevels.contains(fallback) {
+                    throw ProviderDeclarationError.unknownDefaultThinkingLevel(model: model.id, level: fallback)
+                }
+            } else if model.defaultThinkingLevel != nil {
+                throw ProviderDeclarationError.defaultThinkingLevelWithoutLevels(model: model.id)
             }
-            var seenLevels = Set<String>()
-            for level in levels {
-                guard !level.id.isEmpty, !level.label.isEmpty else {
-                    throw ProviderDeclarationError.emptyThinkingLevel(model: model.id)
+
+            var seenProfiles = Set<String>()
+            for profile in model.thinkingProfiles ?? [] {
+                guard !profile.protocolKind.isEmpty else {
+                    throw ProviderDeclarationError.emptyThinkingProfile(model: model.id)
                 }
-                guard seenLevels.insert(level.id).inserted else {
-                    throw ProviderDeclarationError.duplicateThinkingLevel(model: model.id, level: level.id)
+                guard seenProfiles.insert(profile.protocolKind).inserted else {
+                    throw ProviderDeclarationError.duplicateThinkingProtocol(
+                        model: model.id, protocol: profile.protocolKind
+                    )
                 }
-            }
-            if let fallback = model.defaultThinkingLevel, !seenLevels.contains(fallback) {
-                throw ProviderDeclarationError.unknownDefaultThinkingLevel(model: model.id, level: fallback)
+                guard !profile.levels.isEmpty else {
+                    throw ProviderDeclarationError.emptyThinkingProfileLevels(
+                        model: model.id, protocol: profile.protocolKind
+                    )
+                }
+                var seenProfileLevels = Set<String>()
+                for level in profile.levels {
+                    guard !level.id.isEmpty, !level.label.isEmpty else {
+                        throw ProviderDeclarationError.emptyThinkingLevel(model: model.id)
+                    }
+                    guard seenProfileLevels.insert(level.id).inserted else {
+                        throw ProviderDeclarationError.duplicateThinkingLevel(model: model.id, level: level.id)
+                    }
+                }
+                if let fallback = profile.defaultLevel, !seenProfileLevels.contains(fallback) {
+                    throw ProviderDeclarationError.unknownProfileDefaultLevel(
+                        model: model.id, protocol: profile.protocolKind, level: fallback
+                    )
+                }
             }
         }
     }

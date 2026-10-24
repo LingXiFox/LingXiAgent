@@ -297,13 +297,14 @@ private struct App {
         return providerStates.first { $0.providerID == provider }
     }
 
-    /// The thinking mode the Core reports as effective for the current model. The temporary flag
-    /// distinguishes a frontend selection from the plugin's own configuration.
-    var thinkingStatus: (label: String, temporary: Bool)? {
+    /// The thinking mode the Core reports as effective for the current model. `axis` is the plugin's
+    /// own ladder name (`effort`), so the footer can read `effort: high` instead of a vague mode.
+    /// The temporary flag distinguishes a frontend selection from the plugin's own configuration.
+    var thinkingStatus: (label: String, axis: String?, temporary: Bool)? {
         guard let model, let state = providerState(for: model), let label = state.thinkingLabel else {
             return nil
         }
-        return (label, state.overridden == true)
+        return (label, state.thinkingAxisLabel, state.overridden == true)
     }
 
     /// Protocol of the current model's provider, when the plugin reports one. The display name is
@@ -369,8 +370,9 @@ struct RunDiagnostics {
     var renderMs: Int
 }
 
-/// Time from the first reasoning delta to the first text delta: how long the model spent thinking
-/// before it started answering. Reported only when the provider measured both points.
+/// Time from the first reasoning delta to the first text delta. It is **not** the model's full
+/// thinking time: the first reasoning byte may arrive late and thinking continues while text is
+/// produced. The report labels it as a boundary gap, never as "thinking duration".
 private func thinkingMilliseconds(_ timing: RunTiming) -> Int? {
     guard let text = timing.firstTextMs else { return nil }
     if let reasoning = timing.firstReasoningMs { return max(0, text - reasoning) }
@@ -387,7 +389,7 @@ private func renderLabel(_ diagnostics: RunDiagnostics) -> String {
 private func compactDiagnostic(_ diagnostics: RunDiagnostics) -> String? {
     var parts: [String] = []
     if let upstream = diagnostics.timing.firstResponseMs { parts.append("上游 \(upstream)ms") }
-    if let thinking = thinkingMilliseconds(diagnostics.timing) { parts.append("思考 \(thinking)ms") }
+    if let thinking = thinkingMilliseconds(diagnostics.timing) { parts.append("思考→首字 \(thinking)ms") }
     parts.append("本地 \(renderLabel(diagnostics))/\(diagnostics.frames) 帧")
     return parts.joined(separator: " · ")
 }
@@ -407,9 +409,40 @@ private func performanceLines(_ diagnostics: RunDiagnostics) -> [String] {
     if let value = timing.firstReasoningMs { upstream.append("首思考 \(value)ms") }
     if let value = timing.firstTextMs { upstream.append("首文本 \(value)ms") }
     if !upstream.isEmpty { lines.append("上游延迟：" + upstream.joined(separator: " · ")) }
+    var kernel: [String] = []
+    if let value = timing.assemblyMs { kernel.append("上下文装配 \(value)ms") }
+    if let value = timing.budgetMs { kernel.append("预算规划 \(value)ms") }
+    let hookMs = (timing.contextHookMs ?? 0) + (timing.requestHookMs ?? 0)
+    if hookMs > 0 || timing.contextHookMs != nil || timing.requestHookMs != nil {
+        kernel.append("Hook \(hookMs)ms")
+    }
+    if let value = timing.credentialMs, value > 0 { kernel.append("凭据解析 \(value)ms") }
+    if let value = timing.providerWaitMs { kernel.append("等待 Provider \(value)ms") }
+    if let value = timing.toolMs { kernel.append("工具执行 \(value)ms") }
+    if let value = timing.logWriteMs { kernel.append("日志写入+同步 \(value)ms") }
+    if let value = timing.terminalCommitMs { kernel.append("终态提交 \(value)ms") }
+    if let value = timing.providerCleanupMs { kernel.append("Provider 清理 \(value)ms") }
+    if !kernel.isEmpty { lines.append("内核阶段：" + kernel.joined(separator: " · ")) }
+    // The kernel's own residual plus whatever happened outside `run` (request queueing and the
+    // final frontend emission) must both be visible; otherwise a new hidden wait could hide again.
+    var residual: [String] = []
+    if let value = timing.unaccountedMs { residual.append("内核未分解 \(value)ms") }
+    if let total = timing.runTotalMs, let loopTotal = timing.loopTotalMs {
+        let outside = total - (timing.corePrepareMs ?? 0) - loopTotal
+        if outside > 0 { residual.append("Core 队列/收尾 \(outside)ms") }
+    }
+    if !residual.isEmpty { lines.append(residual.joined(separator: " · ")) }
     var totals: [String] = []
-    if let thinking = thinkingMilliseconds(timing) { totals.append("思考 \(thinking)ms") }
-    if let value = timing.providerTotalMs { totals.append("插件总计 \(value)ms") }
+    if let thinking = thinkingMilliseconds(timing) { totals.append("首思考→首字 \(thinking)ms") }
+    if let value = timing.providerTotalMs {
+        if let calls = timing.providerCalls, calls > 1 {
+            let last = timing.providerLastCallMs.map { "，最后 \($0)ms" } ?? ""
+            totals.append("插件总计 \(value)ms（\(calls) 次\(last)）")
+        } else {
+            totals.append("插件总计 \(value)ms")
+        }
+    }
+    if let steps = timing.steps, steps > 0 { totals.append("\(steps) 步") }
     if let value = timing.runTotalMs { totals.append("运行总计 \(value)ms") }
     totals.append("TUI 渲染 \(renderLabel(diagnostics))/\(diagnostics.frames) 帧")
     lines.append("总计：" + totals.joined(separator: " · "))
@@ -499,6 +532,7 @@ func draw() {
     view.model = app.model
     let thinking = app.thinkingStatus
     view.modelThinking = thinking?.label
+    view.modelThinkingAxis = thinking?.axis
     view.modelThinkingTemporary = thinking?.temporary ?? false
     view.modelProtocol = app.modelProtocol
     view.sessionTitle = app.sessionTitle
@@ -1011,7 +1045,13 @@ func handleReply(_ reply: FrontendReply) {
         }
     case .reasoning(let level):
         if reply.ok {
-            let label = level.flatMap { id in app.model.flatMap { app.modelDetails[$0]?.thinkingLevels.first { $0.id == id }?.label } }
+            let label = level.flatMap { id in
+                app.model.flatMap { model -> String? in
+                    let summary = app.modelDetails[model]
+                    let declared = (summary?.thinkingProfiles ?? []).flatMap(\.levels) + (summary?.thinkingLevels ?? [])
+                    return declared.first { $0.id == id }?.label
+                }
+            }
             if let label {
                 app.notice("已临时切换思考模式：\(label)。Ctrl-S 不会保存它；/reasoning 可恢复跟随插件。")
             } else {
@@ -1269,10 +1309,63 @@ func handleMouse(_ event: MouseEvent) {
         needsRender = true
         return
     }
+    guard event.button == .left, event.pressed else { return }
+    // Host-owned composer/status controls are ordinary hit regions, never hardcoded coordinates.
+    if let region = hitRegion(row: event.row, column: event.column) {
+        switch region.kind {
+        case .sendButton:
+            submitDraft()
+            return
+        case .modelName:
+            openModelPicker()
+            return
+        case .thinkingStatus:
+            reasoningCommand("")
+            return
+        case .commandHint:
+            app.picker = Picker(title: "命令", items: commandItems)
+            needsRender = true
+            return
+        default:
+            break
+        }
+    }
     // A left press anywhere else may land on the slash-command completion list; that handler ignores
     // every region it does not own, so no extra layout knowledge is needed here.
-    guard event.button == .left, event.pressed else { return }
     clickedPickerRow(event)
+}
+
+/// The send button's action is the same as Enter: it submits the draft through the one send path.
+/// While a run is live the renderer emits no send region, and this guard keeps a stale frame from
+/// submitting too.
+@MainActor
+func submitDraft() {
+    guard !app.running else {
+        app.notice("仍在上一次生成中；按 Esc 取消。草稿已保留。")
+        return
+    }
+    if let completion = slashPicker(), completion.items.indices.contains(completion.selected) {
+        app.input = []
+        app.cursor = 0
+        app.completionIndex = 0
+        runCommand(completion.items[completion.selected].command)
+        return
+    }
+    let text = String(app.input)
+    app.input = []
+    app.cursor = 0
+    submit(text)
+}
+
+/// The model picker is shared by `/models` and a click on the composer's model name.
+@MainActor
+func openModelPicker() {
+    app.picker = Picker(title: "切换模型", items: app.models.map { model in
+        let status = [model == app.model ? "当前模型" : nil, app.thinkingLabel(for: model).map { "思考 " + $0 }]
+            .compactMap { $0 }.joined(separator: " · ")
+        return MenuItem(title: model, detail: status, command: "/model " + model)
+    }, selected: app.models.firstIndex { $0 == app.model } ?? 0)
+    needsRender = true
 }
 
 /// Forwards a press or wheel notch inside the plugin frame as a SettingsInput(.mouse). Coordinates
@@ -1344,7 +1437,7 @@ func clickedPickerRow(_ event: MouseEvent) {
                 runCommand(picker.filtered[index].command)
             }
         }
-    case .dialogButton, .settingsFrame:
+    case .dialogButton, .settingsFrame, .modelName, .thinkingStatus, .commandHint, .sendButton:
         return
     }
     needsRender = true
@@ -1409,11 +1502,7 @@ func runCommand(_ raw: String) {
         app.scroll = 0
         app.notice("新会话。输入消息开始。")
     case "/models":
-        app.picker = Picker(title: "切换模型", items: app.models.map { model in
-            let status = [model == app.model ? "当前模型" : nil, app.thinkingLabel(for: model).map { "思考 " + $0 }]
-                .compactMap { $0 }.joined(separator: " · ")
-            return MenuItem(title: model, detail: status, command: "/model " + model)
-        }, selected: app.models.firstIndex { $0 == app.model } ?? 0)
+        openModelPicker()
     case "/model":
         guard app.models.contains(argument) else { app.error("用法：/model <id>，可选：\(app.models.joined(separator: ", "))"); return }
         app.model = argument
@@ -1483,13 +1572,29 @@ func reasoningCommand(_ argument: String) {
         return
     }
     let provider = app.modelDetails[model]?.provider
-    let levels = app.modelDetails[model]?.thinkingLevels ?? []
+    let summary = app.modelDetails[model]
+    let state = app.providerState(for: model)
+    // Pick the ladder for the protocol that is live right now. Falling back to a single declared
+    // profile keeps a provider usable before it has reported state; never merge two ladders.
+    let profile: ModelThinkingProfile? = {
+        guard let profiles = summary?.thinkingProfiles, !profiles.isEmpty else { return nil }
+        if let kind = state?.protocolKind, let matched = profiles.first(where: { $0.protocolKind == kind }) {
+            return matched
+        }
+        return profiles.count == 1 ? profiles[0] : nil
+    }()
+    let levels = profile?.levels ?? summary?.thinkingLevels ?? []
+    let axis = profile?.axisLabel ?? state?.thinkingAxisLabel
     if argument.isEmpty {
         guard !levels.isEmpty else {
-            app.notice("当前模型没有声明思考级别，无法临时切换。")
+            if let profiles = summary?.thinkingProfiles, profiles.count > 1, state?.protocolKind == nil {
+                app.notice("插件为多个协议声明了思考档位，但尚未报告当前协议；稍后再试或先发送一次消息。")
+            } else {
+                app.notice("当前模型没有声明思考级别，无法临时切换。")
+            }
             return
         }
-        let current = app.providerState(for: model)
+        let current = state
         let override = current?.overridden == true ? current?.thinkingLevel : nil
         var items: [MenuItem] = [MenuItem(
             title: "跟随插件设置",
@@ -1503,8 +1608,14 @@ func reasoningCommand(_ argument: String) {
                 command: "/reasoning \(level.id)"
             )
         }
+        let title: String
+        if let axis {
+            title = "推理强度 · \(axis) · \(profile?.protocolLabel ?? state?.protocolLabel ?? "当前协议")"
+        } else {
+            title = "思考模式 · \(profile?.protocolLabel ?? state?.protocolLabel ?? model)"
+        }
         app.picker = Picker(
-            title: "思考模式 · \(model)", items: items,
+            title: title, items: items, note: profile?.note,
             selected: override.flatMap { id in levels.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0
         )
         needsRender = true
@@ -1520,7 +1631,10 @@ func reasoningCommand(_ argument: String) {
         app.notice("正在恢复跟随插件设置…")
         return
     }
-    guard levels.contains(where: { $0.id == argument }) else {
+    // Accept any id the model declared for any protocol: the plugin decides whether it applies to
+    // the protocol it is about to speak, and an unknown id there is ignored safely.
+    let declared = (summary?.thinkingProfiles ?? []).flatMap(\.levels) + (summary?.thinkingLevels ?? [])
+    guard declared.contains(where: { $0.id == argument }) else {
         app.error("模型 \(model) 没有声明思考级别 \(argument)；可用：\(levels.map(\.id).joined(separator: ", "))")
         return
     }

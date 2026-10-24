@@ -100,7 +100,7 @@ public actor PluginCoordinator {
             // sees the user's protocol/thinking choices. This must be validated exactly like the
             // save path: an IPC success carrying ok:false is a failed enable, not a default run.
             if let settingsProvider, let snapshot = try await settingsProvider.settings(for: bundleID) {
-                try await applySettingsSnapshot(snapshot, to: session, bundleID: bundleID)
+                _ = try await applySettingsSnapshot(snapshot, to: session, bundleID: bundleID)
             }
 
             let deployments = await session.providers.map { declaration in
@@ -294,9 +294,13 @@ public actor PluginCoordinator {
                 guard declaration.models.contains(model) else {
                     throw ReasoningError.unknownModel(provider: providerID, model: model)
                 }
-                let levels = (declaration.modelDetails ?? [])
-                    .first { $0.id == model }?.thinkingLevels ?? []
-                guard levels.contains(where: { $0.id == level }) else {
+                let details = (declaration.modelDetails ?? []).first { $0.id == model }
+                // Validation is against everything the plugin declared for this model. Which ladder
+                // applies depends on the protocol the plugin will speak, which is the plugin's
+                // business; the Core must not hardcode a protocol or a level vocabulary.
+                let legacyLevels = details?.thinkingLevels ?? []
+                let profileLevels = (details?.thinkingProfiles ?? []).flatMap(\.levels)
+                guard (legacyLevels + profileLevels).contains(where: { $0.id == level }) else {
                     throw ReasoningError.undeclaredLevel(provider: providerID, model: model, level: level)
                 }
             }

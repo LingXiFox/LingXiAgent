@@ -29,7 +29,7 @@ func REASONING_001_rejectsUndeclaredSelection() async throws {
 
     let undeclared = try #require(await core.waitReply(core.send(
         .providerReasoningSet, model: "mimo-v2.6-flash", provider: diagnosticsMiMoProviderID,
-        reasoningLevel: "ultra"
+        reasoningLevel: "hyper"
     )))
     #expect(!undeclared.ok)
     #expect(undeclared.error?.contains("does not declare thinking level") == true, "\(undeclared.error ?? "")")
@@ -70,18 +70,21 @@ func REASONING_002_reportsAndClearsOverride() async throws {
         "states=\(String(describing: hello.providerStates)) stderr=\(core.stderrText)"
     )
     #expect(pluginState.protocolKind == "responses", "plugin state: \(pluginState)")
-    #expect(pluginState.thinkingLevel == "enabled")
+    #expect(pluginState.thinkingLevel == "medium")
+    #expect(pluginState.thinkingLabel == "medium")
+    #expect(pluginState.thinkingAxisLabel == "effort")
     #expect(pluginState.source == "plugin-settings")
     #expect(pluginState.overridden != true)
 
     let set = try #require(await core.waitReply(core.send(
         .providerReasoningSet, model: "mimo-v2.6-flash", provider: diagnosticsMiMoProviderID,
-        reasoningLevel: "disabled"
+        reasoningLevel: "none"
     )))
     #expect(set.ok, "\(set.error ?? "")")
     let overridden = try #require(set.providerStates?.first { $0.providerID == diagnosticsMiMoProviderID })
-    #expect(overridden.thinkingLevel == "disabled")
-    #expect(overridden.thinkingLabel == "关闭思考")
+    #expect(overridden.thinkingLevel == "none")
+    #expect(overridden.thinkingLabel == "none")
+    #expect(overridden.thinkingAxisLabel == "effort")
     #expect(overridden.source == "session-override")
     #expect(overridden.overridden == true)
     // The protocol the plugin reports is unchanged by a thinking selection.
@@ -92,7 +95,7 @@ func REASONING_002_reportsAndClearsOverride() async throws {
     )))
     #expect(cleared.ok, "\(cleared.error ?? "")")
     let restored = try #require(cleared.providerStates?.first { $0.providerID == diagnosticsMiMoProviderID })
-    #expect(restored.thinkingLevel == "enabled")
+    #expect(restored.thinkingLevel == "medium")
     #expect(restored.source == "plugin-settings")
     #expect(restored.overridden != true)
 }
@@ -196,15 +199,62 @@ func REASONING_004_responsesBodyFollowsSelection() async throws {
         return try jsonBody(try await waitForRequest(server, count: requestIndex))
     }
 
-    let disabled = try await run("disabled", requestIndex: 1)
+    let disabled = try await run("none", requestIndex: 1)
     let disabledReasoning = try #require(disabled["reasoning"] as? [String: Any])
     #expect(disabledReasoning["effort"] as? String == "none")
 
-    // The saved configuration still carries effort=medium; the temporary level restores it.
-    let enabled = try await run("enabled", requestIndex: 2)
+    // The saved configuration still carries effort=medium; another temporary level replaces it.
+    let enabled = try await run("high", requestIndex: 2)
     let enabledReasoning = try #require(enabled["reasoning"] as? [String: Any])
-    #expect(enabledReasoning["effort"] as? String == "medium")
+    #expect(enabledReasoning["effort"] as? String == "high")
 
     let defaultValue = try await run("default", requestIndex: 3)
     #expect(defaultValue["reasoning"] == nil)
+}
+
+@Test("REASONING-005 a level declared for another protocol is accepted by the Core and ignored safely by the plugin")
+func REASONING_005_crossProtocolLevelIsSafe() async throws {
+    let server = try TestLoopbackServer(responses: [
+        sseResponse(chatSSE("one")),
+        sseResponse(chatSSE("two")),
+    ])
+    let directory = try diagnosticsTempDirectory("reasoning-cross-protocol")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedDiagnosticsProvider(
+        directory,
+        config: ["protocolKind": "chatCompletions", "model": "mimo-v2.6-flash", "thinkingMode": "enabled"],
+        endpoint: server.url
+    )
+    let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
+    defer { core.terminate() }
+    _ = try #require(await core.waitReply(core.send(.hello)))
+
+    // "xhigh" is declared for the model (Responses ladder) but the plugin speaks Chat right now.
+    // The Core validates against the declaration, not a protocol it would have to guess.
+    let set = try #require(await core.waitReply(core.send(
+        .providerReasoningSet, model: "mimo-v2.6-flash", provider: diagnosticsMiMoProviderID,
+        reasoningLevel: "xhigh"
+    )))
+    #expect(set.ok, "\(set.error ?? "")")
+
+    let before = core.snapshot().count
+    _ = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: "cross protocol"
+    )))
+    #expect(await core.waitEvent("run.terminal", after: before) != nil)
+    let first = try jsonBody(try await waitForRequest(server, count: 1))
+    // Chat keeps the saved configuration: thinking.type=enabled. The unknown-for-this-protocol id
+    // must not disable, enable twice, or crash the request.
+    #expect((first["thinking"] as? [String: Any])?["type"] as? String == "enabled")
+
+    _ = try #require(await core.waitReply(core.send(
+        .providerReasoningSet, provider: diagnosticsMiMoProviderID, clearReasoning: true
+    )))
+    let after = core.snapshot().count
+    _ = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: "follow plugin"
+    )))
+    #expect(await core.waitEvent("run.terminal", after: after) != nil)
+    let second = try jsonBody(try await waitForRequest(server, count: 2))
+    #expect((second["thinking"] as? [String: Any])?["type"] as? String == "enabled")
 }

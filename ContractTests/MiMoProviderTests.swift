@@ -1449,3 +1449,63 @@ func MIMO_responsesMultipleReasoningTurns() async throws {
     let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
     #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
 }
+
+@Test("PERF-003 a two-step tool loop accounts for both provider rounds and the journal work")
+func PERF_003_toolLoopAccounting() async throws {
+    let toolSSE = mimoSSE([
+        mimoSSEEvent("response.created", [
+            "type": "response.created", "sequence_number": 0,
+            "response": ["id": "resp_tool", "status": "in_progress"],
+        ]),
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": 1,
+            "item": [
+                "id": "item_1", "type": "function_call", "call_id": "call_1",
+                "name": "echo", "arguments": "",
+            ],
+        ]),
+        mimoSSEEvent("response.function_call_arguments.done", [
+            "type": "response.function_call_arguments.done", "sequence_number": 2,
+            "item_id": "item_1", "arguments": "{\"value\":\"42\"}",
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 3,
+            "response": ["id": "resp_tool", "status": "completed"],
+        ]),
+    ])
+    let server = try MiMoLoopbackServer(responses: [
+        mimoSSEResponse(toolSSE),
+        mimoSSEResponse(mimoResponsesTextSSE("done")),
+    ])
+    let harness = try await makeMiMoHarness(
+        grants: [
+            try mimoConfigGrant([
+                "protocolKind": "responses", "model": "mimo-v2.6-flash",
+                "thinkingMode": "enabled", "reasoningEffort": "low",
+            ]),
+            "test.endpoint=http://127.0.0.1:\(server.port)/v1/responses",
+        ],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+
+    let result = await harness.loop.run(
+        mimoRequest(turn: 1, prompt: "call echo"), policy: LoopPolicy()
+    )
+    #expect(result.status == .completed)
+    #expect(result.steps == 2)
+    let timing = try #require(result.timing)
+    let total = try #require(timing.totalMs)
+    let wait = try #require(timing.providerWaitMs)
+    let log = try #require(timing.logWriteMs)
+    let commit = try #require(timing.terminalCommitMs)
+    let cleanup = try #require(timing.providerCleanupMs)
+    let unaccounted = try #require(timing.unaccountedMs)
+    print("PERF-003 total=\(total) wait=\(wait) log=\(log) commit=\(commit) cleanup=\(cleanup) unaccounted=\(unaccounted) steps=\(timing.steps)")
+    #expect(timing.steps == 2)
+    #expect(wait > 0)
+    #expect(log >= 0)
+    #expect(commit >= 0)
+    #expect(cleanup >= 0)
+    #expect(unaccounted <= max(50, total / 10), "unaccounted=\(unaccounted) total=\(total)")
+}

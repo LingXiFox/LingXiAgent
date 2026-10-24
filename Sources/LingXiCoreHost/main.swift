@@ -106,11 +106,15 @@ do {
     _ = loop
 
     func statusLines() async -> [String] {
-        let handlers = await pipeline.mountedHandlerIDs
+        let handlers = await pipeline.mountedHandlerIDsSnapshot()
         let running = await coordinator.runningBundleIDs()
+        // Actor access is hoisted out of the string interpolation and uses methods: some toolchains
+        // emit a false "no async operations" warning for actor property awaits in this position.
+        let providerCount = await router.providerCountSnapshot()
+        let models = await router.offeredModelIDs().map(\.rawValue).joined(separator: ", ")
         var lines = [
-            "providers:      \(await router.providerCount)",
-            "models:         \(await router.offeredModels.map(\.rawValue).sorted().joined(separator: ", "))",
+            "providers:      \(providerCount)",
+            "models:         \(models)",
             "plugin policy:  \(policy.rawValue)\(policy == .development ? " (explicit development opt-in; ad-hoc signatures are admitted as untrusted)" : "")",
             "plugins:        \(installed.count) installed, \(installed.filter(\.enabled).count) enabled, \(running.count) running",
             "plugin handlers:\(handlers.isEmpty ? " none" : " " + handlers.joined(separator: ", "))",

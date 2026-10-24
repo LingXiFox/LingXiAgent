@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import LingXiKernel
 import LingXiPluginABI
 import LingXiPluginRuntime
 import LingXiSettingsProtocol
@@ -323,10 +324,10 @@ func mimoProviderStateCapability() async throws {
     let state = try await askProviderState(harness)
     #expect(state.protocolKind == "responses")
     #expect(state.protocolLabel == "Responses")
-    #expect(state.thinkingLevel == "enabled")
-    #expect(state.thinkingLabel == "开启思考")
+    #expect(state.thinkingLevel == "medium")
+    #expect(state.thinkingLabel == "medium")
     #expect(state.source == "plugin-settings")
-    #expect(state.detail == "effort=medium")
+    #expect(state.detail == "reasoning.effort=medium")
     let encoded = try JSONEncoder().encode(state)
     let text = String(decoding: encoded, as: UTF8.self)
     #expect(!text.contains("offline-test-credential"))
@@ -344,6 +345,7 @@ func mimoProviderStateCapability() async throws {
     #expect(defaultState.protocolKind == "chatCompletions")
     #expect(defaultState.protocolLabel == "Chat Completions")
     #expect(defaultState.thinkingLevel == "default")
+    #expect(defaultState.thinkingLabel == "服务端默认")
     #expect(defaultState.source == "server-default")
 }
 
@@ -418,8 +420,8 @@ func mimoResponsesReasoningOverrideBodyAndDigest() async throws {
 
     let requests = [
         diagnosticRequest("same prompt"),
-        diagnosticRequest("same prompt", reasoningLevel: "enabled"),
-        diagnosticRequest("same prompt", reasoningLevel: "disabled"),
+        diagnosticRequest("same prompt", reasoningLevel: "medium"),
+        diagnosticRequest("same prompt", reasoningLevel: "none"),
         diagnosticRequest("same prompt", reasoningLevel: "default"),
     ]
     for request in requests {
@@ -430,7 +432,7 @@ func mimoResponsesReasoningOverrideBodyAndDigest() async throws {
     let captured = try await waitForDiagnosticRequests(server, count: 4)
     let bodies = try captured.map { try jsonObject($0.body) }
     #expect((bodies[0]["reasoning"] as? [String: Any])?["effort"] as? String == "medium")
-    // The saved effort still applies when the temporary level keeps thinking enabled.
+    // The same effort as the saved configuration: the outgoing bytes must be identical.
     #expect((bodies[1]["reasoning"] as? [String: Any])?["effort"] as? String == "medium")
     #expect((bodies[2]["reasoning"] as? [String: Any])?["effort"] as? String == "none")
     #expect(bodies[3]["reasoning"] == nil)
@@ -551,4 +553,99 @@ func mimoReplayTimingAndLegacyCassette() async throws {
     #expect(timing.firstResponseMs == nil)
     #expect(timing.firstSSEMs == nil)
     #expect(timing.terminalMs == nil)
+}
+
+// MARK: - full ladder and Run snapshot
+
+/// Every declared Responses level must reach the wire as the documented mapping. This is the
+/// serialization half of "the UI selection and the API parameter agree".
+@Test("MIMO-DIAG-007 the Responses effort ladder serializes every declared level to its documented value")
+func mimoResponsesEffortLadder() async throws {
+    let cases: [(level: String, wire: String?)] = [
+        ("default", nil), ("none", "none"), ("minimal", "low"), ("low", "low"),
+        ("medium", "medium"), ("high", "high"), ("xhigh", "high"), ("max", "high"), ("ultra", "high"),
+    ]
+    let server = try MiMoDiagnosticsLoopback(
+        responses: Array(repeating: diagnosticSSEResponse(diagnosticResponsesSSE("ok")), count: cases.count)
+    )
+    let harness = try await openMiMoDiagnostics([
+        try configGrant([
+            "protocolKind": "responses", "model": diagnosticsModel, "thinkingMode": "default",
+        ]),
+        "test.endpoint=\(server.baseURL)/v1/responses",
+    ])
+    defer { Task { await harness.session.disable() } }
+
+    for item in cases {
+        let events = try await streamWireEvents(
+            harness, request: diagnosticRequest("ladder \(item.level)", reasoningLevel: item.level)
+        )
+        #expect(events.contains { $0.type == "completed" })
+    }
+    let captured = try await waitForDiagnosticRequests(server, count: cases.count)
+    for (index, item) in cases.enumerated() {
+        let body = try jsonObject(captured[index].body)
+        let reasoning = body["reasoning"] as? [String: Any]
+        #expect(reasoning?["effort"] as? String == item.wire, "level \(item.level): \(captured[index].body)")
+    }
+}
+
+/// A Run's thinking snapshot is captured on its first provider request and retained across tool
+/// rounds. Changing `/reasoning` mid-Run affects the next Run, not the one in flight.
+@Test("MIMO-DIAG-008 thinking is snapshotted per Run and survives a mid-Run selection change")
+func mimoThinkingSnapshotPerRun() async throws {
+    let server = try MiMoDiagnosticsLoopback(
+        responses: Array(repeating: diagnosticSSEResponse(diagnosticResponsesSSE("ok")), count: 3)
+    )
+    let harness = try await openMiMoDiagnostics([
+        try configGrant([
+            "protocolKind": "responses", "model": diagnosticsModel,
+            "thinkingMode": "enabled", "reasoningEffort": "medium",
+        ]),
+        "test.endpoint=\(server.baseURL)/v1/responses",
+    ])
+    defer { Task { await harness.session.disable() } }
+    let adapter = PluginProviderAdapter(
+        session: harness.session, providerID: harness.declaration.id,
+        declaration: harness.declaration, credential: { "offline-test-credential" }
+    )
+
+    func stream(execution: String) async throws -> [ModelEvent] {
+        let request = ModelRequest(
+            requestID: RequestID("req-\(UUID().uuidString)"),
+            continuationOf: nil,
+            executionID: ExecutionID(execution),
+            model: ModelID(diagnosticsModel),
+            entries: [ContextEntry(
+                id: EntryID("u-\(UUID().uuidString)"), segment: .currentUser,
+                role: .user, payload: .text("snapshot probe")
+            )],
+            tools: [], overallTimeout: nil
+        )
+        var events: [ModelEvent] = []
+        for try await event in try await adapter.stream(request) {
+            events.append(event)
+            if event.isTerminal { break }
+        }
+        return events
+    }
+
+    adapter.setReasoningOverride("high")
+    let first = try await stream(execution: "exec-snapshot")
+    #expect(first.contains { $0.isTerminal })
+    #expect(adapter.cachedReasoningSelectionCount == 1)
+
+    // A mid-Run change (the next tool round would ask again) must not alter the captured level.
+    adapter.setReasoningOverride("low")
+    _ = try await stream(execution: "exec-snapshot")
+
+    await adapter.finishExecution(ExecutionID("exec-snapshot"))
+    #expect(adapter.cachedReasoningSelectionCount == 0)
+    _ = try await stream(execution: "exec-next")
+
+    let captured = try await waitForDiagnosticRequests(server, count: 3)
+    let bodies = try captured.map { try jsonObject($0.body) }
+    #expect((bodies[0]["reasoning"] as? [String: Any])?["effort"] as? String == "high")
+    #expect((bodies[1]["reasoning"] as? [String: Any])?["effort"] as? String == "high")
+    #expect((bodies[2]["reasoning"] as? [String: Any])?["effort"] as? String == "low")
 }

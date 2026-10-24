@@ -39,7 +39,8 @@ fi
 if [[ "$DATA" == "$ROOT/dist/data" ]]; then
   # Refresh the bundle when it is missing or older than the dylib just built.
   if [[ ! -f "$DATA/plugins.json" || ! -x "$BUNDLE/Contents/MacOS/MiMoProvider" || "$DYLIB" -nt "$BUNDLE/Contents/MacOS/MiMoProvider" ]]; then
-    "$ROOT/Scripts/tui-setup.sh"
+    # The build above (or the explicit --no-build) already owns the dylib; never build twice.
+    "$ROOT/Scripts/tui-setup.sh" --no-build
   fi
 elif [[ ! -f "$DATA/plugins.json" ]]; then
   print -r -- "error: $DATA/plugins.json is missing; point LINGXI_DATA_DIR at an existing registry" >&2

@@ -193,10 +193,20 @@ func FE_007_protocolEndToEnd() async throws {
     let hello = try #require(await core.waitReply(helloID), "stderr: \(core.stderrText)")
     #expect(hello.ok)
     #expect(hello.models == ["mimo-v2.6-flash", "mimo-v2.6-pro"])
-    // Every offered model gets a detail entry even when the plugin declares no thinking levels.
+    // Every offered model gets a detail entry; MiMo declares one ladder per wire protocol instead of
+    // a flat list, so the frontend can show the ladder that matches the live protocol.
     #expect(hello.modelDetails?.map(\.id) == hello.models)
-    #expect(hello.modelDetails?.allSatisfy { $0.thinkingLevels.count == 3 } == true)
+    #expect(hello.modelDetails?.allSatisfy { $0.thinkingLevels.isEmpty } == true)
     #expect(hello.modelDetails?.allSatisfy { $0.defaultThinkingLevel == nil } == true)
+    #expect(hello.modelDetails?.allSatisfy { $0.thinkingProfiles.count == 2 } == true)
+    #expect(hello.modelDetails?.allSatisfy { detail in
+        detail.thinkingProfiles.first { $0.protocolKind == "chatCompletions" }?.levels.map(\.id)
+            == ["default", "enabled", "disabled"]
+    } == true)
+    #expect(hello.modelDetails?.allSatisfy { detail in
+        detail.thinkingProfiles.first { $0.protocolKind == "responses" }?.levels.map(\.id)
+            == ["default", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    } == true)
     let plugin = try #require(hello.plugins?.first)
     #expect(plugin.bundleID == "site.lingxi.provider.mimo")
     #expect(plugin.running)
