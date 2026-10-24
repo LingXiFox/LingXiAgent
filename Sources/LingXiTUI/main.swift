@@ -92,7 +92,8 @@ private final class CoreClient: @unchecked Sendable {
               provider: String? = nil, secret: String? = nil,
               settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
               viewport: SettingsViewport? = nil, settingsCredentialAction: String? = nil,
-              settingsCredentialConfirmed: Bool? = nil) -> Int {
+              settingsCredentialConfirmed: Bool? = nil,
+              reasoningLevel: String? = nil, clearReasoning: Bool? = nil) -> Int {
         lock.lock()
         let id = nextID
         nextID += 1
@@ -110,6 +111,8 @@ private final class CoreClient: @unchecked Sendable {
         request.viewport = viewport
         request.settingsCredentialAction = settingsCredentialAction
         request.settingsCredentialConfirmed = settingsCredentialConfirmed
+        request.reasoningLevel = reasoningLevel
+        request.clearReasoning = clearReasoning
         if let data = try? JSONEncoder().encode(request) {
             stdin.fileHandleForWriting.write(data + Data([UInt8(ascii: "\n")]))
         }
@@ -137,8 +140,13 @@ private enum Pending {
     case settingsInput
     case settingsResize
     case settingsSave
+    /// A no-change resize used only to ask the Core whether a settings session still exists. The
+    /// session id is carried so a late reply can never touch a panel that was reopened since.
+    case settingsVerify(String)
     case settingsCancel
     case settingsCredential(String)
+    /// A temporary thinking selection; `nil` is the "follow the plugin's own settings" clear.
+    case reasoning(String?)
 }
 
 private struct SettingsPanel {
@@ -152,6 +160,17 @@ struct Confirmation {
     let message: String
     let providerID: String
     let settingsSessionID: String
+    /// 0 = confirm, 1 = cancel. Enter confirms by default, which is the pre-existing behaviour.
+    var selected = 0
+}
+
+/// The host-owned "unsaved changes" prompt shown when Escape would discard a dirty settings draft.
+/// The plugin cannot be trusted to ask on the host's behalf, so the window is host chrome.
+struct ExitDialog {
+    /// Button titles in drawing order.
+    static let buttons = ["保存", "放弃", "继续编辑"]
+    /// Selected button. "继续编辑" is the safe default: a stray Enter neither saves nor discards.
+    var selected = 2
 }
 
 private struct SecretInput {
@@ -188,6 +207,8 @@ private struct App {
     var settingsInputQueue: [SettingsInput] = []
     var settingsSavePending = false
     var confirmation: Confirmation?
+    /// Host-owned prompt for a dirty settings draft; drawn above the settings panel.
+    var exitDialog: ExitDialog?
     var settingsCredentialRefresh = false
     var completionIndex = 0
     var coreGone = false
@@ -205,10 +226,22 @@ private struct App {
     var historyDraft: [Character] = []
     // Per-run accounting for the footer under each reply.
     var runStarted: Date?
+    var runModel: String?
     var runFirstMessage = 0
     var runInputTokens: Int?
     var runOutputTokens: Int?
     var lastFrame = FrameInfo()
+    /// Live per-provider state from the Core: protocol family, effective thinking, and whether a
+    /// temporary selection is in force. This is the footer's source of truth.
+    var providerStates: [ProviderStateSummary] = []
+    /// Timing for the run in progress, replaced by every `timing` event.
+    var runTiming: RunTiming?
+    /// TUI render cost accumulated while the run was live, in nanoseconds (sub-millisecond frames
+    /// must still add up) and the number of frames drawn.
+    var runRenderNanos: UInt64 = 0
+    var runFrames = 0
+    /// The most recently finished run's diagnostics, for /perf.
+    var lastDiagnostics: RunDiagnostics?
 
     mutating func insert(_ text: String) {
         let prefix = String(input.prefix(cursor)) + text
@@ -256,6 +289,31 @@ private struct App {
         return level.label
     }
 
+    /// Live state of the provider that owns `model`, as reported by the Core. `nil` when the provider
+    /// declares no state view, or has not reported yet: the footer then shows the model alone rather
+    /// than inventing a protocol or a thinking level.
+    func providerState(for model: String) -> ProviderStateSummary? {
+        guard let provider = modelDetails[model]?.provider else { return nil }
+        return providerStates.first { $0.providerID == provider }
+    }
+
+    /// The thinking mode the Core reports as effective for the current model. The temporary flag
+    /// distinguishes a frontend selection from the plugin's own configuration.
+    var thinkingStatus: (label: String, temporary: Bool)? {
+        guard let model, let state = providerState(for: model), let label = state.thinkingLabel else {
+            return nil
+        }
+        return (label, state.overridden == true)
+    }
+
+    /// Protocol of the current model's provider, when the plugin reports one. The display name is
+    /// plugin-owned: the footer shows `protocolLabel` and falls back to the raw kind, never a
+    /// prettified id of the TUI's own making.
+    var modelProtocol: String? {
+        guard let model, let state = providerState(for: model) else { return nil }
+        return state.protocolLabel ?? state.protocolKind
+    }
+
     var sessionTitle: String {
         if let activeSession, let title = sessions.first(where: { $0.id == activeSession })?.title { return title }
         // A brand-new session is not in the list until its first run ends.
@@ -297,6 +355,77 @@ private struct App {
 
 private func formatTokens(_ count: Int) -> String {
     count >= 1000 ? String(format: "%.1fk", Double(count) / 1000) : "\(count)"
+}
+
+// MARK: - run diagnostics
+
+/// One finished run's numbers. Everything here is a duration or a count: no field can carry prompt
+/// or response text, so a diagnostic line is safe to draw and safe to log.
+struct RunDiagnostics {
+    var model: String?
+    var timing: RunTiming
+    /// Frames the TUI drew while this run was live, and how much of the run went into drawing them.
+    var frames: Int
+    var renderMs: Int
+}
+
+/// Time from the first reasoning delta to the first text delta: how long the model spent thinking
+/// before it started answering. Reported only when the provider measured both points.
+private func thinkingMilliseconds(_ timing: RunTiming) -> Int? {
+    guard let text = timing.firstTextMs else { return nil }
+    if let reasoning = timing.firstReasoningMs { return max(0, text - reasoning) }
+    if let response = timing.firstResponseMs { return max(0, text - response) }
+    return nil
+}
+
+private func renderLabel(_ diagnostics: RunDiagnostics) -> String {
+    diagnostics.renderMs < 1 ? "<1ms" : "\(diagnostics.renderMs)ms"
+}
+
+/// The compact line under a reply's meta: upstream latency, thinking time and the TUI's own cost,
+/// kept apart so a slow answer is never blamed on the renderer.
+private func compactDiagnostic(_ diagnostics: RunDiagnostics) -> String? {
+    var parts: [String] = []
+    if let upstream = diagnostics.timing.firstResponseMs { parts.append("上游 \(upstream)ms") }
+    if let thinking = thinkingMilliseconds(diagnostics.timing) { parts.append("思考 \(thinking)ms") }
+    parts.append("本地 \(renderLabel(diagnostics))/\(diagnostics.frames) 帧")
+    return parts.joined(separator: " · ")
+}
+
+/// The full /perf breakdown, grouped the way the numbers are actually caused.
+private func performanceLines(_ diagnostics: RunDiagnostics) -> [String] {
+    let timing = diagnostics.timing
+    var lines = ["性能诊断 · \(diagnostics.model ?? "未知模型") · 仅数字，不含提示词或回复内容"]
+    var local: [String] = []
+    if let value = timing.corePrepareMs { local.append("Core 准备 \(value)ms") }
+    if let value = timing.prepareMs { local.append("插件准备 \(value)ms") }
+    if let value = timing.httpSendMs { local.append("HTTP 发送 \(value)ms") }
+    if !local.isEmpty { lines.append("本地阶段：" + local.joined(separator: " · ")) }
+    var upstream: [String] = []
+    if let value = timing.firstResponseMs { upstream.append("首响应 \(value)ms") }
+    if let value = timing.firstSSEMs { upstream.append("首 SSE \(value)ms") }
+    if let value = timing.firstReasoningMs { upstream.append("首思考 \(value)ms") }
+    if let value = timing.firstTextMs { upstream.append("首文本 \(value)ms") }
+    if !upstream.isEmpty { lines.append("上游延迟：" + upstream.joined(separator: " · ")) }
+    var totals: [String] = []
+    if let thinking = thinkingMilliseconds(timing) { totals.append("思考 \(thinking)ms") }
+    if let value = timing.providerTotalMs { totals.append("插件总计 \(value)ms") }
+    if let value = timing.runTotalMs { totals.append("运行总计 \(value)ms") }
+    totals.append("TUI 渲染 \(renderLabel(diagnostics))/\(diagnostics.frames) 帧")
+    lines.append("总计：" + totals.joined(separator: " · "))
+    return lines
+}
+
+/// Copy of a run's timing with the TUI's own render cost merged in. Render cost is local-only: the
+/// Core never sees it, and the wire type documents that.
+private func timing(_ timing: RunTiming, renderMs: Int) -> RunTiming {
+    RunTiming(
+        corePrepareMs: timing.corePrepareMs, prepareMs: timing.prepareMs,
+        httpSendMs: timing.httpSendMs, firstResponseMs: timing.firstResponseMs,
+        firstSSEMs: timing.firstSSEMs, firstReasoningMs: timing.firstReasoningMs,
+        firstTextMs: timing.firstTextMs, providerTotalMs: timing.providerTotalMs,
+        runTotalMs: timing.runTotalMs, renderMs: renderMs
+    )
 }
 
 /// A plugin save/result notice outranks the automatic "model went away" notice: both come from the
@@ -357,6 +486,9 @@ app.pending[helloID] = .hello
 
 @MainActor
 func draw() {
+    // Two clock reads per draw: the TUI's own render cost is part of the run diagnostics, and only
+    // measured while a run is live so idle redraws never skew it.
+    let startedAt = DispatchTime.now().uptimeNanoseconds
     let size = Terminal.size()
     let renderer = Renderer(columns: size.columns, rows: size.rows)
     var view = ViewState()
@@ -365,7 +497,10 @@ func draw() {
     view.input = app.secretInput == nil ? app.input : []
     view.cursor = app.secretInput == nil ? app.cursor : 0
     view.model = app.model
-    view.modelThinking = app.model.flatMap { app.thinkingLabel(for: $0) }
+    let thinking = app.thinkingStatus
+    view.modelThinking = thinking?.label
+    view.modelThinkingTemporary = thinking?.temporary ?? false
+    view.modelProtocol = app.modelProtocol
     view.sessionTitle = app.sessionTitle
     view.workspace = FileManager.default.currentDirectoryPath
     view.status = app.status
@@ -375,6 +510,8 @@ func draw() {
     view.settings = app.settings?.snapshot
     view.settingsBusy = app.settings?.busy ?? false
     view.settingsError = app.settings?.error
+    view.confirmation = app.confirmation
+    view.exitDialog = app.exitDialog
     view.auth = app.secretInput.map { AuthPrompt(label: $0.label, characterCount: $0.characters.count) }
     view.showThinking = app.showThinking
     view.running = app.running
@@ -397,6 +534,11 @@ func draw() {
         output.write(Data(("\u{1B}]0;" + String(String.UnicodeScalarView(safe)) + "\u{07}").utf8))
     }
     output.write(Data(frame.text.utf8))
+    // Only frames drawn while a run is live belong to that run's local cost.
+    if app.running {
+        app.runRenderNanos += DispatchTime.now().uptimeNanoseconds - startedAt
+        app.runFrames += 1
+    }
     needsRender = false
 }
 
@@ -498,6 +640,7 @@ func cancelSettings() {
     // The host keeps the final word: close the container immediately even if the plugin is busy
     // or its cancellation call is slow. Core tears the settings host down independently.
     app.settings = nil
+    app.exitDialog = nil
     app.settingsInputQueue.removeAll()
     app.settingsSavePending = false
     app.settingsCredentialRefresh = false
@@ -505,11 +648,66 @@ func cancelSettings() {
     needsRender = true
 }
 
+/// Closes the settings window after the Core reported that its session or plugin host is gone. A
+/// dead session can never be driven again, and leaving the panel up would swallow every later key
+/// press — including the ones needed to get back to /quit.
+@MainActor
+func closeSettingsAfterHostFailure(_ reason: String) {
+    guard app.settings != nil else { return }
+    app.settings = nil
+    app.exitDialog = nil
+    app.confirmation = nil
+    app.settingsInputQueue.removeAll()
+    app.settingsSavePending = false
+    app.settingsCredentialRefresh = false
+    app.authBusy = false
+    app.notice("插件设置已关闭：\(reason)", sticky: true)
+    needsRender = true
+}
+
+/// The Core reports settings failures as text only (there is no error code on the wire yet), so the
+/// frontend recognises exactly the descriptions that mean "this settings session can never work again":
+/// the session is gone, or the settings host itself failed. A failure the Core wrapped in one of its
+/// own settings errors ("settings could not be applied: ...") came from the plugin or from another
+/// host, and the window can still be driven, so the draft stays on screen.
+func isSettingsSessionLost(_ error: String?) -> Bool {
+    guard let error else { return false }
+    if error.contains("the settings session is no longer open") { return true }
+    // Raw `String(describing:)` of PluginSession.SessionError: the settings host died or timed out.
+    return error.hasPrefix("hostFailed(") || error.hasPrefix("notRunning")
+}
+
+/// Asks the Core whether the open settings session survived a failed save. The save reply reports one
+/// error string without saying which host produced it, and the two cases need opposite behaviour: a
+/// dead settings host must close the window, a rejected draft must keep it. A resize to the current
+/// viewport is the cheapest request that answers exactly that question without touching the plugin's
+/// own state.
+@MainActor
+func verifySettingsSession() {
+    guard let panel = app.settings, !app.settingsSavePending else { return }
+    let id = client.send(
+        .pluginSettingsResize, settingsSessionID: panel.snapshot.sessionID,
+        viewport: panel.snapshot.viewport
+    )
+    app.pending[id] = .settingsVerify(panel.snapshot.sessionID)
+}
+
 @MainActor
 func handleSettingsKey(_ key: Key) {
+    if app.exitDialog != nil {
+        handleExitDialogKey(key)
+        return
+    }
     switch key {
     case .escape:
-        cancelSettings()
+        // A clean draft closes at once. A dirty one — or one the plugin does not track, which is
+        // reported as nil — asks first instead of silently discarding the user's edits.
+        if app.settings?.snapshot.dirty == false {
+            cancelSettings()
+        } else {
+            app.exitDialog = ExitDialog()
+            needsRender = true
+        }
     case .saveSettings:
         saveSettings()
     case .up: sendSettingsInput(SettingsInput(kind: .key, key: "up"))
@@ -534,9 +732,55 @@ func handleSettingsKey(_ key: Key) {
     }
 }
 
+/// Keyboard for the host-owned unsaved-changes prompt: Left/Right/Tab move, Enter confirms the
+/// selected button, Escape goes back to editing (the same as choosing 继续编辑).
+@MainActor
+func handleExitDialogKey(_ key: Key) {
+    guard var dialog = app.exitDialog else { return }
+    switch key {
+    case .left:
+        dialog.selected = (dialog.selected + ExitDialog.buttons.count - 1) % ExitDialog.buttons.count
+    case .right, .tab:
+        dialog.selected = (dialog.selected + 1) % ExitDialog.buttons.count
+    case .enter, .newline:
+        app.exitDialog = nil
+        confirmExitDialog(dialog.selected)
+        return
+    case .escape:
+        // Escape is "keep editing": the dialog closes and the draft stays exactly as it was.
+        app.exitDialog = nil
+        needsRender = true
+        return
+    case .interrupt:
+        shutdown()
+        exit(0)
+    default:
+        break
+    }
+    app.exitDialog = dialog
+    needsRender = true
+}
+
+@MainActor
+func confirmExitDialog(_ button: Int) {
+    switch button {
+    case 0:
+        // Keep the window: a failed save must leave the draft and the error visible.
+        saveSettings()
+    case 1:
+        cancelSettings()
+    default:
+        break
+    }
+    needsRender = true
+}
+
 @MainActor
 func handleSettingsCommand(_ command: SettingsCommand?) {
     guard let command, let panel = app.settings else { return }
+    // A plugin command is newer than the host's own "unsaved changes" prompt, so it takes the screen:
+    // the two host-owned modals never stack, which keeps mouse routing and drawing order identical.
+    app.exitDialog = nil
     let provider = command.providerID ?? ""
     switch command.type {
     case "credential.update":
@@ -561,10 +805,30 @@ func handleSettingsCommand(_ command: SettingsCommand?) {
 
 @MainActor
 func handleConfirmationKey(_ key: Key) {
-    guard let confirmation = app.confirmation else { return }
+    guard var confirmation = app.confirmation else { return }
     switch key {
+    case .left, .right, .tab:
+        confirmation.selected = confirmation.selected == 0 ? 1 : 0
+        app.confirmation = confirmation
     case .enter:
+        confirmCredentialRemoval(confirmation)
+        return
+    case .escape, .interrupt:
         app.confirmation = nil
+        app.notice("已取消删除凭据。")
+    default:
+        break
+    }
+    needsRender = true
+}
+
+/// Commits a host-owned confirmation dialog. Index 0 is 确认, 1 is 取消; the mouse routes here too so
+/// a click and Enter can never disagree about which button was chosen.
+@MainActor
+func confirmCredentialRemoval(_ confirmation: Confirmation) {
+    app.confirmation = nil
+    switch confirmation.selected {
+    case 0:
         app.authBusy = true
         let id = client.send(
             .pluginSettingsCredential, provider: confirmation.providerID,
@@ -573,11 +837,8 @@ func handleConfirmationKey(_ key: Key) {
             settingsCredentialConfirmed: true
         )
         app.pending[id] = .settingsCredential("remove")
-    case .escape, .interrupt:
-        app.confirmation = nil
-        app.notice("已取消删除凭据。")
     default:
-        break
+        app.notice("已取消删除凭据。")
     }
     needsRender = true
 }
@@ -607,6 +868,9 @@ func handleReply(_ reply: FrontendReply) {
     }
     if let sessions = reply.sessions { app.sessions = sessions }
     if let plugins = reply.plugins { app.plugins = plugins }
+    // Provider state is the Core's answer, never a local guess: it also carries a temporary
+    // thinking selection merged in front of the plugin's own configuration.
+    if let states = reply.providerStates { app.providerStates = states }
 
     switch pending {
     case .hello:
@@ -688,30 +952,54 @@ func handleReply(_ reply: FrontendReply) {
                 saveSettings()
             }
         } else {
+            // Core drops a settings session on any input failure: the plugin host is gone or its
+            // frame was invalid. The window is unusable, so close it rather than swallow keys.
             app.settings?.busy = false
-            app.error(reply.error ?? "插件设置更新失败。")
+            closeSettingsAfterHostFailure(reply.error ?? "插件设置进程已退出。")
         }
     case .settingsSave:
 
         if reply.ok {
             app.settings = nil
+            app.exitDialog = nil
             app.settingsInputQueue.removeAll()
             app.settingsSavePending = false
             app.settingsCredentialRefresh = false
             if let preferred = reply.preferredModel, app.models.contains(preferred) { app.model = preferred }
             app.notice("设置已保存。")
-        } else {
+        } else if isSettingsSessionLost(reply.error) {
             app.settings?.busy = false
-            app.settings?.error = reply.error ?? "设置保存失败。"
-            app.error(reply.error ?? "设置保存失败。")
+            closeSettingsAfterHostFailure(reply.error ?? "插件设置进程已退出。")
+        } else {
+            // A rejected draft is not a dead session: keep the window, the draft and the error, then
+            // let the Core say whether the session is still there.
+            let message = reply.error ?? "设置保存失败。"
+            app.settings?.busy = false
+            app.settings?.error = message
+            app.error(message)
+            verifySettingsSession()
+        }
+    case .settingsVerify(let sessionID):
+        guard app.settings?.snapshot.sessionID == sessionID, app.settings?.busy != true else { break }
+        if let snapshot = reply.settings {
+            // The session survived the save attempt, so the draft window and its error stay.
+            app.settings?.snapshot = snapshot
+            app.settings?.busy = false
+        } else {
+            closeSettingsAfterHostFailure(reply.error ?? "插件设置进程已退出。")
         }
     case .settingsCancel:
         app.settings = nil
+        app.exitDialog = nil
         app.settingsCredentialRefresh = false
     case .settingsCredential(let action):
         app.authBusy = false
         if !reply.ok {
-            app.error(reply.error ?? "凭据操作被拒绝。")
+            if isSettingsSessionLost(reply.error) {
+                closeSettingsAfterHostFailure(reply.error ?? "插件设置进程已退出。")
+            } else {
+                app.error(reply.error ?? "凭据操作被拒绝。")
+            }
         } else if let state = reply.credentials?.first {
             if action == "update" {
                 app.settingsCredentialRefresh = true
@@ -720,6 +1008,17 @@ func handleReply(_ reply: FrontendReply) {
             } else if action == "remove" {
                 refreshSettingsAfterCredential()
             }
+        }
+    case .reasoning(let level):
+        if reply.ok {
+            let label = level.flatMap { id in app.model.flatMap { app.modelDetails[$0]?.thinkingLevels.first { $0.id == id }?.label } }
+            if let label {
+                app.notice("已临时切换思考模式：\(label)。Ctrl-S 不会保存它；/reasoning 可恢复跟随插件。")
+            } else {
+                app.notice("已恢复跟随插件的思考设置。")
+            }
+        } else {
+            app.error("思考模式未切换：\(reply.error ?? "未知错误")")
         }
     case .auth(let provider, let action):
         app.authBusy = false
@@ -803,10 +1102,25 @@ func handleEvent(_ event: FrontendEvent) {
             meta.append(event.status == "cancelled" ? "已取消" : "未完成")
             app.messages.append(Message(role: .error, text: "运行结束：\(event.status ?? "failed") / \(cause)\(detail)"))
         }
+        // Diagnostics belong to this run only: the record is replaced, never accumulated.
+        let renderMs = Int(app.runRenderNanos / 1_000_000)
+        let diagnostics = app.runTiming.map {
+            RunDiagnostics(
+                model: app.runModel ?? app.model, timing: timing($0, renderMs: renderMs),
+                frames: app.runFrames, renderMs: renderMs
+            )
+        }
+        app.lastDiagnostics = diagnostics
         if let index = app.messages.indices.last(where: { $0 >= app.runFirstMessage && app.messages[$0].role == .assistant }) {
             app.messages[index].meta = meta.joined(separator: "  ·  ")
+            if let diagnostics { app.messages[index].diagnostics = compactDiagnostic(diagnostics) }
         }
         app.runStarted = nil
+    case "timing":
+        guard event.runID == app.runID, let timing = event.timing else { break }
+        app.runTiming = timing
+    case "providers.state":
+        if let states = event.providerStates { app.providerStates = states }
     case "plugins.changed":
         if let plugins = event.plugins {
             app.plugins = plugins
@@ -815,6 +1129,7 @@ func handleEvent(_ event: FrontendEvent) {
         if let details = event.modelDetails {
             app.modelDetails = Dictionary(details.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         }
+        if let states = event.providerStates { app.providerStates = states }
         if let models = event.models {
             app.models = models
             if let current = app.model, !models.contains(current) {
@@ -861,9 +1176,13 @@ func submit(_ text: String) {
     app.scroll = 0
     app.running = true
     app.runStarted = Date()
+    app.runModel = model
     app.runFirstMessage = app.messages.count
     app.runInputTokens = nil
     app.runOutputTokens = nil
+    app.runTiming = nil
+    app.runRenderNanos = 0
+    app.runFrames = 0
     let id = client.send(.chatSend, sessionID: app.activeSession, model: model, text: trimmed)
     app.pending[id] = .chat(trimmed)
 }
@@ -892,6 +1211,152 @@ func savePlugins(_ items: [MenuItem]) {
 func setMouse(_ enabled: Bool) {
     app.mouse = enabled
     output.write(Data((enabled ? "\u{1B}[?1000h\u{1B}[?1006h" : "\u{1B}[?1000l\u{1B}[?1006l").utf8))
+}
+
+// MARK: - mouse
+
+/// The region under a terminal cell, from the last drawn frame. Hit regions are produced by the
+/// renderer because it owns layout; this loop never re-derives panel geometry.
+@MainActor
+func hitRegion(row: Int, column: Int) -> HitRegion? {
+    // Later regions are drawn on top of earlier ones, so the last match is the visible target: a
+    // dialog button above the settings panel wins over the plugin frame behind it, and a toggle
+    // checkbox wins over the row it sits in.
+    app.lastFrame.hits.last { $0.contains(row: row, column: column) }
+}
+
+/// Routes one mouse report. Wheel first: it is the only event a host chrome cell may honour (scroll),
+/// and it never activates anything. Presses follow the same modality order as the keyboard.
+@MainActor
+func handleMouse(_ event: MouseEvent) {
+    guard app.mouse, !app.authBusy, app.secretInput == nil, !app.coreGone else { return }
+    if app.confirmation != nil {
+        guard event.button == .left, event.pressed else { return }
+        clickedDialogButton(event) { index in
+            guard var confirmation = app.confirmation else { return }
+            confirmation.selected = index
+            app.confirmation = confirmation
+            confirmCredentialRemoval(confirmation)
+        }
+        return
+    }
+    if app.settings != nil {
+        if app.exitDialog != nil {
+            guard event.button == .left, event.pressed else { return }
+            clickedDialogButton(event) { index in
+                guard var dialog = app.exitDialog else { return }
+                dialog.selected = index
+                app.exitDialog = nil
+                confirmExitDialog(dialog.selected)
+            }
+            return
+        }
+        forwardSettingsMouse(event)
+        return
+    }
+    if app.pluginList || app.picker != nil {
+        if event.isWheel {
+            movePickerSelection(event.delta)
+            return
+        }
+        guard event.button == .left, event.pressed else { return }
+        clickedPickerRow(event)
+        return
+    }
+    if event.isWheel {
+        // Main view: the wheel scrolls the conversation, exactly like the keyboard scroll keys.
+        scrollBy(event.delta * 3)
+        needsRender = true
+        return
+    }
+    // A left press anywhere else may land on the slash-command completion list; that handler ignores
+    // every region it does not own, so no extra layout knowledge is needed here.
+    guard event.button == .left, event.pressed else { return }
+    clickedPickerRow(event)
+}
+
+/// Forwards a press or wheel notch inside the plugin frame as a SettingsInput(.mouse). Coordinates
+/// become relative to the frame's first cell; anything on host chrome is dropped.
+@MainActor
+func forwardSettingsMouse(_ event: MouseEvent) {
+    guard let panel = app.settings else { return }
+    // SettingsInput has no press/release flag, so a release must never be forwarded: the plugin would
+    // act on the same cell twice and a toggle would cancel itself out.
+    guard event.isWheel || event.pressed else { return }
+    guard let region = hitRegion(row: event.row, column: event.column), region.kind == .settingsFrame else {
+        return
+    }
+    let row = event.row - region.row
+    let column = event.column - region.column
+    guard row >= 0, row < min(panel.snapshot.viewport.height, region.rows),
+          column >= 0, column < min(panel.snapshot.viewport.width, region.columns) else { return }
+    sendSettingsInput(SettingsInput(
+        kind: .mouse, row: row, column: column, delta: event.isWheel ? event.delta : nil
+    ))
+}
+
+/// A click on a host-owned dialog button. Buttons are drawn in a known order, so the hit region's
+/// index is the decision.
+@MainActor
+func clickedDialogButton(_ event: MouseEvent, action: (Int) -> Void) {
+    guard let region = hitRegion(row: event.row, column: event.column),
+          case .dialogButton(let index) = region.kind else { return }
+    action(index)
+    needsRender = true
+}
+
+/// A click on a picker, plugin-list or completion row: select it in the same index the keyboard uses,
+/// then run the row's default action. A click on a toggle checkbox is Space; anywhere else is Enter.
+@MainActor
+func clickedPickerRow(_ event: MouseEvent) {
+    guard let region = hitRegion(row: event.row, column: event.column) else { return }
+    switch region.kind {
+    case .completionRow(let index):
+        guard let completion = slashPicker(), completion.items.indices.contains(index) else { return }
+        app.completionIndex = index
+        app.input = []
+        app.cursor = 0
+        app.completionIndex = 0
+        runCommand(completion.items[index].command)
+    case .pickerRow(let index, let checkbox):
+        if app.pluginList, var picker = app.picker {
+            picker.selected = index
+            app.picker = picker
+            guard picker.filtered.indices.contains(index) else { return }
+            if checkbox {
+                togglePlugin(picker.filtered[index].command)
+            } else {
+                openPluginSettings(picker.filtered[index].command)
+            }
+        } else if var picker = app.picker {
+            picker.selected = index
+            app.picker = picker
+            guard picker.filtered.indices.contains(index) else { return }
+            if picker.isToggleList, checkbox,
+               let item = picker.items.firstIndex(where: { $0.command == picker.filtered[index].command }) {
+                app.picker?.items[item].checked?.toggle()
+            } else if picker.isToggleList {
+                app.picker = nil
+                savePlugins(picker.items)
+            } else {
+                app.picker = nil
+                if app.input.first == "/" { app.input = []; app.cursor = 0; app.completionIndex = 0 }
+                runCommand(picker.filtered[index].command)
+            }
+        }
+    case .dialogButton, .settingsFrame:
+        return
+    }
+    needsRender = true
+}
+
+@MainActor
+func movePickerSelection(_ direction: Int) {
+    guard var picker = app.picker else { return }
+    let count = max(0, picker.filtered.count)
+    picker.selected = min(max(0, picker.selected + direction), max(0, count - 1))
+    app.picker = picker
+    needsRender = true
 }
 
 @MainActor
@@ -988,11 +1453,15 @@ func runCommand(_ raw: String) {
         app.notice("已清屏。会话历史仍保留；/new 开新会话。")
     case "/thinking":
         app.showThinking.toggle()
+    case "/reasoning":
+        reasoningCommand(argument)
+    case "/perf":
+        performanceCommand()
     case "/copy":
         copyLastReply()
     case "/mouse":
         setMouse(!app.mouse)
-        app.notice(app.mouse ? "已开启鼠标滚轮滚动。终端原生选择需按住 fn（Terminal）或 ⌥（iTerm2）拖动；/mouse 关闭。"
+        app.notice(app.mouse ? "已开启鼠标：滚轮滚动、点击选择。终端原生选择需按住 fn（Terminal）或 ⌥（iTerm2）拖动；/mouse 关闭。"
                              : "已关闭鼠标捕获，可直接拖选复制。")
     case "/quit", "/exit":
         shutdown()
@@ -1002,15 +1471,98 @@ func runCommand(_ raw: String) {
     }
 }
 
+// MARK: - reasoning
+
+/// `/reasoning` offers the current model's own declared thinking levels plus one explicit
+/// "follow the plugin's settings" entry. The labels come from the plugin's declaration; the TUI never
+/// knows a vendor vocabulary and never invents a level.
+@MainActor
+func reasoningCommand(_ argument: String) {
+    guard let model = app.model else {
+        app.error("当前没有可用模型，无法切换思考模式。")
+        return
+    }
+    let provider = app.modelDetails[model]?.provider
+    let levels = app.modelDetails[model]?.thinkingLevels ?? []
+    if argument.isEmpty {
+        guard !levels.isEmpty else {
+            app.notice("当前模型没有声明思考级别，无法临时切换。")
+            return
+        }
+        let current = app.providerState(for: model)
+        let override = current?.overridden == true ? current?.thinkingLevel : nil
+        var items: [MenuItem] = [MenuItem(
+            title: "跟随插件设置",
+            detail: override == nil ? "当前" : "",
+            command: "/reasoning follow"
+        )]
+        items += levels.map { level in
+            MenuItem(
+                title: level.label,
+                detail: level.id == override ? "当前 · 临时" : "临时 · \(level.id)",
+                command: "/reasoning \(level.id)"
+            )
+        }
+        app.picker = Picker(
+            title: "思考模式 · \(model)", items: items,
+            selected: override.flatMap { id in levels.firstIndex { $0.id == id }.map { $0 + 1 } } ?? 0
+        )
+        needsRender = true
+        return
+    }
+    guard let provider else {
+        app.error("模型 \(model) 没有所属 Provider，无法切换思考模式。")
+        return
+    }
+    if argument == "follow" {
+        let id = client.send(.providerReasoningSet, provider: provider, clearReasoning: true)
+        app.pending[id] = .reasoning(nil)
+        app.notice("正在恢复跟随插件设置…")
+        return
+    }
+    guard levels.contains(where: { $0.id == argument }) else {
+        app.error("模型 \(model) 没有声明思考级别 \(argument)；可用：\(levels.map(\.id).joined(separator: ", "))")
+        return
+    }
+    let id = client.send(
+        .providerReasoningSet, model: model, provider: provider, reasoningLevel: argument
+    )
+    app.pending[id] = .reasoning(argument)
+    app.notice("正在切换思考模式…")
+}
+
+// MARK: - diagnostics
+
+/// `/perf` prints the last run's numbers: Core preparation, plugin phases, upstream first-byte and
+/// first-token latencies, and the TUI's own render cost. Numbers only, never prompt or reply text.
+@MainActor
+func performanceCommand() {
+    if app.running {
+        app.notice("本轮仍在进行中，结束后可用 /perf 查看完整诊断。")
+        return
+    }
+    guard let diagnostics = app.lastDiagnostics else {
+        app.notice("还没有运行诊断。先发送一次消息。")
+        return
+    }
+    for line in performanceLines(diagnostics) {
+        app.messages.append(Message(role: .system, text: line))
+    }
+    app.scroll = 0
+    needsRender = true
+}
+
 private let commandItems: [MenuItem] = [
     .init(title: "连接模型", detail: "/auth", command: "/auth"),
     .init(title: "切换模型", detail: "/models", command: "/models"),
+    .init(title: "切换思考模式", detail: "/reasoning", command: "/reasoning"),
     .init(title: "切换会话", detail: "/sessions", command: "/sessions"),
     .init(title: "新建会话", detail: "/new", command: "/new"),
     .init(title: "复制最后一条回复", detail: "/copy", command: "/copy"),
     .init(title: "展开 / 收起思考", detail: "/thinking · Ctrl-T", command: "/thinking"),
+    .init(title: "性能诊断", detail: "/perf", command: "/perf"),
     .init(title: "插件", detail: "/plugins", command: "/plugins"),
-    .init(title: "鼠标滚轮滚动", detail: "/mouse", command: "/mouse"),
+    .init(title: "鼠标捕获", detail: "/mouse", command: "/mouse"),
     .init(title: "清屏", detail: "/clear", command: "/clear"),
     .init(title: "退出", detail: "/quit", command: "/quit"),
 ]
@@ -1046,6 +1598,12 @@ func handleKey(_ key: Key) {
         return
     }
     if app.discardInputBatch || app.discardPaste { return }
+    // Mouse is routed before the key chain so a click always follows the modality priority below,
+    // and so the secret-input and credential states can refuse it outright.
+    if case .mouse(let event) = key {
+        handleMouse(event)
+        return
+    }
     if key == .redraw {
         output.write(Data("\u{1B}[2J".utf8))
         needsRender = true
@@ -1266,7 +1824,7 @@ func handleKey(_ key: Key) {
             break
         }
         for _ in 0..<2 { app.input.insert(" ", at: app.cursor); app.cursor += 1 }
-    case .unknown, .pasteStart, .pasteEnd, .redraw, .saveSettings:
+    case .unknown, .pasteStart, .pasteEnd, .redraw, .saveSettings, .mouse:
         break
     }
     needsRender = true
@@ -1314,7 +1872,12 @@ while true {
     }
     keys.wait(milliseconds: 30)
     app.discardInputBatch = false
-    for key in keys.drain() { handleKey(key) }
+    for key in keys.drain() {
+        // Two clicks can arrive in one batch; redraw first so the second click is hit-tested against
+        // the frame it is actually pointing at.
+        if case .mouse = key, needsRender { draw() }
+        handleKey(key)
+    }
     for line in client.lines.drain() {
         if let reply = try? JSONDecoder().decode(FrontendReply.self, from: line) {
             handleReply(reply)
@@ -1330,7 +1893,17 @@ while true {
         app.authBusy = false
         app.coreGone = true
         app.running = false
-        app.error("Core 进程已退出。按 Ctrl-C 退出。")
+        // A settings window can never be driven again once its Core is gone; close it instead of
+        // leaving a modal that swallows every key, /quit included.
+        if app.settings != nil {
+            app.settings = nil
+            app.exitDialog = nil
+            app.confirmation = nil
+            app.settingsInputQueue.removeAll()
+            app.notice("Core 进程已退出，插件设置窗口已关闭。", sticky: true)
+        } else {
+            app.error("Core 进程已退出。按 Ctrl-C 退出。")
+        }
     }
     if let expiry = app.feedbackExpiry, Date() >= expiry {
         app.feedback = nil

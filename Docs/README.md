@@ -192,6 +192,11 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
 - **两个示例插件**（Swift / C）证明同一 ABI、同一 Core、无需改内核。
 - **TUI**：居中首页、多行输入、安全粘贴、聊天历史召回、折叠思考、模型/会话/插件选择器、插件声明的模型思考等级、`/plugins` 两级导航与插件自绘设置容器、Keychain 认证；
   真实 PTY 覆盖连续会话、草稿、隐藏输入与干净退出。快捷键及协议见 `Frontend-Protocol.md`。
+  阶段 4.3 起：底栏显示模型、协议与**实际生效**的思考模式；`/reasoning` 只在插件声明的等级里做
+  临时切换（不落盘，Ctrl-T 仍只控制思考内容）；每次 Run 一条分段耗时诊断（`/perf` 展开）；
+  设置窗口由插件报告 dirty，Esc 在无修改时直接退出、有修改时弹“保存/放弃/继续编辑”；鼠标点击、
+  滚轮与焦点切换覆盖列表、设置 Tab/单选项与宿主弹窗按钮，插件只收到帧内相对坐标，
+  `/mouse` 仍可关闭捕获以保留终端原生拖选（ADR-0010）。
 
   插件设置：`/plugins` 选中插件按 Enter 打开；Space 立即启停。设置页由插件自绘，宿主负责外框、Esc/Ctrl-S、
   受约束帧校验、事务保存与 Settings-Only Host 生命周期。示例见 `Plugin-Settings-Example.md`。
@@ -222,7 +227,7 @@ Provider 是一种插件能力（`provider.<id>`），与 Hook 共用同一套 H
 | `Provider-Plugin-Contract.md` | Provider 契约：wire family、事件流终态、错误分类、用量与缓存 |
 | `Testing-and-Acceptance.md` | 测试分层（L0–L4）与完成标准判定 |
 | `Regression-Cases.md` | 回归台账：带 ID 的场景 → 期望行为 → 证据 → 阶段归属 |
-| `Decisions/` | ADR：ABI 许可轨道、阶段范围前移、插件状态为配置 |
+| `Decisions/` | ADR：ABI 许可轨道、阶段范围前移、插件状态为配置、模型思考等级、插件自绘设置、MiMo 双协议、设置安全加固、Responses 推理历史、TUI 交互与诊断 |
 | `Validation/` | 各阶段验收记录：计数、逐 ID 证据、反例、CI 记录 |
 
 阅读路径：理解设计读 `Kernel-Design.md` → `Plugin-System-Design.md`；动手实现读

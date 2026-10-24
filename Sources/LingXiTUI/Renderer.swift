@@ -69,6 +69,8 @@ struct Message {
     var streaming: Bool = false
     /// Dim footer under an assistant reply: duration, token usage.
     var meta: String? = nil
+    /// Compact run diagnostic under the meta line. Numbers only, never request or response text.
+    var diagnostics: String? = nil
 }
 
 struct MenuItem {
@@ -108,8 +110,12 @@ struct ViewState {
     var input: [Character] = []
     var cursor = 0
     var model: String?
+    /// Live protocol family of the current model, from the Core's provider state.
+    var modelProtocol: String?
     /// Plugin-declared thinking level of the current model, when one was declared.
     var modelThinking: String?
+    /// True when that level is a temporary frontend selection instead of the plugin's own setting.
+    var modelThinkingTemporary = false
     var sessionTitle = ""
     var workspace = ""
     var status = StatusLine(left: [], right: "")
@@ -120,14 +126,55 @@ struct ViewState {
     var settingsBusy = false
     var settingsError: String?
     var confirmation: Confirmation?
+    /// Host-owned "unsaved changes" prompt; drawn above the settings panel.
+    var exitDialog: ExitDialog?
     var auth: AuthPrompt?
     var showThinking = false
     var running = false
 }
 
+/// One clickable region of the last drawn frame, in 1-based screen cells — the same coordinates a
+/// terminal mouse report carries. The renderer owns layout, so it is the only place that can produce
+/// these without duplicating geometry in the event loop.
+struct HitRegion: Equatable {
+    enum Kind: Equatable {
+        /// One row of a picker or plugin list, by index into its *filtered* items. A toggle row
+        /// reports two regions: its checkbox cells, and the rest of the row.
+        case pickerRow(index: Int, checkbox: Bool)
+        /// One row of the slash-command completion list.
+        case completionRow(index: Int)
+        /// One host-owned dialog button, by drawing order.
+        case dialogButton(index: Int)
+        /// The plugin-owned cell area inside the settings frame. Row 0 / column 0 of this region is
+        /// the origin the plugin's own mouse coordinates count from.
+        case settingsFrame
+    }
+
+    var kind: Kind
+    var row: Int
+    var rows = 1
+    var column: Int
+    var columns: Int
+
+    func contains(row target: Int, column targetColumn: Int) -> Bool {
+        (row..<(row + rows)).contains(target) && (column..<(column + columns)).contains(targetColumn)
+    }
+}
+
 struct FrameInfo {
     var bodyLines = 0
     var bodyHeight = 0
+    /// Clickable regions produced by this draw. Empty when nothing on screen is interactive.
+    var hits: [HitRegion] = []
+}
+
+/// Where a modal panel ended up, in 0-based canvas cells. Callers use it to map body rows back to
+/// the items they drew without repeating the layout arithmetic.
+private struct PanelGeometry {
+    var top: Int
+    var left: Int
+    var inner: Int
+    var bodyRows: Int
 }
 
 /// Lays out messages once per (content, width) and reuses the result while other parts redraw.
@@ -139,6 +186,7 @@ final class LineCache {
         hasher.combine(message.text)
         hasher.combine(message.streaming)
         hasher.combine(message.meta)
+        hasher.combine(message.diagnostics)
         hasher.combine(width)
         hasher.combine(showThinking)
         hasher.combine("\(message.role)")
@@ -342,9 +390,17 @@ struct Renderer {
                 }
                 cursor = (composerRow + 1 + editor.cursorRow - firstLine, composerLeft + 3 + editor.cursorCol)
             }
-            // The footer is the model area: which model answers, plus editor state.
+            // The footer is the model area: which model answers, which wire protocol it uses, and the
+            // thinking mode the Core reports as effective. A temporary selection is marked so it is
+            // never mistaken for the plugin's own configuration.
             var footer: [Span] = [Span(view.model ?? "无模型", .color(view.model == nil ? Theme.error : Theme.fox))]
-            if let thinking = view.modelThinking { footer.append(Span("  ·  思考 \(thinking)", .color(Theme.dim))) }
+            if let protocolKind = view.modelProtocol {
+                footer.append(Span("  ·  协议 \(protocolKind)", .color(Theme.dim)))
+            }
+            if let thinking = view.modelThinking {
+                footer.append(Span("  ·  思考 \(thinking)", .color(Theme.dim)))
+                if view.modelThinkingTemporary { footer.append(Span("·临时", .color(Theme.fox))) }
+            }
             if editor.lines.count > 1 { footer.append(Span("  ·  \(editor.lines.count) 行", .color(Theme.dim))) }
             let footerRow = composerRow + composerHeight - 1
             canvas.draw(footer, row: footerRow, col: composerLeft + 3, limit: panelWidth - 4)
@@ -353,8 +409,9 @@ struct Renderer {
                 canvas.draw(hint, row: footerRow, col: composerLeft + panelWidth - spanWidth(hint) - 2, limit: spanWidth(hint))
             }
             if let completion = view.completion {
-                drawCompletion(completion, left: composerLeft, width: panelWidth,
-                               anchorTop: composerRow, anchorBottom: composerRow + composerHeight, below: home, into: &canvas)
+                info.hits += drawCompletion(completion, left: composerLeft, width: panelWidth,
+                                            anchorTop: composerRow, anchorBottom: composerRow + composerHeight,
+                                            below: home, into: &canvas)
             }
         }
 
@@ -363,13 +420,16 @@ struct Renderer {
             drawAuth(auth, feedback: view.feedback, into: &canvas)
         } else if let settings = view.settings {
             cursor = nil
-            drawSettings(settings, busy: view.settingsBusy, error: view.settingsError, into: &canvas)
+            info.hits += drawSettings(settings, busy: view.settingsBusy, error: view.settingsError, into: &canvas)
             if let confirmation = view.confirmation {
-                drawConfirmation(confirmation, into: &canvas)
+                info.hits += drawConfirmation(confirmation, into: &canvas)
+            }
+            if let exitDialog = view.exitDialog {
+                info.hits += drawExitDialog(exitDialog, into: &canvas)
             }
         } else if let picker = view.picker {
             cursor = nil
-            drawPicker(picker, into: &canvas)
+            info.hits += drawPicker(picker, into: &canvas)
         }
 
         var text = "\u{1B}[?2026h" + canvas.emit()
@@ -384,9 +444,9 @@ struct Renderer {
 
     // MARK: chrome
 
-    private func drawConfirmation(_ confirmation: Confirmation, into canvas: inout Canvas) {
+    private func drawConfirmation(_ confirmation: Confirmation, into canvas: inout Canvas) -> [HitRegion] {
         let boxWidth = min(width - 4, max(40, min(72, width - 8)))
-        let boxHeight = 7
+        let boxHeight = 8
         let left = max(0, (width - boxWidth) / 2)
         let top = max(1, (height - boxHeight) / 2)
         for row in top..<(top + boxHeight) {
@@ -400,14 +460,70 @@ struct Renderer {
         }
         canvas.draw([Span(" " + confirmation.title + " ", .color(Theme.error, bold: true))], row: top, col: left + 2, limit: boxWidth - 4)
         canvas.draw([Span(confirmation.message, .color(Theme.cream))], row: top + 2, col: left + 2, limit: boxWidth - 4)
-        canvas.draw([Span("Enter 确认 · Esc 取消", .color(Theme.dim))], row: top + 4, col: left + 2, limit: boxWidth - 4)
+        let buttons = drawButtons(["确认", "取消"], selected: confirmation.selected,
+                                  row: top + 4, left: left + 2, limit: boxWidth - 4, into: &canvas)
+        canvas.draw([Span("←→ 选择 · Enter 确认 · Esc 取消", .color(Theme.muted))],
+                    row: top + 6, col: left + 2, limit: boxWidth - 4)
+        return buttons
+    }
+
+    /// The host-owned prompt shown when Escape would throw away a dirty settings draft. It exists
+    /// only because the plugin cannot be trusted to ask: the host owns the window.
+    private func drawExitDialog(_ dialog: ExitDialog, into canvas: inout Canvas) -> [HitRegion] {
+        let boxWidth = min(width - 4, max(40, min(64, width - 8)))
+        let boxHeight = 9
+        let left = max(0, (width - boxWidth) / 2)
+        let top = max(1, (height - boxHeight) / 2)
+        for row in top..<(top + boxHeight) {
+            canvas.fill(row: row, col: left, count: boxWidth, bg: Theme.overlay)
+        }
+        let border = Style.color(Theme.fox)
+        canvas.draw([Span("┌" + String(repeating: "─", count: boxWidth - 2) + "┐", border)], row: top, col: left, limit: boxWidth)
+        canvas.draw([Span("└" + String(repeating: "─", count: boxWidth - 2) + "┘", border)], row: top + boxHeight - 1, col: left, limit: boxWidth)
+        for row in (top + 1)..<(top + boxHeight - 1) {
+            canvas.draw([Span("│", border)], row: row, col: left, limit: 1)
+            canvas.draw([Span("│", border)], row: row, col: left + boxWidth - 1, limit: 1)
+        }
+        canvas.draw([Span(" 未保存的修改 ", .color(Theme.fox, bold: true))], row: top, col: left + 2, limit: boxWidth - 4)
+        canvas.draw([Span("插件设置还有未保存的改动。", .color(Theme.cream))], row: top + 2, col: left + 2, limit: boxWidth - 4)
+        canvas.draw([Span("要保存后再关闭吗？", .color(Theme.dim))], row: top + 3, col: left + 2, limit: boxWidth - 4)
+        let buttons = drawButtons(ExitDialog.buttons, selected: dialog.selected,
+                                  row: top + 5, left: left + 2, limit: boxWidth - 4, into: &canvas)
+        canvas.draw([Span("←→ 选择 · Enter 确认 · Esc 继续编辑", .color(Theme.muted))],
+                    row: top + 7, col: left + 2, limit: boxWidth - 4)
+        return buttons
+    }
+
+    /// Draws a row of `[ label ]` buttons and returns their clickable cells. The selected button is
+    /// inverted so the keyboard focus is obvious without extra chrome.
+    private func drawButtons(
+        _ titles: [String], selected: Int, row: Int, left: Int, limit: Int, into canvas: inout Canvas
+    ) -> [HitRegion] {
+        var regions: [HitRegion] = []
+        var column = left
+        for (index, title) in titles.enumerated() {
+            let text = "[ " + title + " ]"
+            let cells = TextWidth.width(text)
+            guard column + cells <= left + limit else { break }
+            let active = index == selected
+            let style = active
+                ? Style(fg: Theme.charcoal, bg: Theme.fox, bold: true)
+                : Style(fg: Theme.dim)
+            canvas.draw([Span(text, style)], row: row, col: column, limit: cells)
+            regions.append(HitRegion(
+                kind: .dialogButton(index: index), row: row + 1, column: column + 1, columns: cells
+            ))
+            column += cells + 2
+        }
+        return regions
     }
 
     /// The host owns the frame: title, identity, footer. Everything between the borders is the
     /// plugin's validated cell frame, so a plugin can design freely without touching the terminal.
+    /// Returns the plugin-owned area so mouse coordinates can be converted to its own origin.
     private func drawSettings(
         _ settings: SettingsSnapshot, busy: Bool, error: String?, into canvas: inout Canvas
-    ) {
+    ) -> [HitRegion] {
         let boxWidth = min(width - 2, max(24, settings.viewport.width + 4))
         let boxHeight = min(height - 2, max(8, settings.viewport.height + 6))
         let left = max(0, (width - boxWidth) / 2)
@@ -439,7 +555,7 @@ struct Renderer {
             canvas.draw(spans, row: top + 2 + offset, col: left + 2, limit: max(0, boxWidth - 4))
         }
         let footerRow = top + boxHeight - 2
-        let hint = busy ? "处理中…" : "Ctrl-S 保存 · Esc 取消"
+        let hint = busy ? "处理中…" : "Ctrl-S 保存 · Esc 关闭"
         canvas.draw([Span(hint, .color(Theme.muted))], row: footerRow, col: left + 2, limit: max(0, boxWidth - 4))
         if let error, !busy {
             let message = Renderer.oneLine(error)
@@ -454,6 +570,15 @@ struct Renderer {
                             col: left + boxWidth - TextWidth.width(clipped) - 2, limit: statusWidth)
             }
         }
+        // Only the cells the plugin actually draws are its input surface: title, border and footer
+        // hints stay host chrome, so a click there can never reach the plugin.
+        let frameRows = min(settings.viewport.height, max(0, boxHeight - 4))
+        let frameColumns = min(settings.viewport.width, max(0, boxWidth - 4))
+        guard frameRows > 0, frameColumns > 0 else { return [] }
+        return [HitRegion(
+            kind: .settingsFrame, row: top + 3, rows: frameRows,
+            column: left + 3, columns: frameColumns
+        )]
     }
 
     private func style(for span: SettingsSpan) -> Style {
@@ -529,14 +654,15 @@ struct Renderer {
     }
 
     private func drawCompletion(_ picker: Picker, left: Int, width panelWidth: Int, anchorTop: Int, anchorBottom: Int,
-                                below: Bool, into canvas: inout Canvas) {
+                                below: Bool, into canvas: inout Canvas) -> [HitRegion] {
         let items = picker.items
         let count = min(items.count, 8, below ? max(1, height - anchorBottom - 2) : max(1, anchorTop - 2))
-        guard count > 0 else { return }
+        guard count > 0 else { return [] }
         let selected = min(max(0, picker.selected), items.count - 1)
         let start = max(0, min(selected - count / 2, items.count - count))
         let top = below ? anchorBottom : anchorTop - count
         let commandWidth = min(14, (items.map { TextWidth.width($0.command) }.max() ?? 0) + 2)
+        var hits: [HitRegion] = []
         for (offset, item) in items.dropFirst(start).prefix(count).enumerated() {
             let row = top + offset
             let active = start + offset == selected
@@ -546,12 +672,19 @@ struct Renderer {
                         row: row, col: left + 2, limit: commandWidth)
             canvas.draw([Span(item.title, .color(active ? Theme.cream : Theme.dim))],
                         row: row, col: left + 2 + commandWidth, limit: panelWidth - commandWidth - 3)
+            hits.append(HitRegion(
+                kind: .completionRow(index: start + offset), row: row + 1,
+                column: left + 1, columns: max(0, panelWidth)
+            ))
         }
+        return hits
     }
 
-    /// A centered modal panel: title row, body rows, footer. Returns nothing; draws on top.
+    /// A centered modal panel: title row, body rows, footer. Returns its geometry so callers can map
+    /// body rows back to the items they drew.
+    @discardableResult
     private func drawPanel(title: [Span], titleRight: String, body: [[Span]], highlight: Int?, footer: [Span],
-                           footerRight: String, width panelWidth: Int, into canvas: inout Canvas) {
+                           footerRight: String, width panelWidth: Int, into canvas: inout Canvas) -> PanelGeometry {
         let inner = panelWidth - 4
         let rowsNeeded = body.count + 6
         let total = min(rowsNeeded, max(3, height - 2))
@@ -580,9 +713,10 @@ struct Renderer {
                 canvas.draw([Span(footerRight, .color(Theme.muted))], row: row, col: left + 2 + inner - width, limit: width)
             }
         }
+        return PanelGeometry(top: top, left: left, inner: inner, bodyRows: bodyRows)
     }
 
-    private func drawPicker(_ picker: Picker, into canvas: inout Canvas) {
+    private func drawPicker(_ picker: Picker, into canvas: inout Canvas) -> [HitRegion] {
         let panelWidth = max(10, min(72, width - 4))
         let inner = panelWidth - 4
         let visible = max(1, min(10, height - 12))
@@ -610,11 +744,31 @@ struct Renderer {
             body.append(row)
         }
         let position = items.isEmpty ? "0/0" : "\(selected + 1)/\(items.count)"
-        drawPanel(title: [Span(Renderer.oneLine(picker.title), .color(Theme.fox, bold: true))], titleRight: "esc 关闭",
-                  body: body, highlight: highlight,
-                  footer: [Span(picker.isToggleList ? "Space 切换   Enter 保存   Esc 取消" : "↑↓ 选择   Enter 确认   Esc 返回",
-                                .color(Theme.dim))], footerRight: position,
-                  width: panelWidth, into: &canvas)
+        let geometry = drawPanel(title: [Span(Renderer.oneLine(picker.title), .color(Theme.fox, bold: true))], titleRight: "esc 关闭",
+                                 body: body, highlight: highlight,
+                                 footer: [Span(picker.isToggleList ? "Space 切换   Enter 保存   Esc 取消" : "↑↓ 选择   Enter 确认   Esc 返回",
+                                               .color(Theme.dim))], footerRight: position,
+                                 width: panelWidth, into: &canvas)
+        // Body row 0 is the query line and row 1 is its rule; item rows follow. Two regions per
+        // toggle row keep the checkbox and the rest of the row distinguishable for a click.
+        var hits: [HitRegion] = []
+        for (offset, item) in items.dropFirst(start).prefix(visible).enumerated() {
+            let bodyIndex = 2 + offset
+            guard bodyIndex < geometry.bodyRows else { break }
+            let row = geometry.top + 3 + bodyIndex + 1
+            let column = geometry.left + 3
+            if item.checked != nil {
+                // The row first, the checkbox second: hit-testing prefers the later (topmost) region.
+                hits.append(HitRegion(kind: .pickerRow(index: start + offset, checkbox: false),
+                                      row: row, column: column + 4, columns: max(0, inner - 4)))
+                hits.append(HitRegion(kind: .pickerRow(index: start + offset, checkbox: true),
+                                      row: row, column: column, columns: 4))
+            } else {
+                hits.append(HitRegion(kind: .pickerRow(index: start + offset, checkbox: false),
+                                      row: row, column: column, columns: inner))
+            }
+        }
+        return hits
     }
 
     private func drawAuth(_ auth: AuthPrompt, feedback: Message?, into canvas: inout Canvas) {
@@ -660,6 +814,9 @@ struct Renderer {
             }
             if let meta = message.meta {
                 lines.append(Line(spans: [Span(meta, .color(Theme.muted))]))
+            }
+            if let diagnostics = message.diagnostics {
+                lines.append(Line(spans: [Span(diagnostics, .color(Theme.muted))]))
             }
             return lines
         case .reasoning:

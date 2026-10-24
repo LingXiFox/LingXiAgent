@@ -57,8 +57,10 @@ func SETTINGS_001_tuiSettingsRoundTrip() async throws {
     try #require(await tui.waitFor("site.lingxi.probe.settings", after: mark))
     tui.write("\r")
     try #require(await tui.waitFor("probeX"))
+    // Reopened without edits, so the plugin reports clean: Escape closes at once, no dialog.
     tui.write("\u{1B}")
     try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+    #expect(!tui.transcript.contains("未保存的修改"))
 
     tui.write("/quit\r")
     #expect(await waitUntil(timeout: .seconds(60)) { !tui.isRunning })
@@ -150,8 +152,29 @@ func SETTINGS_003_saveFailureFeedback() async throws {
     try #require(await tui.waitFor("probeX"))
     tui.write("\u{13}")
     try #require(await tui.waitFor("rejected"))
+    // A rejected save is not a dead session: the panel, the draft and the error all stay visible.
+    #expect(tui.screenText.contains("probeX"))
+    #expect(tui.screenText.contains("Settings Probe"))
+
+    // The draft is dirty, so Escape must ask instead of silently discarding it.
     tui.write("\u{1B}")
+    try #require(await tui.waitFor("未保存的修改"))
+    #expect(tui.screenText.contains("[ 保存 ]"))
+    #expect(tui.screenText.contains("[ 放弃 ]"))
+    #expect(tui.screenText.contains("[ 继续编辑 ]"))
+    // Esc means "keep editing": the dialog closes and the draft is still there.
+    tui.write("\u{1B}")
+    try #require(await waitUntil { !tui.screenText.contains("未保存的修改") })
+    #expect(tui.screenText.contains("probeX"))
+
+    // Escape again, then choose 放弃 (the safe default is 继续编辑, one step left).
+    tui.write("\u{1B}")
+    try #require(await tui.waitFor("未保存的修改"))
+    tui.write("\u{1B}[D\r")
     try #require(await waitUntil { tui.screenText.contains("输入消息，或按 / 选择命令") })
+    // Discarding never writes the draft: the failed save was rolled back to no file at all.
+    let stored = directory.appendingPathComponent("plugin-settings/site.lingxi.probe.settings.json")
+    #expect(!FileManager.default.fileExists(atPath: stored.path))
     tui.write("/quit\r")
     #expect(await waitUntil(timeout: .seconds(60)) { !tui.isRunning })
 }

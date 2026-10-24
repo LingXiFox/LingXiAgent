@@ -230,6 +230,13 @@
 | MIMO-004 | 推理上下文工具续接 | reasoning 只在同一 execution 的工具轮内存中传递，不进入正文/日志；Chat 用 reasoning_content，Responses 用 reasoning item；最终终态清理 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_chatReasoningToolRoundTrip` |
 | MIMO-005 | 双协议错误与去重边界 | HTTP 401/429/500、无终态 EOF、重复 sequence/终态、incomplete/failed 都按 providerFailure 收敛且不重复输出 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_httpFailures`、`MIMO_eofWithoutTerminal`、`MIMO_responsesDuplicateAndReorder` |
 
+| FE-008 | 临时思考选择真的改变请求 | `/reasoning` 只列插件声明的等级；Core 校验 provider/model/level，未声明拒绝；临时值不落盘、重启消失；override 进入有效配置并改变 HTTP body 与 cassette digest；清空恢复插件配置 | Phase 4.3；ADR-0010 | 4.3 | L2 | `REASONING_001`~`REASONING_004`、`TUI_010`、`MIMO-DIAG-001`~`MIMO-DIAG-003` |
+| FE-009 | 分段耗时诊断 | 一次请求一条 `timing`；字段全是非负整数毫秒；缺失不等于 0；不写 journal/cassette；不含 prompt/header/密钥；Core 准备与 Run 总耗时始终可测；TUI 渲染耗时本地统计 | Phase 4.3；ADR-0010 | 4.3 | L1 + L2 | `TIMING_001`~`TIMING_004`、`TUI_010`、`MIMO-DIAG-004`~`MIMO-DIAG-006` |
+| TUI-008 | 设置保存与退出 | 插件声明 dirty；无修改 Esc 直接退出；有修改/未知弹出“保存/放弃/继续编辑”；保存失败保留草稿与窗口；Host 崩溃关闭窗口且不阻塞宿主退出；Ctrl-S 不变 | Phase 4.3；ADR-0010 | 4.3 | L2 | `SETTINGS_001`（干净草稿不弹框）、`SETTINGS_003`（完整对话框流程）、`TUI_012`、`TUI_013`、`SettingsContainerTests` 既有事务用例 |
+| TUI-009 | 鼠标点击与滚轮 | SGR 解析；列表/插件列表/设置 Tab/单选/弹窗按钮可点；插件只收到帧内相对坐标；宿主保留保存/退出/确认；`/mouse` 关闭后不拦截原生拖选；键盘状态与点击同步 | Phase 4.3；ADR-0010 | 4.3 | L2 | `TUI_010`（滚轮/开关）、`TUI_011`（宿主 chrome + 插件帧 + 弹窗按钮）、`TUI_014`（MiMo 设置页端到端）、`MIMO-SET-002/003/005`、`PROBE-SET-001` |
+| MIMO-007 | MiMo 设置页信息结构 | Connection/Protocol/Model/Advanced 四页；思考参数随协议动态展示（Chat 无 effort，Responses+enabled 才显示）；高级 effort 折叠；留白收紧；状态行简洁；插件自绘不变 | Phase 4.3；ADR-0010 | 4.3 | L2 | `MIMO-SET-001`~`MIMO-SET-007`、`SETTINGS_004` |
+| MIMO-008 | Provider 实时状态能力 | 可选 `provider.state.v1`；返回协议/思考/来源；Core 合并临时覆盖为 `session-override`；未声明则无状态，不虚构 | Phase 4.3；ADR-0010 | 4.3 | L2 | `REASONING_002`、`MIMO-DIAG-001` |
+
 ### AUTH 组 — 凭据托管
 
 | ID | 场景 | 期望行为 | 来源 | 阶段 | 层 | 状态 |

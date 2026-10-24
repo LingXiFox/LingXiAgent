@@ -320,3 +320,87 @@ func TUI_002_frameAndPickers() async throws {
     narrow.write("/quit\r")
     #expect(await waitUntil { !narrow.isRunning })
 }
+
+@Test("TUI-010 the footer shows live provider state, /reasoning switches thinking, /perf explains a run and the wheel scrolls", .enabled(if: ProcessInfo.processInfo.environment["LINGXI_RUN_TUI_PTY_TEST"] == "1"))
+func TUI_010_footerReasoningDiagnosticsAndWheel() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tui-status-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedTUI(directory, turns: 3)
+    var environment = ProcessInfo.processInfo.environment
+    environment["LINGXI_DATA_DIR"] = directory.path
+    environment["LINGXI_CORE_HOST"] = builtProduct("LingXiCoreHost").path
+    environment["LINGXI_PLUGIN_POLICY"] = "development"
+    environment["LINGXI_KEYCHAIN_SERVICE"] = "site.lingxi.credentials.test.\(UUID().uuidString)"
+    environment["TERM"] = "xterm-256color"
+    environment.removeValue(forKey: "LINGXI_CREDENTIAL_SOURCE")
+    // A short terminal keeps the conversation scrollable with only a couple of turns.
+    let tui = try PTYProcess(environment: environment, columns: 120, rows: 20)
+    defer { tui.terminate() }
+    try #require(await waitUntil(timeout: .seconds(30)) { tui.screenText.contains("mimo-v2.6-flash") })
+
+    // Nothing has run yet, so there is nothing to diagnose; a wheel report without /mouse is ignored.
+    tui.write("/perf\r")
+    try #require(await tui.waitFor("还没有运行诊断"))
+    tui.write(sgrWheel(up: true, row: 10, column: 10))
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(!tui.screenText.contains("已向上滚动"))
+
+    // The footer's protocol and thinking mode come from the Core's provider state, not from a guess.
+    #expect(tui.screenText.contains("协议 "))
+
+    let prompt = "诊断探针TUI010"
+    tui.write(prompt + "\r")
+    try #require(await waitUntil { tui.screenText.contains("pong") && !tui.screenText.contains("生成中") })
+
+    // A compact, numbers-only diagnostic sits under the reply meta: upstream, thinking and local cost.
+    try #require(await waitUntil { tui.screenText.contains("本地 ") && tui.screenText.contains("帧") })
+    #expect(tui.screenText.contains("运行结束") == false)
+
+    // /perf expands that into the full breakdown and never repeats the prompt or the reply text.
+    tui.write("/perf\r")
+    try #require(await tui.waitFor("性能诊断"))
+    #expect(tui.screenText.contains("Core 准备"))
+    #expect(tui.screenText.contains("运行总计"))
+    #expect(tui.screenText.contains("TUI 渲染"))
+    let rows = frameRows(tui.latestFrame)
+    let perf = try #require(rows.firstIndex { $0.text.contains("性能诊断") })
+    for row in rows[perf..<min(perf + 5, rows.count)] {
+        #expect(!row.text.contains(prompt))
+        #expect(!row.text.contains("pong"))
+    }
+
+    // /reasoning lists the current model's own declared levels plus "follow the plugin's settings".
+    tui.write("/reasoning\r")
+    try #require(await tui.waitFor("跟随插件设置"))
+    #expect(tui.screenText.contains("思考模式"))
+    tui.write("\u{1B}[B\r")
+    try #require(await tui.waitFor("已临时切换思考模式"))
+    try #require(await waitUntil { tui.screenText.contains("·临时") })
+    tui.write("/reasoning follow\r")
+    try #require(await tui.waitFor("已恢复跟随插件"))
+    try #require(await waitUntil { !tui.screenText.contains("·临时") })
+
+    // A second turn makes the conversation taller than the body, so the wheel has somewhere to go.
+    // The earlier reply may already have scrolled out of a short terminal, so wait on the transcript.
+    let mark = tui.transcript.count
+    tui.write("继续\r")
+    try #require(await tui.waitFor("pong", after: mark))
+    try #require(await waitUntil { !tui.screenText.contains("生成中") })
+
+    // With the conversation long enough to scroll, the wheel moves it and the status line reports it.
+    tui.write("/mouse\r")
+    try #require(await tui.waitFor("已开启鼠标"))
+    tui.write(sgrWheel(up: true, row: 10, column: 10))
+    try #require(await waitUntil { tui.screenText.contains("已向上滚动") })
+    tui.write(String(repeating: sgrWheel(up: false, row: 10, column: 10), count: 40))
+    try #require(await waitUntil { !tui.screenText.contains("已向上滚动") })
+
+    // Mouse is additive: the keyboard still edits the draft with capture on.
+    tui.write("abc")
+    try #require(await waitUntil { tui.screenText.contains("abc") })
+    tui.write("\u{15}")
+    tui.write("/quit\r")
+    #expect(await waitUntil(timeout: .seconds(60)) { !tui.isRunning })
+    #expect(tui.status == 0)
+}

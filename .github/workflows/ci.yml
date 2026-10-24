@@ -63,12 +63,12 @@ jobs:
 
       - name: TUI and settings end-to-end in a PTY
         # The PTY tests spawn whole process trees; run them together but outside the main test
-        # process so they do not compete for the runner. SETTINGS_001/002/003 must execute here, not be
-        # skipped for a missing environment variable.
-        timeout-minutes: 15
+        # process so they do not compete for the runner. Keyboard, mouse and the settings
+        # save/exit dialog must execute here, not be skipped for a missing environment variable.
+        timeout-minutes: 20
         run: |
           set -euo pipefail
-          LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter 'TUI_00[123]_|SETTINGS_00[123]_' | tee /tmp/tui-pty.log
+          LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter 'TUI_|SETTINGS_' | tee /tmp/tui-pty.log
           grep -E 'Test run with' /tmp/tui-pty.log
 
       - name: Keychain and hidden credential input (no API keys)
@@ -80,6 +80,15 @@ jobs:
           LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 \
             swift test --filter 'AUTH_|settingsDisabledCredentialIsolation|SETTINGS_004' | tee /tmp/keychain.log
           grep -E 'Test run with' /tmp/keychain.log
+
+      - name: Reasoning selection and run diagnostics acceptance
+        # Proves the temporary thinking level reaches the real HTTP body (loopback) and that the
+        # timing report is one small numeric event per run. No network, no API key.
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          swift test --no-parallel --filter 'REASONING_|TIMING_' | tee /tmp/diagnostics.log
+          grep -E 'Test run with' /tmp/diagnostics.log
 
       - name: Plugin settings and MiMo offline contract
         # These tests are also in the main suite; this step makes their executed count explicit in

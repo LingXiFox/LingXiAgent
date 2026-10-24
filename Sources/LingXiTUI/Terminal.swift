@@ -35,6 +35,33 @@ enum Terminal {
     }
 }
 
+/// One SGR mouse report. `row` and `column` are 1-based terminal cells, exactly as the terminal
+/// reports them; the host converts them to plugin-relative coordinates only after hit-testing.
+/// Modifier bits are dropped on purpose: a click is a click whether or not Shift/Option/Ctrl is held.
+struct MouseEvent: Equatable {
+    enum Button: Equatable {
+        case left, middle, right, wheelUp, wheelDown
+    }
+
+    let button: Button
+    let row: Int
+    let column: Int
+    /// False for the SGR release report (`CSI <b;x;ym`). The TUI acts on press only, so a drag that
+    /// the terminal reports as a release can never fire twice.
+    let pressed: Bool
+
+    /// Wheel notches, with the same sign convention as the keyboard scroll keys: +1 is up.
+    var delta: Int {
+        switch button {
+        case .wheelUp: 1
+        case .wheelDown: -1
+        default: 0
+        }
+    }
+
+    var isWheel: Bool { button == .wheelUp || button == .wheelDown }
+}
+
 enum Key: Equatable {
     case character(Character)
     case enter, backspace, delete, tab
@@ -44,6 +71,7 @@ enum Key: Equatable {
     case unknown, pasteStart, pasteEnd, commandPalette, newline, toggleThinking
     case lineStart, lineEnd, wordLeft, wordRight, deleteWordBack, killToEnd, redraw
     case scrollUp, scrollDown, saveSettings
+    case mouse(MouseEvent)
 }
 
 /// Decodes terminal input bytes into keys, including multi-byte UTF-8 (Chinese IME output) and the
@@ -190,14 +218,37 @@ final class KeyParser {
         case "1;3D", "1;5D", "1;9D": return .wordLeft
         case "27;2;13~", "27;3;13~", "27;5;13~": return .newline
         default:
-            // SGR mouse report: only the wheel is used, and only while /mouse is on.
-            if suffix.hasPrefix("<"), suffix.hasSuffix("M") {
-                let button = suffix.dropFirst().split(separator: ";").first.flatMap { Int($0) }
-                if button == 64 { return .scrollUp }
-                if button == 65 { return .scrollDown }
+            // SGR mouse report: `CSI <b;x;yM` for press (and motion), `CSI <b;x;ym` for release.
+            // Only these reports are requested (/mouse enables 1000h + 1006h), so anything that does
+            // not decode exactly is ignored rather than guessed.
+            if suffix.hasPrefix("<"), let terminator = suffix.last, terminator == "M" || terminator == "m" {
+                let body = suffix.dropFirst().dropLast()
+                return Self.mouse(body, pressed: terminator == "M")
             }
             return .unknown
         }
+    }
+
+    /// Decodes an SGR mouse body (`b;x;y`) into a key. Button bits follow the xterm convention:
+    /// 0 left, 1 middle, 2 right, 64 wheel up, 65 wheel down; 4/8/16 are Shift/Meta/Ctrl and 32 marks
+    /// a motion report. Motion is dropped: this UI only reacts to discrete presses.
+    private static func mouse(_ body: some StringProtocol, pressed: Bool) -> Key {
+        let fields = body.split(separator: ";", omittingEmptySubsequences: false)
+        guard fields.count == 3,
+              let code = Int(fields[0]), let column = Int(fields[1]), let row = Int(fields[2]),
+              row >= 1, column >= 1, code & 32 == 0 else { return .unknown }
+        let button: MouseEvent.Button
+        if code & 64 != 0 {
+            button = code & 1 == 1 ? .wheelDown : .wheelUp
+        } else {
+            switch code & 3 {
+            case 0: button = .left
+            case 1: button = .middle
+            case 2: button = .right
+            default: return .unknown
+            }
+        }
+        return .mouse(MouseEvent(button: button, row: row, column: column, pressed: pressed))
     }
 }
 
