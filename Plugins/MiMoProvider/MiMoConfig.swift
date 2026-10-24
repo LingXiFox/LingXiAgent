@@ -13,6 +13,24 @@ enum MiMoThinkingMode: String, Codable, Sendable, CaseIterable {
     case `default`
     case enabled
     case disabled
+
+    /// Display label owned by the plugin. The same text is declared on the model's thinking level,
+    /// so the state capability and the settings page never drift apart.
+    var label: String {
+        switch self {
+        case .default: "服务端默认"
+        case .enabled: "开启思考"
+        case .disabled: "关闭思考"
+        }
+    }
+
+    var shortLabel: String {
+        switch self {
+        case .default: "服务端默认"
+        case .enabled: "开启"
+        case .disabled: "关闭"
+        }
+    }
 }
 
 /// Reasoning efforts accepted by the settings layer. The upstream vocabulary is wider than the
@@ -153,5 +171,16 @@ struct MiMoConfig: Equatable, Sendable, Codable {
         case .enabled:
             reasoningEffort.flatMap(MiMoReasoningEffort.init(rawValue:))?.wireValue
         }
+    }
+
+    /// Applies a temporary thinking selection for exactly one request. Effort is kept only where the
+    /// effective mode actually sends one, so the cassette digest describes the same body that goes
+    /// on the wire. The saved configuration is never mutated.
+    func applyingThinking(_ mode: MiMoThinkingMode) -> MiMoConfig {
+        guard mode != thinkingMode else { return self }
+        var effective = self
+        effective.thinkingMode = mode
+        effective.reasoningEffort = mode == .enabled ? reasoningEffort : nil
+        return effective
     }
 }

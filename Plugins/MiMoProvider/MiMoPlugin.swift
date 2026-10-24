@@ -93,9 +93,13 @@ final class MiMoCore: @unchecked Sendable {
     func invoke(requestID: String, capability: String, request: ProviderWireRequest) -> ABIStatusCode {
         guard capability == "provider.\(MiMoWire.providerID)" else { return .methodNotImplemented }
 
+        // Every phase is measured from this instant, so the report never goes backwards and the
+        // caller can subtract phases without a second clock.
+        let timing = MiMoTimingTracker(replay: isReplayMode())
         // Snapshot before digesting: the digest must describe the exact settings this invocation
-        // will use, including the execution's first protocol/thinking choice.
-        let config = config(for: request)
+        // will use, including the execution's first protocol/thinking choice and any temporary
+        // frontend thinking selection, which wins over the saved config for this request only.
+        let config = effectiveConfig(for: request)
         let digest = MiMoWire.digest(for: request, config: config)
         let legacyDigest = MiMoWire.legacyDigestIfApplicable(for: request, config: config)
         let executionID = request.executionID
@@ -103,17 +107,31 @@ final class MiMoCore: @unchecked Sendable {
         let outcome = StatusBox()
         let recorder = EventRecorder()
         let emit: @Sendable (ProviderWireEvent) -> Void = { [weak self] event in
-            recorder.append(event)
-            // Persist the cassette before the terminal reaches the kernel: the run returns as soon
-            // as it sees `completed`, so writing afterwards races the caller (and its shutdown).
-            if event.type == "completed", let self,
-               let path = self.recordingPath(), let store = self.recordingCassette() {
-                store.append(digest: digest, events: recorder.events, to: path)
+            guard let self else { return }
+            if event.type == "reasoningDelta" { timing.mark(.firstReasoning) }
+            if event.type == "textDelta" { timing.mark(.firstText) }
+            // Timing is observation-only, so it is never part of a cassette: a recorded exchange
+            // stays byte-identical to one made before this capability existed.
+            if event.type != "timing" { recorder.append(event) }
+            let terminal = event.type == "completed" || event.type == "failed"
+            if terminal {
+                timing.mark(.terminal)
+                // Exactly one report, immediately before the request's terminal event.
+                if let report = timing.finish() {
+                    self.emit(
+                        requestID: requestID,
+                        event: ProviderWireEvent(type: "timing", timing: report)
+                    )
+                }
+                // Persist the cassette before the terminal reaches the kernel: the run returns as
+                // soon as it sees `completed`, so writing afterwards races the caller (and its shutdown).
+                if event.type == "completed", let path = self.recordingPath(),
+                   let store = self.recordingCassette() {
+                    store.append(digest: digest, events: recorder.events, to: path)
+                }
+                self.noteTerminal(executionID: executionID, event: event)
             }
-            if event.type == "completed" || event.type == "failed" {
-                self?.noteTerminal(executionID: executionID, event: event)
-            }
-            self?.emit(requestID: requestID, event: event)
+            self.emit(requestID: requestID, event: event)
         }
 
         let task = Task { [weak self] in
@@ -142,7 +160,7 @@ final class MiMoCore: @unchecked Sendable {
                 do {
                     try await MiMoTransport.stream(
                         request: request, requestID: requestID, config: config,
-                        endpoint: self.endpoint(), emit: emit
+                        endpoint: self.endpoint(), timing: timing, emit: emit
                     )
                 } catch let error as MiMoTransport.TransportError {
                     let kind: String
@@ -203,6 +221,47 @@ final class MiMoCore: @unchecked Sendable {
             executionConfigs.removeValue(forKey: evicted)
         }
         return snapshot
+    }
+
+    /// The saved settings snapshot plus the frontend's temporary thinking selection for this request
+    /// only. An unknown level keeps the saved configuration: a stale or hostile id must never crash
+    /// the plugin or silently change what the user configured.
+    private func effectiveConfig(for request: ProviderWireRequest) -> MiMoConfig {
+        let saved = config(for: request)
+        guard let level = request.reasoningLevel,
+              let mode = MiMoThinkingMode(rawValue: level) else { return saved }
+        return saved.applyingThinking(mode)
+    }
+
+    /// What the plugin would send next. Display data only: protocol family, thinking level and a
+    /// short source/detail hint. No credential, prompt, header or request content can enter here.
+    func providerState() -> ProviderState {
+        lock.lock()
+        let config = currentConfig
+        lock.unlock()
+        let detail: String
+        switch config.thinkingMode {
+        case .default:
+            detail = "服务端默认"
+        case .disabled:
+            detail = "思考已关闭"
+        case .enabled:
+            if config.protocolKind == .responses {
+                let effort = config.reasoningEffort
+                    .flatMap(MiMoReasoningEffort.init(rawValue:))?.wireValue
+                detail = effort.map { "effort=\($0)" } ?? "服务端默认 effort"
+            } else {
+                detail = "thinking.type=enabled"
+            }
+        }
+        return ProviderState(
+            protocolKind: config.protocolKind.rawValue,
+            protocolLabel: config.protocolKind == .chatCompletions ? "Chat Completions" : "Responses",
+            thinkingLevel: config.thinkingMode.rawValue,
+            thinkingLabel: config.thinkingMode.label,
+            source: config.thinkingMode == .default ? "server-default" : "plugin-settings",
+            detail: detail
+        )
     }
 
     /// A `toolCalls` terminal is the round trip: the same Run will issue another request, so the
@@ -318,14 +377,11 @@ private let describeImpl: @convention(c) (
             modelDetails: MiMoWire.models.map { model in
                 ProviderModel(
                     id: model,
-                    thinkingLevels: [
-                        ProviderThinkingLevel(id: "default", label: "服务端默认"),
-                        ProviderThinkingLevel(id: "enabled", label: "开启思考"),
-                        ProviderThinkingLevel(id: "disabled", label: "关闭思考"),
-                    ],
+                    thinkingLevels: MiMoWire.thinkingLevels,
                     defaultThinkingLevel: nil
                 )
-            }
+            },
+            state: ProviderStateDeclaration(capability: MiMoWire.stateCapability)
         )],
         settings: SettingsDeclaration(capability: MiMoSettingsState.capability)
     )
@@ -358,6 +414,14 @@ private let invokeImpl: @convention(c) (
         return -1
     }
     let bytes = LingXiBuffer.copyBytes(payload, length: payloadLength)
+    if String(cString: capability) == MiMoWire.stateCapability {
+        // Read-only state capability: display data only, answered without touching any request.
+        out?.pointee = nil
+        outLength?.pointee = 0
+        let result = emitJSON(core.providerState(), out: out, length: outLength)
+        status?.pointee = .make(result == 0 ? .ok : .capabilityFailed)
+        return result == 0 ? 0 : -1
+    }
     if String(cString: capability) == MiMoSettingsState.capability {
         guard let invocation = try? JSONDecoder().decode(SettingsInvocation.self, from: Data(bytes)) else {
             status?.pointee = .make(.protocolViolation)

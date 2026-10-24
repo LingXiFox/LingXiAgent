@@ -84,6 +84,7 @@ enum MiMoTransport {
         requestID: String,
         config: MiMoConfig,
         endpoint: URL? = nil,
+        timing: MiMoTimingTracker? = nil,
         emit: @escaping @Sendable (ProviderWireEvent) -> Void
     ) async throws {
         guard let credential = request.credential, !credential.isEmpty else {
@@ -101,17 +102,20 @@ enum MiMoTransport {
             urlRequest.httpBody = Data(try MiMoWire.responsesBody(for: request, config: config))
         }
         urlRequest.timeoutInterval = 300
+        timing?.mark(.prepare)
 
         do {
+            timing?.mark(.send)
             let (bytes, response) = try await URLSession.shared.bytes(for: urlRequest)
+            timing?.mark(.firstResponse)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 throw TransportError.httpStatus(http.statusCode)
             }
             switch config.protocolKind {
             case .chatCompletions:
-                try await consumeChat(bytes: bytes, emit: emit)
+                try await consumeChat(bytes: bytes, timing: timing, emit: emit)
             case .responses:
-                try await consumeResponses(bytes: bytes, emit: emit)
+                try await consumeResponses(bytes: bytes, timing: timing, emit: emit)
             }
         } catch let error as URLError where error.code == .cancelled {
             throw CancellationError()
@@ -120,11 +124,17 @@ enum MiMoTransport {
 
     private static func consumeChat(
         bytes: URLSession.AsyncBytes,
+        timing: MiMoTimingTracker?,
         emit: @escaping @Sendable (ProviderWireEvent) -> Void
     ) async throws {
         var normalizer = MiMoWire.Normalizer()
+        var sawFirstLine = false
         for try await line in bytes.lines {
             if Task.isCancelled { throw CancellationError() }
+            if !sawFirstLine {
+                sawFirstLine = true
+                timing?.mark(.firstSSE)
+            }
             guard line.hasPrefix("data:") else { continue }
             let data = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
             for event in normalizer.consume(data: data) {
@@ -142,11 +152,13 @@ enum MiMoTransport {
 
     private static func consumeResponses(
         bytes: URLSession.AsyncBytes,
+        timing: MiMoTimingTracker?,
         emit: @escaping @Sendable (ProviderWireEvent) -> Void
     ) async throws {
         var normalizer = MiMoWire.ResponsesNormalizer()
         var eventName: String?
         var dataLines: [String] = []
+        var sawFirstLine = false
 
         func flush() {
             guard !dataLines.isEmpty else { eventName = nil; return }
@@ -166,6 +178,10 @@ enum MiMoTransport {
             if Task.isCancelled {
                 normalizer.cancel()
                 throw CancellationError()
+            }
+            if !sawFirstLine {
+                sawFirstLine = true
+                timing?.mark(.firstSSE)
             }
             if line.isEmpty {
                 flush()

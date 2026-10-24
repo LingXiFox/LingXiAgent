@@ -11,6 +11,14 @@ enum MiMoWire {
     static let endpoint = chatEndpoint
     static let providerID = "mimo"
     static let models = ["mimo-v2.6-flash", "mimo-v2.6-pro"]
+    /// Read-only state capability. The host asks the plugin what protocol/thinking is in effect
+    /// without interpreting any vendor vocabulary; the C ABI table is untouched.
+    static let stateCapability = "provider.state.v1"
+
+    /// The thinking levels every MiMo model declares, in the order the settings page shows them.
+    static var thinkingLevels: [ProviderThinkingLevel] {
+        MiMoThinkingMode.allCases.map { ProviderThinkingLevel(id: $0.rawValue, label: $0.label) }
+    }
 
     static func endpoint(for config: MiMoConfig) -> URL {
         switch config.protocolKind {
