@@ -56,8 +56,10 @@ jobs:
         run: swift build --build-tests
 
       - name: Run tests
-        timeout-minutes: 15
-        run: swift test
+        # The contract suite spawns real Plugin Host processes. Running it serially keeps the
+        # macOS runner from exhausting process/file-descriptor limits; it is still the full suite.
+        timeout-minutes: 30
+        run: swift test --no-parallel
 
       - name: TUI and settings end-to-end in a PTY
         # The PTY tests spawn whole process trees; run them together but outside the main test

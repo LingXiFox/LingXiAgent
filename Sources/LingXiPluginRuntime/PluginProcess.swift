@@ -55,6 +55,9 @@ public final class PluginProcess: @unchecked Sendable {
         process.standardInput = toHost
         process.standardOutput = fromHost
         process.standardError = hostErr
+        let writeFD = toHost.fileHandleForWriting.fileDescriptor
+        let flags = fcntl(writeFD, F_GETFL, 0)
+        if flags >= 0 { _ = fcntl(writeFD, F_SETFL, flags | O_NONBLOCK) }
         // A strict allow-list: nothing of the parent environment crosses into a plugin process
         // unless it is named here (PLG-008).
         process.environment = PluginProcess.sanitizedEnvironment()
@@ -217,7 +220,30 @@ public final class PluginProcess: @unchecked Sendable {
     }
 
     private func write(_ data: Data) {
-        toHost.fileHandleForWriting.write(data)
+        // Never use FileHandle.writeData here: a closed or full Pipe raises an Objective-C
+        // NSFileHandleOperationException, which Swift cannot catch and which would abort the Core.
+        // A non-blocking POSIX write with a bounded poll turns backpressure into a normal timeout.
+        let fd = toHost.fileHandleForWriting.fileDescriptor
+        let deadline = Date().addingTimeInterval(5)
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let written = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written < 0, errno == EINTR { continue }
+                if written < 0, errno == EAGAIN || errno == EWOULDBLOCK {
+                    if Date() >= deadline { return }
+                    var descriptor = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+                    _ = poll(&descriptor, 1, 100)
+                    continue
+                }
+                return // EPIPE or another terminal pipe error; the watchdog reports the timeout.
+            }
+        }
     }
 
     private func readFrames() {

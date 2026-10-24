@@ -113,6 +113,10 @@ IPC 响应无效时仍会继续注册 ModelRouter 路由，等同于“偷偷使
 - TUI/Settings PTY：**6** 个测试通过。
 - Keychain：**9** 个测试通过（4 + 5）。
 - 新增测试：**20** 个（启动恢复 8、设置取消/提交/偏好/关闭 11、推理缓存 1，另含既有测试增强断言）。
+- CI 主套件使用 `swift test --no-parallel`：首次 run `40048372786` 在 Run tests 卡住，原因是
+  219 个测试并行启动大量真实 Plugin Host，runner 进程/文件描述符压力过大；同时发现
+  `FileHandle.writeData` 在管道满/关闭时会抛 Objective-C 异常并终止 Core。已改为有界
+  `poll`+POSIX 写，并让 CI 串行运行完整套件。
 
 ## 六、真实 API / 未验证边界
 
