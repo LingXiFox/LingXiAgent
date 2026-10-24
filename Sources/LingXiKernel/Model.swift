@@ -150,10 +150,15 @@ public protocol ModelProvider: Sendable {
     var capabilities: ModelCapabilities { get }
     func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error>
     func endExecution(_ executionID: ExecutionID) async
+    /// Final Run boundary, called after every step and terminal path have finished. Unlike
+    /// `endExecution`, which also runs between tool steps, this must release any continuation
+    /// state that is no longer reachable by a future request.
+    func finishExecution(_ executionID: ExecutionID) async
 }
 
 public extension ModelProvider {
     func endExecution(_ executionID: ExecutionID) async {}
+    func finishExecution(_ executionID: ExecutionID) async { await endExecution(executionID) }
 }
 
 public enum ModelRouterError: Error, Equatable {

@@ -79,9 +79,14 @@ enum MiMoWire {
         var pendingCalls: [ToolCall] = []
         func flushCalls() {
             guard !pendingCalls.isEmpty else { return }
+            let callIDs = Set(pendingCalls.map(\.id))
+            let structured = (request.previousReasoningTurns ?? [])
+                .filter { !callIDs.isDisjoint(with: $0.callIDs) }
+                .flatMap { $0.items.map(\.text) }
+                .joined(separator: "\n\n")
             messages.append(Message(
                 role: "assistant", content: nil, tool_calls: pendingCalls,
-                reasoning_content: request.previousReasoning
+                reasoning_content: structured.isEmpty ? request.previousReasoning : structured
             ))
             pendingCalls.removeAll()
         }
@@ -147,6 +152,8 @@ enum MiMoWire {
         let type: String
         var role: String?
         var content: [ResponsesContent]?
+        var id: String?
+        var status: String?
         var call_id: String?
         var name: String?
         var arguments: String?
@@ -167,6 +174,14 @@ enum MiMoWire {
 
     static func responsesBody(for request: ProviderWireRequest, config: MiMoConfig) throws -> [UInt8] {
         var items: [ResponsesInputItem] = []
+        // A Reasoning item belongs immediately before the function_call it accompanied. The
+        // official contract says to keep all historical thinking content in `input`; it forbids
+        // previous_response_id, so the kernel-owned history is the only carrier.
+        var turnForCall: [String: Int] = [:]
+        for (index, turn) in (request.previousReasoningTurns ?? []).enumerated() {
+            for callID in turn.callIDs { turnForCall[callID] = index }
+        }
+        var insertedTurns: Set<Int> = []
         for item in request.input {
             switch item.kind {
             case .message:
@@ -179,6 +194,16 @@ enum MiMoWire {
                     )]
                 ))
             case .functionCall:
+                if let callID = item.callID, let index = turnForCall[callID],
+                   insertedTurns.insert(index).inserted {
+                    for reasoning in (request.previousReasoningTurns ?? [])[index].items {
+                        items.append(ResponsesInputItem(
+                            type: "reasoning", content: [
+                                ResponsesContent(type: "reasoning_text", text: reasoning.text)
+                            ], id: reasoning.id, status: reasoning.status
+                        ))
+                    }
+                }
                 items.append(ResponsesInputItem(
                     type: "function_call", call_id: item.callID, name: item.name,
                     arguments: item.arguments
@@ -475,7 +500,11 @@ enum MiMoWire {
                 if let delta = root["delta"]?.string ?? root["text"]?.string, !delta.isEmpty {
                     reasoningItemsWithDeltas.insert(itemID)
                     sawAnyReasoningDelta = true
-                    produced.append(.init(type: "reasoningDelta", text: delta))
+                    produced.append(.init(
+                        type: "reasoningDelta", text: delta,
+                        itemID: itemID.isEmpty ? nil : itemID,
+                        status: root["status"]?.string
+                    ))
                 }
 
             case "response.reasoning_text.done", "response.reasoning_summary_text.done":
@@ -485,10 +514,18 @@ enum MiMoWire {
                    let text = root["text"]?.string, !text.isEmpty {
                     reasoningItemsWithDeltas.insert(itemID)
                     sawAnyReasoningDelta = true
-                    produced.append(.init(type: "reasoningDelta", text: text))
+                    produced.append(.init(
+                        type: "reasoningDelta", text: text,
+                        itemID: itemID.isEmpty ? nil : itemID,
+                        status: root["status"]?.string ?? "completed"
+                    ))
                 }
 
             case "response.output_item.added":
+                if let item = root["item"]?.object, item["type"]?.string == "reasoning" {
+                    if let event = reasoningItemEvent(from: item) { produced.append(event) }
+                    break
+                }
                 guard let item = root["item"]?.object, item["type"]?.string == "function_call" else { break }
                 let callID = item["call_id"]?.string ?? item["id"]?.string ?? ""
                 let itemID = item["id"]?.string ?? callID
@@ -523,6 +560,10 @@ enum MiMoWire {
                 produced.append(contentsOf: complete(callID: callID))
 
             case "response.output_item.done":
+                if let item = root["item"]?.object, item["type"]?.string == "reasoning" {
+                    if let event = reasoningItemEvent(from: item) { produced.append(event) }
+                    break
+                }
                 guard let item = root["item"]?.object, item["type"]?.string == "function_call" else { break }
                 let callID = item["call_id"]?.string ?? item["id"]?.string ?? ""
                 let itemID = item["id"]?.string ?? callID
@@ -538,6 +579,13 @@ enum MiMoWire {
             case "response.completed":
                 if let usage = usageEvent(from: root) { produced.append(usage) }
                 let response = root["response"]?.object
+                if let output = response?["output"]?.array {
+                    for item in output {
+                        guard let object = item.object, object["type"]?.string == "reasoning",
+                              let event = reasoningItemEvent(from: object) else { continue }
+                        produced.append(event)
+                    }
+                }
                 if response?["status"]?.string == "incomplete" {
                     produced.append(incompleteEvent(response: response))
                 } else {
@@ -644,6 +692,26 @@ enum MiMoWire {
                 type: "toolCallCompleted", callID: call.callID,
                 name: call.name, arguments: arguments
             )]
+        }
+
+        /// Preserve the documented Reasoning item shape: id, content[type=reasoning_text], type and
+        /// status. Never flatten it into assistant/user text.
+        private func reasoningItemEvent(from item: [String: JSONValue]) -> ProviderWireEvent? {
+            var text = ""
+            if let content = item["content"]?.array {
+                for part in content {
+                    guard let object = part.object,
+                          object["type"]?.string == "reasoning_text" || object["type"] == nil,
+                          let value = object["text"]?.string else { continue }
+                    text += value
+                }
+            }
+            guard !text.isEmpty else { return nil }
+            return ProviderWireEvent(
+                type: "reasoningItem", text: text,
+                itemID: item["id"]?.string,
+                status: item["status"]?.string
+            )
         }
 
         private mutating func usageEvent(from root: [String: JSONValue]) -> ProviderWireEvent? {

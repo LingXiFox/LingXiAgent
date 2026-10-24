@@ -199,7 +199,7 @@ public actor AgentLoop {
         // provider failure, cancellation and deadline all end here. Without this the provider keeps
         // continuation state for a run that will never produce another event (LOOP-026).
         if let provider = try? await router.resolve(model: request.model) {
-            await provider.endExecution(request.executionID)
+            await provider.finishExecution(request.executionID)
         }
         // Skipped transform hooks are reported, never silently swallowed (PLG-006).
         var detail = committed.detail

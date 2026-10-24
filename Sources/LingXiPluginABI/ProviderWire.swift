@@ -186,6 +186,33 @@ public struct ProviderWireTool: Codable, Sendable, Equatable {
     }
 }
 
+/// One structured reasoning item returned by a provider. The identifier, status, and text are
+/// preserved so a Responses continuation can replay the same item shape instead of a synthetic
+/// assistant message. Chat Completions uses the text; Responses uses the whole item.
+public struct ProviderReasoningItem: Codable, Sendable, Equatable {
+    public let id: String?
+    public let text: String
+    public let status: String?
+
+    public init(id: String? = nil, text: String, status: String? = nil) {
+        self.id = id
+        self.text = text
+        self.status = status
+    }
+}
+
+/// Reasoning produced by one assistant turn and the function calls that turn issued. Turns are
+/// kept in order so the Responses encoder can place each reasoning item before its function call.
+public struct ProviderReasoningTurn: Codable, Sendable, Equatable {
+    public let callIDs: [String]
+    public let items: [ProviderReasoningItem]
+
+    public init(callIDs: [String], items: [ProviderReasoningItem]) {
+        self.callIDs = callIDs
+        self.items = items
+    }
+}
+
 public struct ProviderWireRequest: Codable, Sendable, Equatable {
     public let model: String
     public let instructions: String?
@@ -202,11 +229,15 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
     /// for a tool loop; it is never written to the session journal. Providers that do not accept
     /// reasoning history ignore it.
     public let previousReasoning: String?
+    /// Structured per-turn reasoning history. New providers use this; `previousReasoning` stays
+    /// for older plugin binaries and Chat-only consumers that understand a single string.
+    public let previousReasoningTurns: [ProviderReasoningTurn]?
 
     public init(
         model: String, instructions: String?, input: [ProviderWireItem],
         tools: [ProviderWireTool], maxOutputTokens: Int?, credential: String?,
-        executionID: String? = nil, previousReasoning: String? = nil
+        executionID: String? = nil, previousReasoning: String? = nil,
+        previousReasoningTurns: [ProviderReasoningTurn]? = nil
     ) {
         self.model = model
         self.instructions = instructions
@@ -216,6 +247,7 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
         self.credential = credential
         self.executionID = executionID
         self.previousReasoning = previousReasoning
+        self.previousReasoningTurns = previousReasoningTurns
     }
 }
 
@@ -251,11 +283,16 @@ public struct ProviderWireEvent: Codable, Sendable, Equatable {
     public let message: String?
     public let requestID: String?
     public let usage: ProviderWireUsage?
+    /// Structured reasoning item metadata. `reasoningDelta` carries `itemID`; `reasoningItem`
+    /// carries the final text and status.
+    public let itemID: String?
+    public let status: String?
 
     public init(
         type: String, text: String? = nil, callID: String? = nil, name: String? = nil,
         arguments: String? = nil, stopReason: String? = nil, failureKind: String? = nil,
-        message: String? = nil, requestID: String? = nil, usage: ProviderWireUsage? = nil
+        message: String? = nil, requestID: String? = nil, usage: ProviderWireUsage? = nil,
+        itemID: String? = nil, status: String? = nil
     ) {
         self.type = type
         self.text = text
@@ -267,6 +304,8 @@ public struct ProviderWireEvent: Codable, Sendable, Equatable {
         self.message = message
         self.requestID = requestID
         self.usage = usage
+        self.itemID = itemID
+        self.status = status
     }
 }
 

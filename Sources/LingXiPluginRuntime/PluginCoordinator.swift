@@ -97,14 +97,10 @@ public actor PluginCoordinator {
             }
 
             // Apply the last committed settings before routes go live, so the first Run already
-            // sees the user's protocol/model/thinking choices.
-            if let settingsProvider, let snapshot = try await settingsProvider.settings(for: bundleID),
-               let capability = await session.settingsCapability {
-                _ = try await session.invoke(
-                    capability: capability,
-                    payload: .encode(SettingsInvocation(op: .apply, config: snapshot.config)),
-                    requestID: "settings-apply-\(UUID().uuidString)"
-                )
+            // sees the user's protocol/thinking choices. This must be validated exactly like the
+            // save path: an IPC success carrying ok:false is a failed enable, not a default run.
+            if let settingsProvider, let snapshot = try await settingsProvider.settings(for: bundleID) {
+                try await applySettingsSnapshot(snapshot, to: session, bundleID: bundleID)
             }
 
             let deployments = await session.providers.map { declaration in
@@ -248,12 +244,26 @@ public actor PluginCoordinator {
         guard let session = sessions[bundleID], await session.isRunning else {
             return SettingsResponse(ok: true)
         }
+        return try await applySettingsSnapshot(
+            PluginSettingsSnapshot(version: 1, config: config),
+            to: session, bundleID: bundleID
+        )
+    }
+
+    /// One validation path for both startup restore and live save. A plugin that declares settings
+    /// but has a saved snapshot must answer ok:true; a missing capability with a saved snapshot is a
+    /// hard failure rather than a silent fallback to defaults.
+    private func applySettingsSnapshot(
+        _ snapshot: PluginSettingsSnapshot, to session: PluginSession, bundleID: String
+    ) async throws -> SettingsResponse {
         guard let capability = await session.settingsCapability else {
-            throw PluginSettingsApplyError.rejected("plugin does not declare a settings capability")
+            throw PluginSettingsApplyError.rejected(
+                "plugin \(bundleID) has saved settings but does not declare a settings capability"
+            )
         }
         let raw = try await session.invoke(
             capability: capability,
-            payload: .encode(SettingsInvocation(op: .apply, config: config)),
+            payload: .encode(SettingsInvocation(op: .apply, config: snapshot.config)),
             requestID: "settings-apply-\(UUID().uuidString)"
         )
         let response = try raw.decode(SettingsResponse.self)

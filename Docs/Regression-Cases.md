@@ -224,6 +224,9 @@
 | SEC-001 | 设置凭据跨插件隔离 | 插件只能通过自己的 settingsSession 操作自己声明的 provider/credential；删除需宿主确认；伪造 FrontendRequest 不能绕过归属检查 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsCredentialCrossPluginDenied`、`settingsDisabledCredentialIsolation` |
 | SEC-002 | Settings-Only Host 最小授权 | 设置 Host 不继承运行 grants，不注册 Provider/Hook/Tool；Bundle ID 必须与注册表一致 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsOnlyHostDropsRunGrants` |
 | TUI-007 | 设置会话生命周期 | 重复打开旧 session 立即失效；100 次开关不累积；Host 崩溃/超时移除会话；迟到回复不能复活窗口 | Phase 4.2.1 审查 | 4.2.1 | L2 | `settingsSessionReplaced`、`settingsSessionChurn`、`settingsIPCTimeout` |
+| PLG-020 | 启动配置恢复校验 | `enable` 必须在注册路由前应用已保存配置并检查 `SettingsResponse.ok`；拒绝、损坏、版本错误、Host 崩溃、无 capability 都失败并回收 Host/Router/Hook；无配置才使用默认值 | Phase 4.2.2 审查 | 4.2.2 | L2 | `startupSettings*`、`startupCorruptConfigRegistersNoRoutes` |
+| MIMO-006 | Responses 推理历史 | 保留 Reasoning item 的 id/status/content 与顺序，下一轮放在对应 function_call 前；不使用 previous_response_id；重复 SSE 不重复；Chat 单独使用 reasoning_content | MiMo 官方文档 + Phase 4.2.2 | 4.2.2 | L2 | `MIMO_responsesReasoningToolRoundTrip`、`MIMO_responsesMultipleReasoningTurns` |
+| SETTINGS-008 | 保存取消与偏好原子性 | 取消/失败在 prepare/write/apply/commit 各阶段收敛；Host 最终退出且只释放一次；preferredModel 只在 commit 成功后发布；失败恢复旧文件/运行态/偏好 | Phase 4.2.2 审查 | 4.2.2 | L2 | `settingsCancelDuring*`、`settingsCommit*`、`settingsPreferredModelCommit`、`settingsSaveCancelChurn` |
 | MIMO-004 | 推理上下文工具续接 | reasoning 只在同一 execution 的工具轮内存中传递，不进入正文/日志；Chat 用 reasoning_content，Responses 用 reasoning item；最终终态清理 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_chatReasoningToolRoundTrip` |
 | MIMO-005 | 双协议错误与去重边界 | HTTP 401/429/500、无终态 EOF、重复 sequence/终态、incomplete/failed 都按 providerFailure 收敛且不重复输出 | Phase 4.2.1 审查 | 4.2.1 | L2 | `MIMO_httpFailures`、`MIMO_eofWithoutTerminal`、`MIMO_responsesDuplicateAndReorder` |
 

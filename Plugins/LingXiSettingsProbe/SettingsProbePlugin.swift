@@ -20,6 +20,15 @@ private final class SettingsProbeState: @unchecked Sendable {
     private var crashOnApply = false
     private var slowSave = false
     private var slowOpen = false
+    private var slowApply = false
+    private var slowCommit = false
+    private var commitTimeout = false
+    private var rejectCommit = false
+    private var crashOnCommit = false
+    private var preferredModel: String?
+    private var committedPreferredModel: String?
+    private var applyCount = 0
+    private var rejectSecondApply = false
     private var evilCommand = false
 
     func open(_ invocation: SettingsInvocation) {
@@ -37,17 +46,30 @@ private final class SettingsProbeState: @unchecked Sendable {
             if case .bool(let value)? = config["probeCrashOnApply"] { crashOnApply = value }
             if case .bool(let value)? = config["probeSlowSave"] { slowSave = value }
             if case .bool(let value)? = config["probeSlowOpen"] { slowOpen = value }
+            if case .bool(let value)? = config["probeSlowApply"] { slowApply = value }
+            if case .bool(let value)? = config["probeSlowCommit"] { slowCommit = value }
+            if case .bool(let value)? = config["probeCommitTimeout"] { commitTimeout = value }
+            if case .bool(let value)? = config["probeRejectCommit"] { rejectCommit = value }
+            if case .bool(let value)? = config["probeCrashOnCommit"] { crashOnCommit = value }
+            if case .string(let value)? = config["probePreferredModel"] { preferredModel = value }
+            if case .bool(let value)? = config["probeRejectSecondApply"] { rejectSecondApply = value }
         }
+        committedPreferredModel = preferredModel
         if crashOnOpen { exit(1) }
         if slowOpen { Thread.sleep(forTimeInterval: 10) }
     }
 
     func apply(_ invocation: SettingsInvocation) {
         lock.lock()
+        if case .bool(true)? = invocation.config?.object?["probeSlowApply"] {
+            slowApply = true
+        }
+        if slowApply { lock.unlock(); Thread.sleep(forTimeInterval: 0.5); lock.lock() }
         defer { lock.unlock() }
         if let config = invocation.config?.object {
             if let value = config["name"]?.string { name = value }
             if case .bool(let value)? = config["enabled"] { enabled = value }
+            if case .bool(let value)? = config["probeRejectSecondApply"] { rejectSecondApply = value }
         }
     }
 
@@ -132,6 +154,17 @@ private final class SettingsProbeState: @unchecked Sendable {
     var rejectsApply: Bool { lock.lock(); defer { lock.unlock() }; return rejectApply }
     var crashesOnApply: Bool { lock.lock(); defer { lock.unlock() }; return crashOnApply }
     var isSlowSave: Bool { lock.lock(); defer { lock.unlock() }; return slowSave }
+    var isSlowCommit: Bool { lock.lock(); defer { lock.unlock() }; return slowCommit }
+    var isCommitTimeout: Bool { lock.lock(); defer { lock.unlock() }; return commitTimeout }
+    var rejectsCommit: Bool { lock.lock(); defer { lock.unlock() }; return rejectCommit }
+    var crashesOnCommit: Bool { lock.lock(); defer { lock.unlock() }; return crashOnCommit }
+    func commitPreferred() { lock.lock(); committedPreferredModel = preferredModel; lock.unlock() }
+    var preferredModelValue: String? { lock.lock(); defer { lock.unlock() }; return preferredModel }
+    var rejectsSecondApplyNow: Bool {
+        lock.lock(); defer { lock.unlock() }
+        applyCount += 1
+        return rejectSecondApply && applyCount == 2
+    }
 
     func candidate() -> JSONValue? {
         lock.lock()
@@ -214,16 +247,30 @@ private let invokeImpl: @convention(c) (
             response = SettingsResponse(ok: false, error: "名称不能为空")
             break
         }
-        response = SettingsResponse(config: candidate, ok: true)
+        response = SettingsResponse(
+            config: candidate, preferredModel: state.preferredModelValue, ok: true
+        )
     case .apply:
         if state.crashesOnApply { exit(1) }
         if state.rejectsApply {
             response = SettingsResponse(ok: false, error: "probe refused to apply")
             break
         }
+        if state.rejectsSecondApplyNow {
+            response = SettingsResponse(ok: false, error: "probe refused the rollback apply")
+            break
+        }
         state.apply(invocation)
         response = SettingsResponse(ok: true)
     case .commit:
+        if state.crashesOnCommit { exit(1) }
+        if state.isCommitTimeout { Thread.sleep(forTimeInterval: 6) }
+        if state.isSlowCommit { Thread.sleep(forTimeInterval: 0.5) }
+        if state.rejectsCommit {
+            response = SettingsResponse(ok: false, error: "probe refused to commit")
+            break
+        }
+        state.commitPreferred()
         response = SettingsResponse(ok: true)
     case .cancel:
         state.reset()

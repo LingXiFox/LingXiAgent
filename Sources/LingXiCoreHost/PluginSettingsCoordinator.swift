@@ -69,6 +69,8 @@ actor PluginSettingsCoordinator {
     private var opening: Set<String> = []
     private var saving: Set<String> = []
     private var cancelled: Set<String> = []
+    private var closedSessions: Set<String> = []
+    private var shuttingDown = false
     private var preferredModels: [String: String] = [:]
 
     init(
@@ -84,6 +86,7 @@ actor PluginSettingsCoordinator {
     }
 
     func open(bundleID: String, viewport: SettingsViewport) async throws -> SettingsSnapshot {
+        guard !shuttingDown else { throw SettingsError.sessionMissing }
         guard let entry = await registry.entry(bundleID) else {
             throw SettingsError.notInstalled(bundleID)
         }
@@ -194,9 +197,11 @@ actor PluginSettingsCoordinator {
     }
 
     func save(sessionID: String) async throws {
+        guard !shuttingDown else { throw SettingsError.sessionMissing }
         guard let live = sessions[sessionID] else { throw SettingsError.sessionMissing }
-        guard let plugin = live.plugin, let capability = live.capability else {
+        guard live.plugin != nil, live.capability != nil else {
             sessions[sessionID] = nil
+            await close(live, cancel: false)
             return
         }
         guard !saving.contains(live.bundleID) else { throw SettingsError.busy(live.bundleID) }
@@ -207,7 +212,33 @@ actor PluginSettingsCoordinator {
             cancelled.remove(sessionID)
         }
 
+        do {
+            try await performSave(sessionID: sessionID, live: live)
+        } catch {
+            if case SettingsError.cancelled = error {
+                sessions.removeValue(forKey: sessionID)
+                await close(live, cancel: true)
+            } else if await !(live.plugin?.isRunning ?? false) {
+                // A dead settings host cannot be retried; remove the window rather than leaving an
+                // unusable session around until shutdown.
+                sessions.removeValue(forKey: sessionID)
+                await close(live, cancel: false)
+            }
+            throw error
+        }
+
+        sessions.removeValue(forKey: sessionID)
+        await close(live, cancel: false)
+    }
+
+    /// Runs the prepare/write/apply/commit transaction. It never closes the session: the caller
+    /// owns the one exit path so every throw (including cancellation) releases the host exactly once.
+    private func performSave(sessionID: String, live: Live) async throws {
+        guard let plugin = live.plugin, let capability = live.capability else {
+            throw SettingsError.sessionMissing
+        }
         let old = try await store.load(bundleID: live.bundleID)
+        let oldPreferred = preferredModels[live.bundleID]
         let response = try await invoke(
             plugin: plugin, capability: capability,
             invocation: SettingsInvocation(
@@ -224,9 +255,9 @@ actor PluginSettingsCoordinator {
         guard !cancelled.contains(sessionID) else { throw SettingsError.cancelled }
         do {
             try await store.save(
-            bundleID: live.bundleID, config: config,
-            preferredModel: response.preferredModel
-        )
+                bundleID: live.bundleID, config: config,
+                preferredModel: response.preferredModel
+            )
         } catch {
             throw SettingsError.saveFailed("\(error)")
         }
@@ -251,9 +282,6 @@ actor PluginSettingsCoordinator {
             if let rollback { throw SettingsError.rollbackFailed("cancel before commit: \(rollback)") }
             throw SettingsError.cancelled
         }
-        if let preferred = response.preferredModel {
-            preferredModels[live.bundleID] = preferred
-        }
         do {
             let commit = try await invoke(
                 plugin: plugin, capability: capability,
@@ -263,6 +291,7 @@ actor PluginSettingsCoordinator {
                 throw SettingsError.commitFailed(commit.error ?? "plugin returned ok=false")
             }
         } catch {
+            restorePreferredModel(oldPreferred, bundleID: live.bundleID)
             let rollback = await restore(old, bundleID: live.bundleID)
             if let rollback {
                 throw SettingsError.rollbackFailed("commit failed: \(error); \(rollback)")
@@ -270,8 +299,48 @@ actor PluginSettingsCoordinator {
             throw SettingsError.commitFailed("\(error)")
         }
 
-        sessions[sessionID] = nil
-        await plugin.disable()
+        // Commit is the last cancellation window. If the user cancelled while the plugin was
+        // committing, restore the file, the running config and the plugin's commit state before
+        // reporting cancellation; otherwise a cancel could silently publish a model preference.
+        guard !cancelled.contains(sessionID) else {
+            restorePreferredModel(oldPreferred, bundleID: live.bundleID)
+            var failures: [String] = []
+            if let rollback = await restore(old, bundleID: live.bundleID) {
+                failures.append(rollback)
+            }
+            do {
+                let oldConfig = old?.config ?? .object([:])
+                let commit = try await invoke(
+                    plugin: plugin, capability: capability,
+                    invocation: SettingsInvocation(op: .commit, sessionID: sessionID, config: oldConfig)
+                )
+                if commit.ok != true {
+                    failures.append("plugin commit rollback: \(commit.error ?? "ok=false")")
+                }
+            } catch {
+                failures.append("plugin commit rollback: \(error)")
+            }
+            if !failures.isEmpty {
+                throw SettingsError.rollbackFailed("cancel after commit: \(failures.joined(separator: "; "))")
+            }
+            throw SettingsError.cancelled
+        }
+
+        // Publish the preference only after every durable and runtime step committed. A failed
+        // commit must not leave the TUI pointing at a model the plugin never accepted.
+        if let preferred = response.preferredModel {
+            preferredModels[live.bundleID] = preferred
+        } else {
+            preferredModels[live.bundleID] = nil
+        }
+    }
+
+    private func restorePreferredModel(_ old: String?, bundleID: String) {
+        if let old {
+            preferredModels[bundleID] = old
+        } else {
+            preferredModels[bundleID] = nil
+        }
     }
 
     /// Restores the previous durable file and the previous running configuration. Returns a
@@ -313,7 +382,13 @@ actor PluginSettingsCoordinator {
     }
 
     func shutdown() async {
+        shuttingDown = true
         let all = Array(sessions.values)
+        for live in all {
+            // A save may be awaiting an IPC reply. Mark it cancelled so its exit path performs the
+            // rollback, and close the host now; close() is idempotent if save reaches it later.
+            cancelled.insert(live.id)
+        }
         sessions.removeAll()
         for live in all { await close(live, cancel: true) }
     }
@@ -453,6 +528,7 @@ actor PluginSettingsCoordinator {
     }
 
     private func close(_ live: Live, cancel: Bool) async {
+        guard closedSessions.insert(live.id).inserted else { return }
         sessions.removeValue(forKey: live.id)
         if let plugin = live.plugin, let capability = live.capability, cancel {
             _ = try? await invoke(

@@ -221,6 +221,8 @@ func MIMO_providerStreamCancellation() async throws {
     )
     #expect(result.status == .deadlineExceeded)
     #expect(await harness.coordinator.isRunning(bundleID: mimoID))
+    let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
+    #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
     try await harness.coordinator.disable(bundleID: mimoID)
     #expect(await waitUntil { kill(pid, 0) != 0 })
 }
@@ -847,6 +849,8 @@ func MIMO_responsesCancellationDropsLateEvents() async throws {
         mimoRequest(turn: 1, prompt: "cancel"), policy: LoopPolicy(overallTimeout: .milliseconds(150))
     )
     #expect(result.status == .deadlineExceeded)
+    let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
+    #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
     let firstCount = harness.recorder.events.filter {
         if case .textDelta = $0 { return true } else { return false }
     }.count
@@ -1144,6 +1148,8 @@ func MIMO_chatReasoningToolRoundTrip() async throws {
     #expect(requests[1].body.contains("\"reasoning_content\":\"private reasoning\""), "body=\(requests[1].body)")
     // The reasoning is not in the assistant's visible text or in a user message.
     #expect(!run.assistantText.contains("private reasoning"))
+    let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
+    #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
 }
 
 private func mimoStatusResponse(_ status: Int, reason: String) -> String {
@@ -1167,6 +1173,8 @@ func MIMO_httpFailures(status: Int, reason: String, kind: String) async throws {
     #expect(run.cause == .providerFailure)
     #expect(run.detail?.lowercased().contains("http \(status)") == true)
     #expect(run.detail?.lowercased().contains("http \(status)") == true)
+    let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
+    #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
 }
 
 @Test("MIMO EOF without a terminal event is a protocol failure, not a successful stop")
@@ -1226,4 +1234,218 @@ func MIMO_responsesDuplicateAndReorder() async throws {
     let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "dedupe"), policy: LoopPolicy())
     #expect(run.status == .completed, "\(run.detail ?? "")")
     #expect(run.assistantText == "hello")
+}
+
+@Test("MIMO Responses replays structured reasoning items before the function call")
+func MIMO_responsesReasoningToolRoundTrip() async throws {
+    let reasoningItem = [
+        "id": "rs_1", "type": "reasoning", "status": "completed",
+        "content": [["type": "reasoning_text", "text": "private reasoning"]],
+    ] as [String: Any]
+    let callItem = [
+        "id": "fc_1", "type": "function_call", "call_id": "call_1", "name": "echo",
+        "arguments": "{\"value\":\"42\"}",
+    ] as [String: Any]
+    let first = mimoSSE([
+        mimoSSEEvent("response.created", [
+            "type": "response.created", "sequence_number": 0,
+            "response": ["id": "resp_1", "status": "in_progress"],
+        ]),
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": 1,
+            "output_index": 0,
+            "item": ["id": "rs_1", "type": "reasoning", "status": "in_progress", "content": []],
+        ]),
+        mimoSSEEvent("response.reasoning_text.delta", [
+            "type": "response.reasoning_text.delta", "sequence_number": 2,
+            "item_id": "rs_1", "output_index": 0, "content_index": 0,
+            "delta": "private reasoning",
+        ]),
+        // A retried event with the same sequence must not duplicate the reasoning item.
+        mimoSSEEvent("response.reasoning_text.delta", [
+            "type": "response.reasoning_text.delta", "sequence_number": 2,
+            "item_id": "rs_1", "output_index": 0, "content_index": 0,
+            "delta": "IGNORED",
+        ]),
+        mimoSSEEvent("response.output_item.done", [
+            "type": "response.output_item.done", "sequence_number": 3,
+            "output_index": 0, "item": reasoningItem,
+        ]),
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": 4,
+            "output_index": 1,
+            "item": ["id": "rs_2", "type": "reasoning", "status": "in_progress", "content": []],
+        ]),
+        mimoSSEEvent("response.reasoning_text.delta", [
+            "type": "response.reasoning_text.delta", "sequence_number": 5,
+            "item_id": "rs_2", "output_index": 1, "content_index": 0,
+            "delta": "second reasoning",
+        ]),
+        mimoSSEEvent("response.output_item.done", [
+            "type": "response.output_item.done", "sequence_number": 6,
+            "output_index": 1,
+            "item": [
+                "id": "rs_2", "type": "reasoning", "status": "completed",
+                "content": [["type": "reasoning_text", "text": "second reasoning"]],
+            ] as [String: Any],
+        ]),
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": 7,
+            "output_index": 2, "item": callItem,
+        ]),
+        mimoSSEEvent("response.output_item.done", [
+            "type": "response.output_item.done", "sequence_number": 8,
+            "output_index": 2, "item": callItem,
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 9,
+            "response": ["id": "resp_1", "status": "completed"],
+        ]),
+    ])
+    let second = mimoSSE([
+        mimoSSEEvent("response.output_text.delta", [
+            "type": "response.output_text.delta", "sequence_number": 1,
+            "item_id": "msg_2", "output_index": 0, "content_index": 0, "delta": "done",
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 2,
+            "response": ["id": "resp_2", "status": "completed"],
+        ]),
+    ])
+    let server = try MiMoLoopbackServer(responses: [mimoSSEResponse(first), mimoSSEResponse(second)])
+    let harness = try await makeMiMoHarness(
+        grants: [
+            try mimoConfigGrant([
+                "protocolKind": "responses", "model": "mimo-v2.6-flash",
+                "thinkingMode": "enabled", "reasoningEffort": "medium",
+            ]),
+            "test.endpoint=http://127.0.0.1:\(server.port)/v1/responses",
+        ],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "call the echo tool"), policy: LoopPolicy())
+    #expect(run.status == .completed, "\(run.detail ?? "")")
+    #expect(run.toolOutcomes == 1)
+    _ = await waitUntil { server.requests(count: 2) != nil }
+    let requests = try #require(server.requests(count: 2))
+    let body = try #require(
+        try JSONSerialization.jsonObject(with: Data(requests[1].body.utf8)) as? [String: Any]
+    )
+    #expect(body["previous_response_id"] == nil)
+    let input = try #require(body["input"] as? [[String: Any]])
+    let reasoningIndex = try #require(input.firstIndex { $0["type"] as? String == "reasoning" })
+    let callIndex = try #require(input.firstIndex { ($0["call_id"] as? String) == "call_1" })
+    #expect(reasoningIndex < callIndex)
+    let reasoning = input[reasoningIndex]
+    #expect(reasoning["id"] as? String == "rs_1")
+    #expect(reasoning["status"] as? String == "completed")
+    let content = try #require(reasoning["content"] as? [[String: Any]])
+    #expect(content.first?["type"] as? String == "reasoning_text")
+    #expect(content.first?["text"] as? String == "private reasoning")
+    #expect(input.filter { $0["type"] as? String == "reasoning" }.count == 2)
+    let reasoningTexts = input.filter { $0["type"] as? String == "reasoning" }
+        .compactMap { ($0["content"] as? [[String: Any]])?.first?["text"] as? String }
+    #expect(reasoningTexts == ["private reasoning", "second reasoning"])
+    #expect((input[callIndex]["type"] as? String) == "function_call")
+    #expect(input.contains { ($0["type"] as? String) == "function_call_output" && ($0["call_id"] as? String) == "call_1" })
+    #expect(!run.assistantText.contains("private reasoning"))
+}
+
+private func responsesToolTurn(
+    sequenceBase: Int, reasoningID: String, reasoning: String,
+    callID: String, value: String
+) -> String {
+    let call = [
+        "id": "fc_\(callID)", "type": "function_call", "call_id": callID, "name": "echo",
+        "arguments": "{\"value\":\"\(value)\"}",
+    ] as [String: Any]
+    return mimoSSE([
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": sequenceBase,
+            "output_index": 0,
+            "item": ["id": reasoningID, "type": "reasoning", "status": "in_progress", "content": []],
+        ]),
+        mimoSSEEvent("response.reasoning_text.delta", [
+            "type": "response.reasoning_text.delta", "sequence_number": sequenceBase + 1,
+            "item_id": reasoningID, "output_index": 0, "content_index": 0, "delta": reasoning,
+        ]),
+        mimoSSEEvent("response.output_item.done", [
+            "type": "response.output_item.done", "sequence_number": sequenceBase + 2,
+            "output_index": 0,
+            "item": [
+                "id": reasoningID, "type": "reasoning", "status": "completed",
+                "content": [["type": "reasoning_text", "text": reasoning]],
+            ] as [String: Any],
+        ]),
+        mimoSSEEvent("response.output_item.added", [
+            "type": "response.output_item.added", "sequence_number": sequenceBase + 3,
+            "output_index": 1, "item": call,
+        ]),
+        mimoSSEEvent("response.output_item.done", [
+            "type": "response.output_item.done", "sequence_number": sequenceBase + 4,
+            "output_index": 1, "item": call,
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": sequenceBase + 5,
+            "response": ["id": "resp_\(reasoningID)", "status": "completed"],
+        ]),
+    ])
+}
+
+@Test("MIMO Responses keeps every reasoning turn in order across a three-round tool loop")
+func MIMO_responsesMultipleReasoningTurns() async throws {
+    let final = mimoSSE([
+        mimoSSEEvent("response.output_text.delta", [
+            "type": "response.output_text.delta", "sequence_number": 1,
+            "item_id": "msg_final", "output_index": 0, "content_index": 0, "delta": "finished",
+        ]),
+        mimoSSEEvent("response.completed", [
+            "type": "response.completed", "sequence_number": 2,
+            "response": ["id": "resp_final", "status": "completed"],
+        ]),
+    ])
+    let server = try MiMoLoopbackServer(responses: [
+        mimoSSEResponse(responsesToolTurn(
+            sequenceBase: 0, reasoningID: "rs_1", reasoning: "first reason",
+            callID: "call_1", value: "1"
+        )),
+        mimoSSEResponse(responsesToolTurn(
+            sequenceBase: 0, reasoningID: "rs_2", reasoning: "second reason",
+            callID: "call_2", value: "2"
+        )),
+        mimoSSEResponse(final),
+    ])
+    let harness = try await makeMiMoHarness(
+        grants: [
+            try mimoConfigGrant([
+                "protocolKind": "responses", "model": "mimo-v2.6-flash",
+                "thinkingMode": "enabled", "reasoningEffort": "low",
+            ]),
+            "test.endpoint=http://127.0.0.1:\(server.port)/v1/responses",
+        ],
+        credential: { "offline-test-credential" }
+    )
+    defer { Task { try? await harness.coordinator.disable(bundleID: mimoID) } }
+    let run = await harness.loop.run(mimoRequest(turn: 1, prompt: "two tools"), policy: LoopPolicy())
+    #expect(run.status == .completed, "\(run.detail ?? "")")
+    #expect(run.toolOutcomes == 2)
+    _ = await waitUntil { server.requests(count: 3) != nil }
+    let requests = try #require(server.requests(count: 3))
+    let body = try #require(
+        try JSONSerialization.jsonObject(with: Data(requests[2].body.utf8)) as? [String: Any]
+    )
+    let input = try #require(body["input"] as? [[String: Any]])
+    let types = input.compactMap { $0["type"] as? String }
+    #expect(types.filter { $0 == "reasoning" }.count == 2)
+    #expect(types.contains("function_call_output"))
+    let firstReason = try #require(input.firstIndex { $0["id"] as? String == "rs_1" })
+    let secondReason = try #require(input.firstIndex { $0["id"] as? String == "rs_2" })
+    let firstCall = try #require(input.firstIndex { $0["call_id"] as? String == "call_1" })
+    let secondCall = try #require(input.firstIndex { $0["call_id"] as? String == "call_2" })
+    #expect(firstReason < firstCall)
+    #expect(secondReason < secondCall)
+    #expect(firstCall < secondReason)
+    let adapters = await harness.coordinator.providerBindings(bundleID: mimoID)
+    #expect(adapters.first?.adapter.cachedReasoningExecutionCount == 0)
 }

@@ -59,6 +59,36 @@ final class ProtocolCore: @unchecked Sendable {
         }
     }
 
+    var processIdentifier: Int32 { process.processIdentifier }
+
+    /// Direct children of the Core process. Used to prove a settings-only Host exited rather than
+    /// merely losing its session mapping.
+    func childProcessCount() -> Int { childProcesses().count }
+
+    func childProcesses() -> [String] {
+        let pgrep = Process()
+        pgrep.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+        pgrep.arguments = ["-lf", "-P", String(process.processIdentifier)]
+        let pipe = Pipe()
+        pgrep.standardOutput = pipe
+        pgrep.standardError = FileHandle.nullDevice
+        do { try pgrep.run() } catch { return ["pgrep failed"] }
+        pgrep.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let lines = String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline).map(String.init)
+        return lines.map { line in
+            let pid = line.split(separator: " ").first.map(String.init) ?? ""
+            let ps = Process()
+            ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+            ps.arguments = ["-o", "pid,stat,command", "-p", pid]
+            let out = Pipe(); ps.standardOutput = out; ps.standardError = FileHandle.nullDevice
+            try? ps.run(); ps.waitUntilExit()
+            let info = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            return info.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
     var stderrText: String {
         lock.lock(); defer { lock.unlock() }
         return errors.map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n")

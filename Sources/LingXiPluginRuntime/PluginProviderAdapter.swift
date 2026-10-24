@@ -66,9 +66,12 @@ public struct PluginProviderAdapter: ModelProvider {
         }
         let requestID = UUID().uuidString
         active.add(request.executionID, requestID)
-        let previousReasoning = reasoning.value(for: request.executionID)
+        let previousReasoningTurns = reasoning.turns(for: request.executionID)
         let wire = Self.wireRequest(
-            from: request, credential: granted, previousReasoning: previousReasoning
+            from: request, credential: granted,
+            previousReasoning: previousReasoningTurns
+                .flatMap { $0.items.map(\.text) }.joined(separator: "\n\n").nilIfEmpty,
+            previousReasoningTurns: previousReasoningTurns.isEmpty ? nil : previousReasoningTurns
         )
         let payload = try JSONValue.encode(wire)
         let events = await session.invokeStreaming(
@@ -80,17 +83,62 @@ public struct PluginProviderAdapter: ModelProvider {
         return AsyncThrowingStream { continuation in
             let pump = Task {
                 var sawTerminal = false
+                var currentItems: [ProviderReasoningItem] = []
+                var itemIndexByKey: [String: Int] = [:]
+                var currentCallIDs: [String] = []
                 do {
                     for try await value in events {
                         let envelope = try value.decode(ProviderWireEnvelope.self)
-                        if envelope.event.type == "reasoningDelta", let delta = envelope.event.text {
-                            reasoning.append(delta, for: executionID)
+                        let event = envelope.event
+                        switch event.type {
+                        case "reasoningDelta":
+                            guard let delta = event.text, !delta.isEmpty else { break }
+                            let key = event.itemID ?? "default"
+                            if let index = itemIndexByKey[key] {
+                                let old = currentItems[index]
+                                currentItems[index] = ProviderReasoningItem(
+                                    id: old.id, text: old.text + delta, status: old.status
+                                )
+                            } else {
+                                currentItems.append(ProviderReasoningItem(
+                                    id: event.itemID, text: delta, status: event.status
+                                ))
+                                itemIndexByKey[key] = currentItems.count - 1
+                            }
+                        case "reasoningItem":
+                            guard let text = event.text, !text.isEmpty else { break }
+                            let key = event.itemID ?? "default"
+                            if let index = itemIndexByKey[key] {
+                                let old = currentItems[index]
+                                currentItems[index] = ProviderReasoningItem(
+                                    id: event.itemID ?? old.id, text: text,
+                                    status: event.status ?? old.status
+                                )
+                            } else {
+                                currentItems.append(ProviderReasoningItem(
+                                    id: event.itemID, text: text, status: event.status
+                                ))
+                                itemIndexByKey[key] = currentItems.count - 1
+                            }
+                        case "toolCallStarted", "toolCallCompleted":
+                            if let callID = event.callID, !currentCallIDs.contains(callID) {
+                                currentCallIDs.append(callID)
+                            }
+                        default:
+                            break
                         }
-                        for mapped in Self.map(envelope.event) {
+                        for mapped in Self.map(event) {
                             switch mapped {
                             case .completed(let reason):
                                 sawTerminal = true
-                                if reason != .toolCalls { reasoning.finalize(executionID) }
+                                if reason == .toolCalls {
+                                    reasoning.appendTurn(
+                                        ProviderReasoningTurn(callIDs: currentCallIDs, items: currentItems),
+                                        for: executionID
+                                    )
+                                } else {
+                                    reasoning.finalize(executionID)
+                                }
                             case .failed:
                                 sawTerminal = true
                                 reasoning.finalize(executionID)
@@ -104,7 +152,7 @@ public struct PluginProviderAdapter: ModelProvider {
                     continuation.finish()
                 } catch {
                     // Cancellation after a terminal is the normal stream consumer shutdown; it
-                    // must not erase a tool-round reasoning snapshot retained for the next step.
+                    // must not erase a tool-round snapshot retained for the next step.
                     if !sawTerminal { reasoning.finalize(executionID) }
                     continuation.finish(throwing: error)
                 }
@@ -116,6 +164,14 @@ public struct PluginProviderAdapter: ModelProvider {
                 Task { await session.cancel(requestID: requestID) }
             }
         }
+    }
+
+    /// Test/diagnostic visibility for the bounded per-execution reasoning cache.
+    public var cachedReasoningExecutionCount: Int { reasoning.cachedExecutionCount }
+
+    public func finishExecution(_ executionID: ExecutionID) async {
+        reasoning.clearExecution(executionID)
+        await endExecution(executionID)
     }
 
     public func endExecution(_ executionID: ExecutionID) async {
@@ -138,7 +194,9 @@ public struct PluginProviderAdapter: ModelProvider {
     // MARK: - mapping
 
     static func wireRequest(
-        from request: ModelRequest, credential: String?, previousReasoning: String? = nil
+        from request: ModelRequest, credential: String?,
+        previousReasoning: String? = nil,
+        previousReasoningTurns: [ProviderReasoningTurn]? = nil
     ) -> ProviderWireRequest {
         var instructions: [String] = []
         var items: [ProviderWireItem] = []
@@ -185,66 +243,92 @@ public struct PluginProviderAdapter: ModelProvider {
             maxOutputTokens: nil,
             credential: credential,
             executionID: request.executionID.rawValue,
-            previousReasoning: previousReasoning
+            previousReasoning: previousReasoning,
+            previousReasoningTurns: previousReasoningTurns
         )
     }
 
-    private final class ReasoningStore: @unchecked Sendable {
+    final class ReasoningStore: @unchecked Sendable {
         private let lock = NSLock()
-        private var values: [ExecutionID: String] = [:]
+        private var turns: [ExecutionID: [ProviderReasoningTurn]] = [:]
         private var order: [ExecutionID] = []
-        private var finalized: Set<ExecutionID> = []
+        /// A toolCalls terminal does not end the Run; the next request consumes this marker. A final
+        /// terminal or endExecution without it clears the execution so a finished Run cannot leak.
+        private var keepForNextStep: Set<ExecutionID> = []
         private static let maxExecutions = 64
+        private static let maxTurnsPerExecution = 16
+        private static let maxItemsPerExecution = 64
+        private static let maxBytesPerExecution = 64 * 1024
 
-        func value(for executionID: ExecutionID) -> String? {
+        func turns(for executionID: ExecutionID) -> [ProviderReasoningTurn] {
             lock.lock(); defer { lock.unlock() }
-            return values[executionID]
+            keepForNextStep.remove(executionID)
+            return turns[executionID] ?? []
         }
 
-        /// Reasoning deltas arrive before the terminal. Keeping them immediately avoids a race
-        /// where the kernel starts the next tool round before the pump task observes the terminal.
-        func append(_ delta: String, for executionID: ExecutionID) {
+        func appendTurn(_ turn: ProviderReasoningTurn, for executionID: ExecutionID) {
+            guard !turn.callIDs.isEmpty, !turn.items.isEmpty else { return }
             lock.lock()
-            if values[executionID] == nil { order.append(executionID) }
-            let current = (values[executionID] ?? "") + delta
-            values[executionID] = String(current.prefix(16 * 1024))
-            finalized.remove(executionID)
+            if turns[executionID] == nil { order.append(executionID) }
+            var existing = turns[executionID] ?? []
+            existing.append(turn)
+            while existing.count > Self.maxTurnsPerExecution { existing.removeFirst() }
+            var itemCount = 0
+            var byteCount = 0
+            var kept: [ProviderReasoningTurn] = []
+            for turn in existing.reversed() {
+                if itemCount + turn.items.count > Self.maxItemsPerExecution { break }
+                let bytes = turn.items.reduce(0) { $0 + $1.text.utf8.count }
+                if byteCount + bytes > Self.maxBytesPerExecution { break }
+                itemCount += turn.items.count
+                byteCount += bytes
+                kept.append(turn)
+            }
+            turns[executionID] = kept.reversed()
+            keepForNextStep.insert(executionID)
             while order.count > Self.maxExecutions {
                 let evicted = order.removeFirst()
-                values.removeValue(forKey: evicted)
-                finalized.remove(evicted)
+                turns.removeValue(forKey: evicted)
+                keepForNextStep.remove(evicted)
             }
             lock.unlock()
         }
 
-        /// A non-tool terminal ends the Run's reasoning lifetime. A toolCalls terminal does not;
-        /// the next request in the same execution consumes it.
+        func clearExecution(_ executionID: ExecutionID) {
+            lock.lock()
+            turns.removeValue(forKey: executionID)
+            keepForNextStep.remove(executionID)
+            order.removeAll { $0 == executionID }
+            lock.unlock()
+        }
+
         func finalize(_ executionID: ExecutionID) {
             lock.lock()
-            values.removeValue(forKey: executionID)
-            finalized.insert(executionID)
+            turns.removeValue(forKey: executionID)
+            keepForNextStep.remove(executionID)
+            order.removeAll { $0 == executionID }
             lock.unlock()
         }
 
         func endExecution(_ executionID: ExecutionID) {
             lock.lock()
-            if finalized.remove(executionID) != nil {
-                values.removeValue(forKey: executionID)
+            // Keep only a turn that is explicitly waiting for the next request of a live Run.
+            // Every other path (final completion, cancellation, failure, or a tool turn whose Run
+            // never continues) is reclaimed here.
+            if !keepForNextStep.contains(executionID) {
+                turns.removeValue(forKey: executionID)
                 order.removeAll { $0 == executionID }
             }
-            lock.unlock()
-        }
-
-        func clear(_ executionID: ExecutionID) {
-            lock.lock()
-            values.removeValue(forKey: executionID)
-            finalized.remove(executionID)
-            order.removeAll { $0 == executionID }
+            keepForNextStep.remove(executionID)
             lock.unlock()
         }
 
         func clearAll() {
-            lock.lock(); values.removeAll(); finalized.removeAll(); order.removeAll(); lock.unlock()
+            lock.lock(); turns.removeAll(); keepForNextStep.removeAll(); order.removeAll(); lock.unlock()
+        }
+
+        var cachedExecutionCount: Int {
+            lock.lock(); defer { lock.unlock() }; return turns.count
         }
     }
 
@@ -285,4 +369,9 @@ public struct PluginProviderAdapter: ModelProvider {
             return []
         }
     }
+}
+
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
