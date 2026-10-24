@@ -2,8 +2,9 @@
 
 日期：2026-10-24
 基线：`1a0e2cc`（Phase 4.3 收尾）
-实现提交：（提交后回填）
-状态：（测试与 CI 通过后回填）
+实现提交：`cc4ba3c`（思考档位/快照、内核计时、主界面鼠标、脚本与警告）、
+`9026d94`（长流性能测试自带 fixture）
+状态：本地完整测试、PTY、Keychain 与 GitHub macOS CI 全部通过。
 
 本阶段修正 Phase 4.3 的两处口径：思考等级不简化为三档，而是按「模型 × 协议」声明；耗时报告不再把
 “最后一次 Provider 请求”和“整轮 Run”放在一起暗示存在神秘开销。ADR-0011 记录决策。
@@ -122,7 +123,12 @@
 
 ## 六、GitHub CI
 
-（待填：run 链接与结论）
+- 代码 HEAD `9026d94` 在 `macos-26` arm64 全步骤成功：
+  <https://github.com/LingXiFox/LingXiAgent/actions/runs/40100066598>
+- CI 日志计数：主套件 **255** tests（330s）；TUI/Settings PTY **14**（4.7s）；Keychain **9**（3.1s）；
+  思考/耗时/内核账本 **13**（12.6s）；Settings/MiMo **90**（289.9s）；空核启动步骤通过；构建 57s。
+- 首次提交 `cc4ba3c` 的 CI 亦通过；随后发现长流性能测试读取手工 `/tmp` fixture，在 CI 上会静默
+  跳过，改为测试内生成 cassette（`9026d94`）后重跑，全部步骤仍全绿。
 
 ## 六、未验证边界
 
