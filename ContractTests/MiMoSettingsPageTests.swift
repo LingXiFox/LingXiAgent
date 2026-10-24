@@ -45,7 +45,7 @@ private func rowIndex(_ frame: SettingsFrame, containing text: String) -> Int? {
 
 /// The column of the first cell of the span that carries `needle`, in display cells. Tabs are drawn
 /// as one span per title, so this is exactly the cell a real click report would carry.
-private func column(of needle: String, in frame: SettingsFrame, row: Int = 0) -> Int? {
+private func firstColumn(of needle: String, in frame: SettingsFrame, row: Int = 0) -> Int? {
     guard frame.rows.indices.contains(row) else { return nil }
     var column = 0
     for span in frame.rows[row].spans {
@@ -133,7 +133,9 @@ private func savedConfig(_ directory: URL, bundleID: String) throws -> [String: 
 private func clickTab(
     _ core: ProtocolCore, session: String, title: String, in snapshot: SettingsSnapshot
 ) async throws -> SettingsSnapshot {
-    let column = try #require(column(of: title, in: snapshot.frame))
+    // Keep the function name out of the local name: macro-based tests on older toolchains
+    // resolve the call against the local being declared otherwise.
+    let column = try #require(firstColumn(of: title, in: snapshot.frame))
     return try await mouseClick(core, session: session, row: 0, column: column)
 }
 
