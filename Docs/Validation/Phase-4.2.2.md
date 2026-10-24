@@ -2,7 +2,8 @@
 
 日期：2026-10-24
 基线：`764699f8835c055bef390f4bb51ec02208c1497c`
-状态：离线实现与回归测试完成，GitHub CI 待本轮推送后记录。
+修复提交：`022b900`（三项主体）、`0178414`（有界管道写）、`95fd017`（CI 串行门禁）
+状态：离线实现、回归测试与 GitHub macOS CI 全部通过。
 
 ## 一、P0：插件启动配置恢复校验
 
@@ -124,4 +125,4 @@ IPC 响应无效时仍会继续注册 ModelRouter 路由，等同于“偷偷使
   成功。真实 API 作为单独阶段保留。
 - Responses 历史 reasoning 的 `status`/`id` 回传接受度未在线确认。
 - 设置 Host 的协议隔离不是 OS 沙箱；原生不可信插件仍需系统级隔离。
-- GitHub CI URL：待本轮推送后填写。
+- GitHub CI：https://github.com/LingXiFox/LingXiAgent/actions/runs/40049873123（commit `95fd017`，macOS 26 arm64 全步骤成功）。
