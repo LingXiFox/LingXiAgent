@@ -216,13 +216,19 @@ func PERF_001_kernelPhaseAccounting() async throws {
 
 @Test("PERF-002 a long real stream keeps the Core's own overhead bounded")
 func PERF_002_longStreamOverhead() async throws {
-    let cassettePath = "/tmp/mimo-long-cassette.json"
-    guard FileManager.default.fileExists(atPath: cassettePath) else { return }
     let directory = try diagnosticsTempDirectory("perf-long")
     defer { try? FileManager.default.removeItem(at: directory) }
-    try await seedDiagnosticsProvider(
-        directory, cassette: URL(fileURLWithPath: cassettePath)
-    )
+    // Generated here, not read from /tmp: a missing fixture must not turn this into a silent skip.
+    let cassetteURL = directory.appendingPathComponent("long-stream.json")
+    var events: [[String: Any]] = (0..<2000).map { _ in ["type": "textDelta", "text": "x"] }
+    events.append(["type": "completed", "stopReason": "stop"])
+    let cassette: [String: Any] = [
+        "version": 1, "provider": "mimo",
+        "exchanges": [["requestDigest": "", "events": events]],
+    ]
+    try JSONSerialization.data(withJSONObject: cassette, options: [.sortedKeys])
+        .write(to: cassetteURL)
+    try await seedDiagnosticsProvider(directory, cassette: cassetteURL)
     let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
     defer { core.terminate() }
     _ = try #require(await core.waitReply(core.send(.hello)))
