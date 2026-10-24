@@ -108,13 +108,15 @@ public actor PluginSession {
         state = .running
     }
 
-    public func invoke(capability: String, payload: JSONValue, requestID: String) async throws -> JSONValue {
+    public func invoke(
+        capability: String, payload: JSONValue, requestID: String, timeout: Duration? = nil
+    ) async throws -> JSONValue {
         guard let process, state == .running else { throw SessionError.notRunning }
         var request = HostRequest(id: nil, method: .invoke)
         request.capability = capability
         request.payload = payload
         request.requestID = requestID
-        let reply = try await send(request, process: process)
+        let reply = try await send(request, process: process, timeout: timeout)
         guard reply.ok, let body = reply.payload else {
             let reason = reply.fault.map { "\($0.code): \($0.message)" } ?? "invoke failed without a fault"
             throw SessionError.hostFailed(reason)

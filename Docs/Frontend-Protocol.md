@@ -15,8 +15,8 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 
 | method | 参数 | 回复字段 |
 |---|---|---|
-| `hello` | — | `models`, `modelDetails`, `sessions`, `plugins`（启动快照） |
-| `models.list` | — | `models`, `modelDetails` |
+| `hello` | — | `models`, `modelDetails`, `providerStates`, `sessions`, `plugins`（启动快照） |
+| `models.list` | — | `models`, `modelDetails`, `providerStates` |
 | `sessions.list` | — | `sessions[]`（id、标题、轮数） |
 | `session.history` | `sessionID` | `history[]`（role、text、kind: message/tool/toolCall） |
 | `session.new` | — | `sessionID`（新会话在下一条消息落盘前不写日志） |
@@ -24,21 +24,31 @@ Core 并设置 `LINGXI_FRONTEND=stdio`；Core 只在被这样启动时进入常�
 | `run.cancel` | `runID` | —（在途 Run 按内核取消语义收敛） |
 | `plugins.list` | — | `plugins[]`（id、版本、enabled、running、capabilities、permissions） |
 | `plugin.enable` / `plugin.disable` | `bundleID` | `plugins`, `models`, `modelDetails` |
-| `plugin.settings.open` | `bundleID`, `viewport` | `settings`（sessionID、标题、受约束 frame） |
+| `plugin.settings.open` | `bundleID`, `viewport` | `settings`（sessionID、标题、受约束 frame、`dirty`） |
 | `plugin.settings.input` | `settingsSessionID`, `settingsInput` | `settings` |
 | `plugin.settings.resize` | `settingsSessionID`, `viewport` | `settings` |
 | `plugin.settings.save` | `settingsSessionID` | `ok`；成功即关闭设置会话 |
 | `plugin.settings.cancel` | `settingsSessionID` | `ok`；丢弃草稿 |
 | `plugin.settings.credential` | `settingsSessionID`, `provider`, `settingsCredentialAction`(`update`/`remove`), `settingsCredentialConfirmed` | `credentials[]`；`remove` 必须显式确认 |
+| `provider.reasoning.set` | `provider`, `model`（设置时必填）, `reasoningLevel` 或 `clearReasoning:true` | `providerStates[]`；等级必须是插件为该模型声明的 id |
 | `shutdown` | — | —（Core 在输入 EOF 后退出） |
 
 `modelDetails` 是 `models` 的可选增强，元素形如
 `{"id":"mimo-v2.6-flash","provider":"provider.mimo","thinkingLevels":[{"id":"low","label":"低"}],"defaultThinkingLevel":"low"}`。
 `models` 始终完整；旧前端可以忽略 `modelDetails`。思考等级由 Provider 插件在 `describe` 中声明，
-Core 只做透传和路由过滤，TUI 在模型区显示默认等级（本版只读，不向插件发送选择）。
+Core 只做透传和路由过滤。`providerStates` 是 Provider 的实时状态：
 
-设置会话的 `settings` 元素包含 `sessionID`、`bundleID`、`title`、`version`、`status`、`viewport` 和
-`frame`。`frame` 是插件自绘的行/spans；宿主在 Core 侧校验控制字符、颜色、尺寸并裁剪到视口。TUI 只负责
+```json
+{"providerID":"mimo","protocolKind":"responses","thinkingLevel":"enabled","thinkingLabel":"开启思考",
+ "source":"plugin-settings","overridden":false}
+```
+
+`source` 为 `plugin-settings` / `server-default` / `session-override`；`session-override` 表示用户用
+`/reasoning` 做了临时选择（该值不落盘，Core 重启即消失）。未声明状态能力的 Provider 不出现，或只有
+`providerID`，前端不得虚构默认值。
+
+设置会话的 `settings` 元素包含 `sessionID`、`bundleID`、`title`、`version`、`status`、`viewport`、
+`frame` 和 `dirty`。`dirty` 由插件回答“草稿是否与保存结果不同”；`null` 表示插件不跟踪，宿主按脏处理。`frame` 是插件自绘的行/spans；宿主在 Core 侧校验控制字符、颜色、尺寸并裁剪到视口。TUI 只负责
 外框、标题、页脚与输入路由，不解释插件字段。`viewport` 由 TUI 提供，插件可据此重排；Resize 走独立
 请求。`settingsInput` 的 `kind` 为 `key`/`paste`/`mouse`/`resize`/`credential`，键名使用
 `up`/`down`/`left`/`right`/`tab`/`enter`/`backspace`/`delete`/`char`/`pageUp`/`pageDown`。
@@ -62,7 +72,13 @@ Core 只做透传和路由过滤，TUI 在模型区显示默认等级（本版�
 | `usage` | `runID`, `usage` | 单次 Provider 调用的 token 计数（input/output/reasoning/cacheRead，缺失不等于 0）；一个 Run 可有多条 |
 | `run.terminal` | `runID`, `status`, `cause`, `detail`, `sessions` | 终态；`status != completed` 时 TUI 明确提示 cause/detail |
 | `plugins.changed` | `plugins` | 启停、崩溃或外部变化后的快照 |
-| `models.changed` | `models`, `modelDetails` | 路由变化后的可用模型与元数据 |
+| `models.changed` | `models`, `modelDetails`, `providerStates` | 路由变化后的可用模型与元数据 |
+| `providers.state` | `providerStates` | Provider 实时状态变化（保存设置、启停后） |
+| `timing` | `runID`, `timing` | 一次 Run 一条，终态前到达：Core 准备、插件 HTTP 各阶段、Run 总耗时（整数毫秒，只含数字） |
+
+`timing` 的字段：`corePrepareMs`、`prepareMs`、`httpSendMs`、`firstResponseMs`、`firstSSEMs`、
+`firstReasoningMs`、`firstTextMs`、`providerTotalMs`、`runTotalMs`、`renderMs`（`renderMs` 仅 TUI 本地
+填充，不经协议传输）。缺失表示未观测到，**不是 0**。
 
 ## 所有权与顺序
 
@@ -123,6 +139,22 @@ Ctrl-P 打开可搜索命令面板。`/models`、`/sessions`、`/plugins` 与不
 Enter 保存并关闭（只对与当前状态不同的插件发送 `plugin.enable` / `plugin.disable`），Esc 放弃修改。已有 `/auth <provider> [update|remove|status]` 用法保持可用。
 `/copy` 用 `pbcopy` 复制最后一条回复。`/mouse` 开关鼠标捕获（默认关）：开启后滚轮滚动消息，
 但终端原生拖选需按住 fn（Terminal.app）或 ⌥（iTerm2）；默认关闭是为了不破坏直接拖选复制。
+
+阶段 4.3 的交互补充（ADR-0010）：
+
+- 输入区底行是状态区：`模型 · 协议 <插件给的显示名> · 思考 <生效等级>`；临时选择追加 `·临时`。
+  协议/思考只取 Core 的 `providerStates`，Provider 未声明 `provider.state.v1` 时只显示模型。
+  Ctrl-T 仍只展开/收起思考内容，不改变临时选择。
+- `/reasoning` 打开当前模型声明的思考等级（另加“跟随插件设置”）。选择立即生效于后续请求、
+  不写设置文件；`/reasoning follow` 清除临时值。Core 拒绝未声明的等级。
+- 每次 Run 结束后，回复 meta 下方有一行 `上游 xms · 思考 xms · 本地 xms/N 帧`（缺项省略）；
+  `/perf` 展开为“本地阶段 / 上游延迟 / 总计”三段明细。数值只含毫秒与帧数。
+- 设置窗口：Ctrl-S 保存；Esc 在 `dirty == false` 时直接关闭，`true`/`null` 时弹出宿主三按钮
+  `[ 保存 ] [ 放弃 ] [ 继续编辑 ]`（←→/Tab 移动、Enter 确认、Esc 继续编辑，均可点击）。
+  保存失败保留窗口与草稿；设置 Host 死亡时关闭窗口并提示，不阻塞 `/quit` 或 Ctrl-C。
+- 鼠标：`/mouse` 开启后，点击选择器/插件列表行等于选中并确认；点击勾选框等于 Space；
+  滚轮滚动消息或移动选择。设置面板内点击转成帧内相对坐标发给插件，边框/标题/页脚与宿主弹窗按钮
+  不穿透。release 事件不转发，一次点击只触发一次。键盘操作全部保留，与鼠标共用同一选中状态。
 
 编辑：输入区随内容增长（最多 8 行，再随光标滚动），中文、组合字符与 emoji 按字形计宽。
 真实终端光标停在输入位置并显示，输入法候选框跟随输入点；面板打开时隐藏光标。

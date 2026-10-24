@@ -95,6 +95,35 @@ public struct ToolCallDelta: Hashable, Sendable {
     }
 }
 
+/// Provider-reported request phase timings, in milliseconds. The kernel only forwards this to an
+/// observer; it never persists it and never treats it as execution state. Numbers only, so no
+/// request content can be mistaken for diagnostics.
+public struct ModelTiming: Sendable, Equatable {
+    public let prepareMs: Int?
+    public let sendMs: Int?
+    public let firstResponseMs: Int?
+    public let firstSSEMs: Int?
+    public let firstReasoningMs: Int?
+    public let firstTextMs: Int?
+    public let terminalMs: Int?
+    public let totalMs: Int?
+
+    public init(
+        prepareMs: Int? = nil, sendMs: Int? = nil, firstResponseMs: Int? = nil,
+        firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil, firstTextMs: Int? = nil,
+        terminalMs: Int? = nil, totalMs: Int? = nil
+    ) {
+        self.prepareMs = prepareMs
+        self.sendMs = sendMs
+        self.firstResponseMs = firstResponseMs
+        self.firstSSEMs = firstSSEMs
+        self.firstReasoningMs = firstReasoningMs
+        self.firstTextMs = firstTextMs
+        self.terminalMs = terminalMs
+        self.totalMs = totalMs
+    }
+}
+
 public enum ModelEvent: Sendable {
     case providerRequestID(String)
     case started
@@ -105,6 +134,8 @@ public enum ModelEvent: Sendable {
     case toolCallDelta(ToolCallDelta)
     case toolCallCompleted(ToolCall)
     case usage(ModelUsage)
+    /// A provider's own phase timings, emitted once per request just before its terminal event.
+    case timing(ModelTiming)
     case completed(ModelStopReason)
     case failed(ModelFailure)
 

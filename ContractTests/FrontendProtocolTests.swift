@@ -19,7 +19,11 @@ final class ProtocolCore: @unchecked Sendable {
     private var nextID = 1
     private var cursor = 0
 
-    init(dataDirectory: URL, keychainService: String = "site.lingxi.credentials.test.\(UUID().uuidString)") throws {
+    init(
+        dataDirectory: URL,
+        keychainService: String = "site.lingxi.credentials.test.\(UUID().uuidString)",
+        extraEnvironment: [String: String] = [:]
+    ) throws {
         process.executableURL = builtProduct("LingXiCoreHost")
         var environment = ProcessInfo.processInfo.environment
         environment["LINGXI_DATA_DIR"] = dataDirectory.path
@@ -28,6 +32,7 @@ final class ProtocolCore: @unchecked Sendable {
         environment["LINGXI_FRONTEND"] = "stdio"
         environment["LINGXI_PLUGIN_POLICY"] = "development"
         environment.removeValue(forKey: "LINGXI_CORE_CONTROL")
+        for (key, value) in extraEnvironment { environment[key] = value }
         process.environment = environment
         process.standardInput = stdin
         process.standardOutput = stdout
@@ -99,7 +104,8 @@ final class ProtocolCore: @unchecked Sendable {
               provider: String? = nil, secret: String? = nil,
               settingsSessionID: String? = nil, settingsInput: SettingsInput? = nil,
               viewport: SettingsViewport? = nil, settingsCredentialAction: String? = nil,
-              settingsCredentialConfirmed: Bool? = nil) -> Int {
+              settingsCredentialConfirmed: Bool? = nil,
+              reasoningLevel: String? = nil, clearReasoning: Bool? = nil) -> Int {
         lock.lock(); let id = nextID; nextID += 1; lock.unlock()
         var request = FrontendRequest(id: id, method: method)
         request.sessionID = sessionID; request.model = model; request.text = text
@@ -110,6 +116,8 @@ final class ProtocolCore: @unchecked Sendable {
         request.viewport = viewport
         request.settingsCredentialAction = settingsCredentialAction
         request.settingsCredentialConfirmed = settingsCredentialConfirmed
+        request.reasoningLevel = reasoningLevel
+        request.clearReasoning = clearReasoning
         stdin.fileHandleForWriting.write((try! JSONEncoder().encode(request)) + Data([UInt8(ascii: "\n")]))
         return id
     }

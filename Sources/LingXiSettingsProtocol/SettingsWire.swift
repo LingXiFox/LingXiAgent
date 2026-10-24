@@ -323,19 +323,24 @@ public struct SettingsResponse: Codable, Sendable, Equatable {
     /// Optional model the plugin wants the frontend to prefer for new conversations. The Core's
     /// router still decides which model is actually requested.
     public let preferredModel: String?
+    /// The plugin's own answer to "does the draft differ from what a save would persist?". Only the
+    /// plugin can know this, so the host never guesses: `nil` means the plugin does not track it,
+    /// and the host then treats the window as dirty (a prompt is safer than discarding a draft).
+    public let dirty: Bool?
     public let ok: Bool?
     public let error: String?
 
     public init(
         frame: SettingsFrame? = nil, title: String? = nil,
         command: SettingsCommand? = nil, config: JSONValue? = nil,
-        preferredModel: String? = nil, ok: Bool? = nil, error: String? = nil
+        preferredModel: String? = nil, dirty: Bool? = nil, ok: Bool? = nil, error: String? = nil
     ) {
         self.frame = frame
         self.title = title
         self.command = command
         self.config = config
         self.preferredModel = preferredModel
+        self.dirty = dirty
         self.ok = ok
         self.error = error
     }
@@ -352,11 +357,13 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
     public let frame: SettingsFrame
     /// Optional host action requested by the plugin (credential update/remove).
     public let command: SettingsCommand?
+    /// Plugin-reported draft state, carried through unchanged. `nil` means "not tracked".
+    public let dirty: Bool?
 
     public init(
         sessionID: String, bundleID: String, title: String, version: String,
         status: String?, viewport: SettingsViewport, frame: SettingsFrame,
-        command: SettingsCommand? = nil
+        command: SettingsCommand? = nil, dirty: Bool? = nil
     ) {
         self.sessionID = sessionID
         self.bundleID = bundleID
@@ -366,5 +373,6 @@ public struct SettingsSnapshot: Codable, Sendable, Equatable {
         self.viewport = viewport
         self.frame = frame
         self.command = command
+        self.dirty = dirty
     }
 }

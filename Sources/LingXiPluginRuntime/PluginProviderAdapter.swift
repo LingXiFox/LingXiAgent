@@ -8,10 +8,14 @@ public struct PluginProviderAdapter: ModelProvider {
     public let capabilities: ModelCapabilities
 
     private let session: PluginSession
+    private let declaration: ProviderIdentity
     private let capabilityID: String
     private let credential: @Sendable () throws -> String?
     private let active = ActiveRequests()
     private let reasoning = ReasoningStore()
+    /// Temporary thinking selection owned by the frontend. It travels on every request from this
+    /// provider until it is replaced or cleared; the plugin decides how a level maps to its wire.
+    private let selection = ReasoningSelection()
 
     private final class ActiveRequests: @unchecked Sendable {
         private let lock = NSLock()
@@ -50,6 +54,7 @@ public struct PluginProviderAdapter: ModelProvider {
         credential: @escaping @Sendable () throws -> String?
     ) {
         self.session = session
+        self.declaration = declaration
         self.capabilityID = "provider.\(providerID)"
         self.credential = credential
         self.capabilities = ModelCapabilities(
@@ -58,6 +63,26 @@ public struct PluginProviderAdapter: ModelProvider {
             toolResultPlacement: ToolResultPlacement(rawValue: declaration.toolResultPlacement) ?? .anywhereInHistory
         )
     }
+
+    /// Live state from the plugin's optional state capability. `nil` means the provider declares no
+    /// state view (or could not answer); the frontend then has no live protocol/thinking to show.
+    public func providerState() async -> ProviderState? {
+        guard let capability = declaration.state?.capability else { return nil }
+        // A state query is decoration for the footer: never let a slow plugin delay startup or a
+        // save reply. Two seconds is generous for a local IPC round trip.
+        guard let raw = try? await session.invoke(
+            capability: capability, payload: .object([:]), requestID: "state-\(UUID().uuidString)",
+            timeout: .seconds(2)
+        ) else { return nil }
+        return try? raw.decode(ProviderState.self)
+    }
+
+    /// One provider-wide temporary level, shared by every copy of this adapter value.
+    public func setReasoningOverride(_ level: String?) {
+        selection.set(level)
+    }
+
+    public var reasoningOverride: String? { selection.level }
 
     public func stream(_ request: ModelRequest) async throws -> AsyncThrowingStream<ModelEvent, Error> {
         let granted: String?
@@ -71,7 +96,8 @@ public struct PluginProviderAdapter: ModelProvider {
             from: request, credential: granted,
             previousReasoning: previousReasoningTurns
                 .flatMap { $0.items.map(\.text) }.joined(separator: "\n\n").nilIfEmpty,
-            previousReasoningTurns: previousReasoningTurns.isEmpty ? nil : previousReasoningTurns
+            previousReasoningTurns: previousReasoningTurns.isEmpty ? nil : previousReasoningTurns,
+            reasoningLevel: selection.level
         )
         let payload = try JSONValue.encode(wire)
         let events = await session.invokeStreaming(
@@ -196,7 +222,8 @@ public struct PluginProviderAdapter: ModelProvider {
     static func wireRequest(
         from request: ModelRequest, credential: String?,
         previousReasoning: String? = nil,
-        previousReasoningTurns: [ProviderReasoningTurn]? = nil
+        previousReasoningTurns: [ProviderReasoningTurn]? = nil,
+        reasoningLevel: String? = nil
     ) -> ProviderWireRequest {
         var instructions: [String] = []
         var items: [ProviderWireItem] = []
@@ -244,8 +271,24 @@ public struct PluginProviderAdapter: ModelProvider {
             credential: credential,
             executionID: request.executionID.rawValue,
             previousReasoning: previousReasoning,
-            previousReasoningTurns: previousReasoningTurns
+            previousReasoningTurns: previousReasoningTurns,
+            reasoningLevel: reasoningLevel
         )
+    }
+
+    /// Shared mutable selection. The adapter is a value type copied around by the router and the
+    /// coordinator; the level must be one value, not per-copy state.
+    final class ReasoningSelection: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: String?
+
+        func set(_ level: String?) {
+            lock.lock(); stored = level; lock.unlock()
+        }
+
+        var level: String? {
+            lock.lock(); defer { lock.unlock() }; return stored
+        }
     }
 
     final class ReasoningStore: @unchecked Sendable {
@@ -355,6 +398,14 @@ public struct PluginProviderAdapter: ModelProvider {
                 inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
                 reasoningTokens: usage.reasoningTokens, cacheReadTokens: usage.cacheReadTokens,
                 cacheWriteTokens: usage.cacheWriteTokens
+            ))]
+        case "timing":
+            guard let timing = event.timing else { return [] }
+            return [.timing(ModelTiming(
+                prepareMs: timing.prepareMs, sendMs: timing.sendMs,
+                firstResponseMs: timing.firstResponseMs, firstSSEMs: timing.firstSSEMs,
+                firstReasoningMs: timing.firstReasoningMs, firstTextMs: timing.firstTextMs,
+                terminalMs: timing.terminalMs, totalMs: timing.totalMs
             ))]
         case "completed":
             let reason = ModelStopReason(rawValue: event.stopReason ?? "") ?? .unknown

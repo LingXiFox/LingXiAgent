@@ -1,0 +1,168 @@
+import Foundation
+import LingXiFrontendProtocol
+import Testing
+
+/// Acceptance for the run diagnostics: one compact timing report per run, monotonic provider phases,
+/// numbers only, and no measurable effect on the stream itself.
+
+private func timingEvents(_ core: ProtocolCore, after start: Int) -> [FrontendEvent] {
+    core.snapshot().dropFirst(start).compactMap { try? JSONDecoder().decode(FrontendEvent.self, from: $0) }
+        .filter { $0.event == "timing" }
+}
+
+private func allEvents(_ core: ProtocolCore, after start: Int) -> [FrontendEvent] {
+    core.snapshot().dropFirst(start).compactMap { try? JSONDecoder().decode(FrontendEvent.self, from: $0) }
+}
+
+private func timingJSONObjects(_ core: ProtocolCore, after start: Int) -> [[String: Any]] {
+    core.snapshot().dropFirst(start).compactMap { line -> [String: Any]? in
+        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              object["event"] as? String == "timing" else { return nil }
+        return object
+    }
+}
+
+@Test("TIMING-001 one timing report per run, delivered before the terminal, with Core preparation covered")
+func TIMING_001_singleReportBeforeTerminal() async throws {
+    let directory = try diagnosticsTempDirectory("timing-cassette")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cassette = try #require(
+        Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")
+    )
+    try await seedDiagnosticsProvider(directory, cassette: cassette)
+
+    let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
+    defer { core.terminate() }
+    _ = try #require(await core.waitReply(core.send(.hello)))
+
+    let before = core.snapshot().count
+    let sent = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: "timing probe"
+    )))
+    #expect(sent.ok, "\(sent.error ?? "")")
+    let terminal = try #require(await core.waitEvent("run.terminal", after: before))
+    #expect(terminal.status == "completed", "\(terminal.status ?? "") \(terminal.detail ?? "")")
+
+    let events = allEvents(core, after: before)
+    let timings = events.filter { $0.event == "timing" }
+    #expect(timings.count == 1)
+    let timing = try #require(timings.first?.timing)
+    let corePrepare = try #require(timing.corePrepareMs)
+    let runTotal = try #require(timing.runTotalMs)
+    #expect(corePrepare >= 0)
+    #expect(runTotal >= corePrepare)
+    // A cassette replay has no HTTP phase, but the provider still owns the generation tail.
+    if let providerTotal = timing.providerTotalMs {
+        #expect(providerTotal >= 0)
+        #expect(providerTotal <= runTotal)
+    }
+    // The report precedes the terminal so the frontend can render it as part of the final frame.
+    let timingIndex = try #require(events.firstIndex { $0.event == "timing" })
+    let terminalIndex = try #require(events.firstIndex { $0.event == "run.terminal" })
+    #expect(timingIndex < terminalIndex)
+}
+
+@Test("TIMING-002 a live loopback run reports monotonic provider phases")
+func TIMING_002_providerPhases() async throws {
+    let server = try TestLoopbackServer(responses: [sseResponse(chatSSE("pong"))])
+    let directory = try diagnosticsTempDirectory("timing-live")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedDiagnosticsProvider(
+        directory,
+        config: ["protocolKind": "chatCompletions", "model": "mimo-v2.6-flash", "thinkingMode": "default"],
+        endpoint: server.url
+    )
+
+    let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
+    defer { core.terminate() }
+    _ = try #require(await core.waitReply(core.send(.hello)))
+
+    let before = core.snapshot().count
+    let sent = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: "phase probe"
+    )))
+    #expect(sent.ok, "\(sent.error ?? "")")
+    let terminal = try #require(await core.waitEvent("run.terminal", after: before))
+    #expect(terminal.status == "completed", "\(terminal.status ?? "") \(terminal.detail ?? "")")
+
+    let timing = try #require(timingEvents(core, after: before).first?.timing)
+    let prepare = try #require(timing.prepareMs)
+    let send = try #require(timing.httpSendMs)
+    let firstResponse = try #require(timing.firstResponseMs)
+    let firstSSE = try #require(timing.firstSSEMs)
+    let firstText = try #require(timing.firstTextMs)
+    let providerTotal = try #require(timing.providerTotalMs)
+    #expect(prepare >= 0)
+    #expect(send >= prepare)
+    #expect(firstResponse >= send)
+    #expect(firstSSE >= firstResponse)
+    #expect(firstText >= firstSSE)
+    #expect(providerTotal >= firstText)
+    #expect((timing.corePrepareMs ?? -1) >= 0)
+    #expect((timing.runTotalMs ?? -1) >= providerTotal)
+    // No reasoning was requested here, so the reasoning timestamp must stay absent, not zero.
+    #expect(timing.firstReasoningMs == nil)
+}
+
+@Test("TIMING-003 the report is small, numeric, and carries no prompt or credential text")
+func TIMING_003_payloadIsNumbersOnly() async throws {
+    let server = try TestLoopbackServer(responses: [sseResponse(chatSSE("pong"))])
+    let directory = try diagnosticsTempDirectory("timing-payload")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try await seedDiagnosticsProvider(
+        directory,
+        config: ["protocolKind": "chatCompletions", "model": "mimo-v2.6-flash", "thinkingMode": "default"],
+        endpoint: server.url
+    )
+    let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
+    defer { core.terminate() }
+    _ = try #require(await core.waitReply(core.send(.hello)))
+
+    let prompt = "diagnostics-prompt-marker-\(UUID().uuidString)"
+    let before = core.snapshot().count
+    _ = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: prompt
+    )))
+    _ = try #require(await core.waitEvent("run.terminal", after: before))
+
+    let objects = timingJSONObjects(core, after: before)
+    #expect(objects.count == 1)
+    let object = try #require(objects.first)
+    let encoded = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    #expect(encoded.count < 1024, "timing payload is \(encoded.count) bytes")
+    let text = String(decoding: encoded, as: UTF8.self)
+    #expect(!text.contains(prompt))
+    #expect(!text.contains("offline-test-credential"))
+    #expect(!text.contains("Bearer"))
+
+    let timing = try #require(object["timing"] as? [String: Any])
+    for (key, value) in timing {
+        #expect(value is NSNumber, "timing field \(key) is not numeric: \(value)")
+        #expect((value as? Int ?? -1) >= 0, "timing field \(key) is negative: \(value)")
+    }
+}
+
+@Test("TIMING-004 timing is per request, not per delta, and the reply is unchanged")
+func TIMING_004_notPerDelta() async throws {
+    let directory = try diagnosticsTempDirectory("timing-count")
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cassette = try #require(
+        Bundle.module.url(forResource: "mimo-chat-tui", withExtension: "json", subdirectory: "Fixtures")
+    )
+    try await seedDiagnosticsProvider(directory, cassette: cassette)
+    let core = try ProtocolCore(dataDirectory: directory, extraEnvironment: diagnosticsCredentialEnvironment())
+    defer { core.terminate() }
+    _ = try #require(await core.waitReply(core.send(.hello)))
+
+    let before = core.snapshot().count
+    _ = try #require(await core.waitReply(core.send(
+        .chatSend, model: "mimo-v2.6-flash", text: "count probe"
+    )))
+    _ = try #require(await core.waitEvent("run.terminal", after: before))
+    let events = allEvents(core, after: before)
+    let deltas = events.filter { $0.event == "delta" || $0.event == "reasoning" }
+    let timings = events.filter { $0.event == "timing" }
+    #expect(deltas.count >= 2)
+    #expect(timings.count == 1, "one report per request, not one per streamed event")
+    #expect(core.collectDeltas(after: before).lowercased().contains("pong"))
+}

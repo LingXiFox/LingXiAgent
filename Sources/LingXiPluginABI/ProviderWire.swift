@@ -24,8 +24,8 @@ public struct CredentialRequirement: Codable, Sendable, Equatable {
 }
 
 
-/// One reasoning-effort level a model accepts. `id` is stable and is what a future selection is sent
-/// back as; `label` is display text owned by the plugin.
+/// One reasoning-effort level a model accepts. `id` is stable and is what a selection is sent back
+/// as; `label` is display text owned by the plugin.
 public struct ProviderThinkingLevel: Codable, Sendable, Equatable {
     public let id: String
     public let label: String
@@ -33,6 +33,85 @@ public struct ProviderThinkingLevel: Codable, Sendable, Equatable {
     public init(id: String, label: String) {
         self.id = id
         self.label = label
+    }
+}
+
+/// A provider may expose a read-only state capability so the Core can report what is actually in
+/// effect (protocol family, thinking level) without knowing anything vendor-specific. The plugin
+/// answers an invoke with `ProviderState`; the capability string lives in its own namespace, so the
+/// C ABI table is untouched.
+public struct ProviderStateDeclaration: Codable, Sendable, Equatable {
+    public let capability: String
+
+    public init(capability: String) {
+        self.capability = capability
+    }
+}
+
+/// What a provider reports about the request it would send next. Values are the plugin's own ids;
+/// the Core treats them as opaque display data and never interprets a vendor vocabulary.
+public struct ProviderState: Codable, Sendable, Equatable {
+    /// Protocol family the plugin currently speaks, e.g. `chatCompletions` / `responses`.
+    public let protocolKind: String?
+    /// Display name for `protocolKind`, owned by the plugin (e.g. "Chat Completions"). The Core and
+    /// the frontend never prettify a vendor vocabulary on their own.
+    public let protocolLabel: String?
+    /// The thinking level id the plugin's saved configuration selects, when one is selected.
+    public let thinkingLevel: String?
+    /// Display label for `thinkingLevel`.
+    public let thinkingLabel: String?
+    /// Where the state comes from: `plugin-settings` or `server-default`.
+    public let source: String?
+    /// Optional short human hint (for example "服务端默认 effort"). Never request content.
+    public let detail: String?
+
+    public init(
+        protocolKind: String? = nil, protocolLabel: String? = nil, thinkingLevel: String? = nil,
+        thinkingLabel: String? = nil, source: String? = nil, detail: String? = nil
+    ) {
+        self.protocolKind = protocolKind
+        self.protocolLabel = protocolLabel
+        self.thinkingLevel = thinkingLevel
+        self.thinkingLabel = thinkingLabel
+        self.source = source
+        self.detail = detail
+    }
+}
+
+/// Request-phase timings reported by a provider. Every value is milliseconds measured from the
+/// plugin's invoke entry (`totalMs` excepted). Deliberately numbers only: no request text, headers
+/// or credentials can ride along.
+public struct ProviderTiming: Codable, Sendable, Equatable {
+    /// Invoke entry to the wire body being built.
+    public let prepareMs: Int?
+    /// Wire body built to the HTTP request being handed to the transport.
+    public let sendMs: Int?
+    /// Invoke entry to the first response header.
+    public let firstResponseMs: Int?
+    /// Invoke entry to the first SSE line.
+    public let firstSSEMs: Int?
+    /// Invoke entry to the first reasoning delta.
+    public let firstReasoningMs: Int?
+    /// Invoke entry to the first text delta.
+    public let firstTextMs: Int?
+    /// Invoke entry to the provider terminal event.
+    public let terminalMs: Int?
+    /// Invoke entry to the timing report itself.
+    public let totalMs: Int?
+
+    public init(
+        prepareMs: Int? = nil, sendMs: Int? = nil, firstResponseMs: Int? = nil,
+        firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil, firstTextMs: Int? = nil,
+        terminalMs: Int? = nil, totalMs: Int? = nil
+    ) {
+        self.prepareMs = prepareMs
+        self.sendMs = sendMs
+        self.firstResponseMs = firstResponseMs
+        self.firstSSEMs = firstSSEMs
+        self.firstReasoningMs = firstReasoningMs
+        self.firstTextMs = firstTextMs
+        self.terminalMs = terminalMs
+        self.totalMs = totalMs
     }
 }
 
@@ -90,10 +169,14 @@ public struct ProviderIdentity: Codable, Sendable, Equatable {
     /// which is the safe direction: a plugin that needs a secret but forgets to declare it gets no
     /// secret and fails loudly with `unauthorized`, instead of silently inheriting one.
     public let credentials: [CredentialRequirement]?
+    /// Optional read-only state capability. When absent the frontend simply has no live state to
+    /// show for this provider; the host never invents one.
+    public let state: ProviderStateDeclaration?
 
     public init(
         id: String, models: [String], supportsParallelToolCalls: Bool, toolResultPlacement: String,
-        credentials: [CredentialRequirement]? = nil, modelDetails: [ProviderModel]? = nil
+        credentials: [CredentialRequirement]? = nil, modelDetails: [ProviderModel]? = nil,
+        state: ProviderStateDeclaration? = nil
     ) {
         self.id = id
         self.models = models
@@ -101,6 +184,7 @@ public struct ProviderIdentity: Codable, Sendable, Equatable {
         self.supportsParallelToolCalls = supportsParallelToolCalls
         self.toolResultPlacement = toolResultPlacement
         self.credentials = credentials
+        self.state = state
     }
 }
 
@@ -232,12 +316,17 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
     /// Structured per-turn reasoning history. New providers use this; `previousReasoning` stays
     /// for older plugin binaries and Chat-only consumers that understand a single string.
     public let previousReasoningTurns: [ProviderReasoningTurn]?
+    /// Temporary, frontend-owned thinking selection for this request. It is one of the model's
+    /// declared thinking level ids and takes precedence over the plugin's saved configuration for
+    /// this request only; `nil` means "use the plugin's own settings". The plugin owns the mapping
+    /// from a level id to its wire parameters.
+    public let reasoningLevel: String?
 
     public init(
         model: String, instructions: String?, input: [ProviderWireItem],
         tools: [ProviderWireTool], maxOutputTokens: Int?, credential: String?,
         executionID: String? = nil, previousReasoning: String? = nil,
-        previousReasoningTurns: [ProviderReasoningTurn]? = nil
+        previousReasoningTurns: [ProviderReasoningTurn]? = nil, reasoningLevel: String? = nil
     ) {
         self.model = model
         self.instructions = instructions
@@ -248,6 +337,7 @@ public struct ProviderWireRequest: Codable, Sendable, Equatable {
         self.executionID = executionID
         self.previousReasoning = previousReasoning
         self.previousReasoningTurns = previousReasoningTurns
+        self.reasoningLevel = reasoningLevel
     }
 }
 
@@ -287,12 +377,14 @@ public struct ProviderWireEvent: Codable, Sendable, Equatable {
     /// carries the final text and status.
     public let itemID: String?
     public let status: String?
+    /// Phase timings, sent once as a `timing` event just before the terminal event. Numbers only.
+    public let timing: ProviderTiming?
 
     public init(
         type: String, text: String? = nil, callID: String? = nil, name: String? = nil,
         arguments: String? = nil, stopReason: String? = nil, failureKind: String? = nil,
         message: String? = nil, requestID: String? = nil, usage: ProviderWireUsage? = nil,
-        itemID: String? = nil, status: String? = nil
+        itemID: String? = nil, status: String? = nil, timing: ProviderTiming? = nil
     ) {
         self.type = type
         self.text = text
@@ -306,6 +398,7 @@ public struct ProviderWireEvent: Codable, Sendable, Equatable {
         self.usage = usage
         self.itemID = itemID
         self.status = status
+        self.timing = timing
     }
 }
 

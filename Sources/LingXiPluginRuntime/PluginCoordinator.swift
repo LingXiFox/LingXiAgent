@@ -250,6 +250,86 @@ public actor PluginCoordinator {
         )
     }
 
+    // MARK: - live provider state and temporary thinking
+
+    public struct ProviderStateReport: Sendable {
+        public let providerID: String
+        /// The plugin's own answer; `nil` when it declares no state capability.
+        public let state: ProviderState?
+        /// The frontend's temporary thinking selection, when one is active.
+        public let reasoningOverride: String?
+    }
+
+    public enum ReasoningError: Error, CustomStringConvertible, Equatable {
+        case invalidRequest
+        case unknownProvider(String)
+        case unknownModel(provider: String, model: String)
+        case undeclaredLevel(provider: String, model: String, level: String)
+
+        public var description: String {
+            switch self {
+            case .invalidRequest:
+                "a reasoning level needs a provider and a model; clearing needs only the provider"
+            case .unknownProvider(let provider):
+                "no running provider \(provider)"
+            case .unknownModel(let provider, let model):
+                "provider \(provider) does not offer model \(model)"
+            case .undeclaredLevel(let provider, let model, let level):
+                "provider \(provider) does not declare thinking level \(level) for \(model)"
+            }
+        }
+    }
+
+    /// Installs one provider-wide temporary thinking level. The level must be one the provider
+    /// declared for the model; an id the plugin never offered is refused instead of forwarded.
+    public func setReasoningOverride(providerID: String, level: String?, model: String?) async throws {
+        let bundleIDs = Array(sessions.keys)
+        for bundleID in bundleIDs {
+            guard let session = sessions[bundleID], await session.isRunning else { continue }
+            let providers = await session.providers
+            guard let index = providers.firstIndex(where: { $0.id == providerID }) else { continue }
+            let declaration = providers[index]
+            if let level {
+                guard let model else { throw ReasoningError.invalidRequest }
+                guard declaration.models.contains(model) else {
+                    throw ReasoningError.unknownModel(provider: providerID, model: model)
+                }
+                let levels = (declaration.modelDetails ?? [])
+                    .first { $0.id == model }?.thinkingLevels ?? []
+                guard levels.contains(where: { $0.id == level }) else {
+                    throw ReasoningError.undeclaredLevel(provider: providerID, model: model, level: level)
+                }
+            }
+            guard let adapter = adapters[bundleID], index < adapter.count else {
+                throw ReasoningError.unknownProvider(providerID)
+            }
+            adapter[index].setReasoningOverride(level)
+            return
+        }
+        throw ReasoningError.unknownProvider(providerID)
+    }
+
+    /// Live state for every running provider. A provider that declares no state capability is
+    /// reported with `state == nil` rather than a guessed default.
+    public func providerStates() async -> [ProviderStateReport] {
+        let snapshot = sessions
+        let adapterSnapshot = adapters
+        var result: [ProviderStateReport] = []
+        for (bundleID, session) in snapshot where await session.isRunning {
+            let providers = await session.providers
+            let built = adapterSnapshot[bundleID] ?? []
+            for (index, declaration) in providers.enumerated() {
+                guard index < built.count else { continue }
+                result.append(ProviderStateReport(
+                    providerID: declaration.id,
+                    state: await built[index].providerState(),
+                    reasoningOverride: built[index].reasoningOverride
+                ))
+            }
+        }
+        return result.sorted { $0.providerID < $1.providerID }
+    }
+
     /// One validation path for both startup restore and live save. A plugin that declares settings
     /// but has a saved snapshot must answer ok:true; a missing capability with a saved snapshot is a
     /// hard failure rather than a silent fallback to defaults.

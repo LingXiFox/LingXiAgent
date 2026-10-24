@@ -28,6 +28,9 @@ public enum FrontendMethod: String, Codable, Sendable {
     case authStatus = "auth.status"
     case authSet = "auth.set"
     case authRemove = "auth.remove"
+    /// Sets or clears the temporary thinking selection for one provider. The choices come from the
+    /// provider's own declaration; the Core validates the id and never invents a level.
+    case providerReasoningSet = "provider.reasoning.set"
     case shutdown
 }
 
@@ -74,6 +77,12 @@ public struct FrontendRequest: Codable, Sendable {
     /// The secret for `auth.set` only. It is written to the Core, stored once, and never returned:
     /// no reply, event, log line or journal entry can carry it back out.
     public var secret: String?
+    /// Temporary thinking level id for `provider.reasoning.set`, validated against the provider's
+    /// declaration. `nil` with `clearReasoning` unset is a no-op; clearing uses the flag below so
+    /// "absent" and "clear" never mean the same thing on the wire.
+    public var reasoningLevel: String?
+    /// Explicitly drop the temporary thinking selection and follow the plugin's own settings again.
+    public var clearReasoning: Bool?
 
     public init(
         id: Int, method: FrontendMethod, provider: String? = nil, secret: String? = nil
@@ -162,6 +171,79 @@ public struct ModelSummary: Codable, Sendable, Equatable {
     }
 }
 
+/// Live provider state for the frontend's model area. The plugin reports what it would send; the
+/// Core only merges the temporary selection in front of it. Values are opaque plugin ids.
+public struct ProviderStateSummary: Codable, Sendable, Equatable {
+    public let providerID: String
+    public let protocolKind: String?
+    /// Display name for the protocol, owned by the plugin; the frontend never prettifies an id.
+    public let protocolLabel: String?
+    public let thinkingLevel: String?
+    public let thinkingLabel: String?
+    /// `plugin-settings`, `server-default` or `session-override`.
+    public let source: String?
+    /// True when `thinkingLevel` comes from the temporary selection rather than the plugin.
+    public let overridden: Bool?
+
+    public init(
+        providerID: String, protocolKind: String? = nil, protocolLabel: String? = nil,
+        thinkingLevel: String? = nil, thinkingLabel: String? = nil, source: String? = nil,
+        overridden: Bool? = nil
+    ) {
+        self.providerID = providerID
+        self.protocolKind = protocolKind
+        self.protocolLabel = protocolLabel
+        self.thinkingLevel = thinkingLevel
+        self.thinkingLabel = thinkingLabel
+        self.source = source
+        self.overridden = overridden
+    }
+}
+
+/// One run's timing report, in milliseconds. The provider phases come from the plugin that owns the
+/// HTTP connection; the Core adds request preparation and the run total; the TUI adds its own
+/// render cost. Numbers only — there is no field that could carry prompt or response text.
+public struct RunTiming: Codable, Sendable, Equatable {
+    /// Frontend request accepted to the provider invocation starting.
+    public let corePrepareMs: Int?
+    /// Invoke entry to the wire body being built.
+    public let prepareMs: Int?
+    /// Wire body built to the HTTP request being handed to the transport.
+    public let httpSendMs: Int?
+    /// Invoke entry to the first response header (upstream first byte).
+    public let firstResponseMs: Int?
+    /// Invoke entry to the first SSE line.
+    public let firstSSEMs: Int?
+    /// Invoke entry to the first reasoning delta.
+    public let firstReasoningMs: Int?
+    /// Invoke entry to the first text delta.
+    public let firstTextMs: Int?
+    /// Invoke entry to the provider terminal event.
+    public let providerTotalMs: Int?
+    /// Frontend request accepted to the run terminal.
+    public let runTotalMs: Int?
+    /// TUI-only: total time spent rendering this run's frames.
+    public let renderMs: Int?
+
+    public init(
+        corePrepareMs: Int? = nil, prepareMs: Int? = nil, httpSendMs: Int? = nil,
+        firstResponseMs: Int? = nil, firstSSEMs: Int? = nil, firstReasoningMs: Int? = nil,
+        firstTextMs: Int? = nil, providerTotalMs: Int? = nil, runTotalMs: Int? = nil,
+        renderMs: Int? = nil
+    ) {
+        self.corePrepareMs = corePrepareMs
+        self.prepareMs = prepareMs
+        self.httpSendMs = httpSendMs
+        self.firstResponseMs = firstResponseMs
+        self.firstSSEMs = firstSSEMs
+        self.firstReasoningMs = firstReasoningMs
+        self.firstTextMs = firstTextMs
+        self.providerTotalMs = providerTotalMs
+        self.runTotalMs = runTotalMs
+        self.renderMs = renderMs
+    }
+}
+
 public struct FrontendReply: Codable, Sendable {
     public var id: Int
     public var ok: Bool
@@ -176,6 +258,8 @@ public struct FrontendReply: Codable, Sendable {
     public var history: [HistoryEntry]?
     public var plugins: [PluginSummary]?
     public var settings: SettingsSnapshot?
+    /// Live provider state after a state query or a temporary thinking change.
+    public var providerStates: [ProviderStateSummary]?
     /// Auth state only. There is deliberately no field that could echo a saved secret.
     public var credentials: [CredentialStatus]?
 
@@ -223,6 +307,10 @@ public struct FrontendEvent: Codable, Sendable {
     public var tool: String?
     /// Token usage for `usage` events.
     public var usage: TokenUsage?
+    /// Timing report for `timing` events: emitted once per run, just before its terminal.
+    public var timing: RunTiming?
+    /// Live provider state for `providers.state` events (and piggybacked on `models.changed`).
+    public var providerStates: [ProviderStateSummary]?
 
     public init(
         event: String,

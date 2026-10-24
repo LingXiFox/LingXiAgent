@@ -61,11 +61,15 @@ final class FrontendServer: @unchecked Sendable {
     }
 
     private func handle(_ request: FrontendRequest) async {
+        // The one timestamp the timing report counts from: the request is accepted here, before any
+        // validation or routing work, so "Core preparation" covers everything the frontend cannot see.
+        let acceptedAt = ContinuousClock.now
         var reply = FrontendReply(id: request.id, ok: true)
         switch request.method {
         case .hello:
             reply.models = await offeredModels()
             reply.modelDetails = await offeredModelDetails()
+            reply.providerStates = await providerStates()
             reply.preferredModel = await settings.preferredModelHint(
                 bundleIDs: await registry.all().map(\.bundleID)
             )
@@ -74,6 +78,7 @@ final class FrontendServer: @unchecked Sendable {
         case .modelsList:
             reply.models = await offeredModels()
             reply.modelDetails = await offeredModelDetails()
+            reply.providerStates = await providerStates()
         case .sessionsList:
             reply.sessions = await sessionSummaries()
         case .sessionNew:
@@ -99,7 +104,9 @@ final class FrontendServer: @unchecked Sendable {
             reply.sessionID = sessionID
             reply.runID = runID
             send(reply)
-            startRun(runID: runID, sessionID: sessionID, model: model, text: text)
+            startRun(
+                runID: runID, sessionID: sessionID, model: model, text: text, acceptedAt: acceptedAt
+            )
             return
         case .runCancel:
             guard let runID = request.runID else {
@@ -151,6 +158,10 @@ final class FrontendServer: @unchecked Sendable {
                 if let bundleID {
                     reply.preferredModel = await settings.preferredModel(forBundleID: bundleID)
                 }
+                // A save can change protocol and thinking parameters, so the live state shown by
+                // the frontend is refreshed on the same reply instead of waiting for the next run.
+                reply.providerStates = await providerStates()
+                await broadcastProviderStates()
             } catch {
                 reply.ok = false
                 reply.error = "\(error)"
@@ -256,6 +267,28 @@ final class FrontendServer: @unchecked Sendable {
                 // Auth errors carry fixed text or OSStatus only, never an IPC payload or secret.
                 reply.error = String(describing: error)
             }
+        case .providerReasoningSet:
+            guard let providerID = request.provider, !providerID.isEmpty else {
+                return send(FrontendReply(
+                    id: request.id, ok: false, error: "provider.reasoning.set needs a provider"
+                ))
+            }
+            do {
+                if request.clearReasoning == true {
+                    try await coordinator.setReasoningOverride(providerID: providerID, level: nil, model: nil)
+                } else {
+                    guard let level = request.reasoningLevel, let model = request.model else {
+                        throw PluginCoordinator.ReasoningError.invalidRequest
+                    }
+                    try await coordinator.setReasoningOverride(
+                        providerID: providerID, level: level, model: model
+                    )
+                }
+                reply.providerStates = await providerStates()
+            } catch {
+                reply.ok = false
+                reply.error = "\(error)"
+            }
         case .shutdown:
             shuttingDown = true
             await settings.shutdown()
@@ -273,7 +306,10 @@ final class FrontendServer: @unchecked Sendable {
         }
     }
 
-    private func startRun(runID: String, sessionID: String, model: String, text: String) {
+    private func startRun(
+        runID: String, sessionID: String, model: String, text: String,
+        acceptedAt: ContinuousClock.Instant
+    ) {
         let task = Task { [weak self] in
             guard let self else { return }
             self.emit(FrontendEvent(event: "run.state", runID: runID, sessionID: sessionID, status: "running"))
@@ -285,12 +321,16 @@ final class FrontendServer: @unchecked Sendable {
                 model: ModelID(model),
                 prompt: text
             )
+            let runStarted = ContinuousClock.now
+            let providerTiming = TimingBox()
             let result = await self.loop.run(request, policy: LoopPolicy()) { event in
                 switch event {
                 case .textDelta(let delta):
                     self.emit(FrontendEvent(event: "delta", runID: runID, sessionID: sessionID, delta: delta))
                 case .reasoningDelta(let delta):
                     self.emit(FrontendEvent(event: "reasoning", runID: runID, sessionID: sessionID, reasoning: delta))
+                case .timing(let timing):
+                    providerTiming.set(timing)
                 case .toolCallStarted(let start):
                     var tool = FrontendEvent(event: "tool", runID: runID, sessionID: sessionID, status: "started")
                     tool.tool = start.toolName
@@ -312,6 +352,22 @@ final class FrontendServer: @unchecked Sendable {
                     break
                 }
             }
+            let finished = ContinuousClock.now
+            let provider = providerTiming.current
+            let timing = RunTiming(
+                corePrepareMs: FrontendTiming.milliseconds(from: acceptedAt, to: runStarted),
+                prepareMs: provider?.prepareMs,
+                httpSendMs: provider?.sendMs,
+                firstResponseMs: provider?.firstResponseMs,
+                firstSSEMs: provider?.firstSSEMs,
+                firstReasoningMs: provider?.firstReasoningMs,
+                firstTextMs: provider?.firstTextMs,
+                providerTotalMs: provider?.totalMs,
+                runTotalMs: FrontendTiming.milliseconds(from: acceptedAt, to: finished)
+            )
+            var timingEvent = FrontendEvent(event: "timing", runID: runID, sessionID: sessionID)
+            timingEvent.timing = timing
+            self.emit(timingEvent)
             var terminal = FrontendEvent(event: "run.terminal", runID: runID, sessionID: sessionID)
             terminal.status = result.status.rawValue
             terminal.cause = result.cause.rawValue
@@ -323,6 +379,14 @@ final class FrontendServer: @unchecked Sendable {
         storeRun(task, for: runID)
     }
 
+    /// Pushed separately from `models.changed`: a settings save changes protocol/thinking without
+    /// changing the offered models, and a frontend that missed the reply still needs the update.
+    private func broadcastProviderStates() async {
+        var event = FrontendEvent(event: "providers.state")
+        event.providerStates = await providerStates()
+        emit(event)
+    }
+
     private func broadcastState() async {
         var plugins = FrontendEvent(event: "plugins.changed")
         plugins.plugins = await pluginSummaries()
@@ -330,10 +394,38 @@ final class FrontendServer: @unchecked Sendable {
         var models = FrontendEvent(event: "models.changed")
         models.models = await offeredModels()
         models.modelDetails = await offeredModelDetails()
+        models.providerStates = await providerStates()
         models.preferredModel = await settings.preferredModelHint(
             bundleIDs: await registry.all().map(\.bundleID)
         )
         emit(models)
+    }
+
+    /// Live per-provider state, with the temporary thinking selection merged in front of the
+    /// plugin's own answer. The label for an override comes from the model declaration, so the
+    /// frontend never has to know a vendor vocabulary.
+    private func providerStates() async -> [ProviderStateSummary] {
+        let declarations = await coordinator.modelDeclarations()
+        var labels: [String: [String: String]] = [:]
+        for entry in declarations {
+            for level in entry.model.thinkingLevels ?? [] {
+                labels[entry.providerID, default: [:]][level.id] = level.label
+            }
+        }
+        var result: [ProviderStateSummary] = []
+        for report in await coordinator.providerStates() {
+            let override = report.reasoningOverride
+            result.append(ProviderStateSummary(
+                providerID: report.providerID,
+                protocolKind: report.state?.protocolKind,
+                protocolLabel: report.state?.protocolLabel,
+                thinkingLevel: override ?? report.state?.thinkingLevel,
+                thinkingLabel: override.flatMap { labels[report.providerID]?[$0] } ?? report.state?.thinkingLabel,
+                source: override != nil ? "session-override" : report.state?.source,
+                overridden: override != nil ? true : nil
+            ))
+        }
+        return result
     }
 
     private func offeredModels() async -> [String] {
@@ -450,6 +542,35 @@ final class FrontendServer: @unchecked Sendable {
         lock.lock()
         output.write(data + Data([UInt8(ascii: "\n")]))
         lock.unlock()
+    }
+}
+
+/// Monotonic millisecond arithmetic for the timing report. Two `ContinuousClock` reads per run and
+/// one per provider event are the entire cost; nothing here allocates in the streaming path.
+enum FrontendTiming {
+    static func milliseconds(_ duration: Duration) -> Int {
+        let seconds = duration.components.seconds
+        let attoseconds = duration.components.attoseconds
+        return Int(seconds * 1000 + attoseconds / 1_000_000_000_000_000)
+    }
+
+    static func milliseconds(from start: ContinuousClock.Instant, to end: ContinuousClock.Instant) -> Int {
+        milliseconds(start.duration(to: end))
+    }
+}
+
+/// The provider's timing event arrives inside the loop's observation callback; the report is read
+/// after the loop returns. A tiny lock keeps that hand-off Sendable without touching the kernel.
+private final class TimingBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: ModelTiming?
+
+    func set(_ timing: ModelTiming) {
+        lock.lock(); value = timing; lock.unlock()
+    }
+
+    var current: ModelTiming? {
+        lock.lock(); defer { lock.unlock() }; return value
     }
 }
 

@@ -56,6 +56,9 @@ actor PluginSettingsCoordinator {
         var viewport: SettingsViewport
         var frame: SettingsFrame
         var command: SettingsCommand?
+        /// Plugin-reported draft state. `nil` means the plugin does not track it; the frontend then
+        /// treats the window as dirty rather than silently discarding a draft on Escape.
+        var dirty: Bool?
         var lastInvoke: Date
     }
 
@@ -136,7 +139,7 @@ actor PluginSettingsCoordinator {
                 title: response.title ?? bundleID, version: entry.version,
                 capability: capability, plugin: plugin,
                 viewport: viewport.clamped, frame: frame, command: response.command,
-                lastInvoke: .distantPast
+                dirty: response.dirty, lastInvoke: .distantPast
             )
             sessions[sessionID] = live
             return snapshot(live)
@@ -161,6 +164,7 @@ actor PluginSettingsCoordinator {
             )
             live.frame = try validated(response.frame ?? SettingsFrame(rows: []), viewport: live.viewport)
             live.command = response.command
+            live.dirty = response.dirty
             sessions[sessionID] = live
             return snapshot(live)
         } catch {
@@ -186,6 +190,7 @@ actor PluginSettingsCoordinator {
                     live.frame = try validated(frame, viewport: live.viewport)
                 }
                 live.command = response.command
+                live.dirty = response.dirty
             } catch {
                 sessions.removeValue(forKey: sessionID)
                 await close(live, cancel: false)
@@ -482,11 +487,20 @@ actor PluginSettingsCoordinator {
     }
 
     private func snapshot(_ live: Live) -> SettingsSnapshot {
-        SettingsSnapshot(
+        let status: String
+        if live.plugin == nil {
+            status = "该插件未提供自定义设置页"
+        } else if live.dirty == false {
+            status = "无未保存修改"
+        } else if live.dirty == nil {
+            status = "插件未报告修改状态"
+        } else {
+            status = "设置草稿（未保存）"
+        }
+        return SettingsSnapshot(
             sessionID: live.id, bundleID: live.bundleID, title: live.title,
-            version: live.version,
-            status: live.plugin == nil ? "该插件未提供自定义设置页" : "设置草稿（未保存）",
-            viewport: live.viewport, frame: live.frame, command: live.command
+            version: live.version, status: status,
+            viewport: live.viewport, frame: live.frame, command: live.command, dirty: live.dirty
         )
     }
 
@@ -505,7 +519,8 @@ actor PluginSettingsCoordinator {
         let live = Live(
             id: sessionID, bundleID: entry.bundleID, title: entry.bundleID,
             version: entry.version, capability: nil, plugin: nil,
-            viewport: viewport.clamped, frame: frame, command: nil, lastInvoke: .distantPast
+            viewport: viewport.clamped, frame: frame, command: nil, dirty: false,
+            lastInvoke: .distantPast
         )
         sessions[sessionID] = live
         return snapshot(live)

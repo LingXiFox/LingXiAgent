@@ -210,3 +210,48 @@ Host 环境继续使用白名单，不增加任何 Keychain 权限、依赖或�
 
 真实 API 验收需要 `MIMO_API_KEY` 与服务端接受相应参数；离线证据只证明序列化、SSE 归一化和
 请求形状，不把 cassette 回放称为真实 API 已验证。
+
+## 临时思考选择、状态查询与耗时（Phase 4.3）
+
+### 临时思考选择（`reasoningLevel`）
+
+- TUI 的 `/reasoning` 只列出当前模型在 `describe` 里声明的 `thinkingLevels`，另有“跟随插件设置”。
+  选择经 `provider.reasoning.set` 交给 Core；Core 用插件声明的 provider/model/level 三元组校验，
+  任何未声明的 id 都拒绝，不猜测、不透传任意字符串。
+- 校验通过后 Core 把等级作为 Provider 级的内存值，在后续每次 `ProviderWireRequest.reasoningLevel`
+  中携带。它**不落盘**，Core 重启即消失；插件保存的配置仍是默认值。
+- 插件负责把等级映射成自己的 wire 参数。MiMo 的映射：`default -> thinkingMode .default`、
+  `enabled -> .enabled`、`disabled -> .disabled`；开启思考时 effort 仍来自插件配置。
+  未识别的 id 必须保持原配置（安全失败），不能崩、不能发明参数。
+- 有效配置在 digest 与 HTTP body 之前应用，因此临时选择既改变实际请求也改变 cassette digest；
+  未携带 override 的旧 cassette 不受影响。
+- 本字段是临时覆盖，不是配置事务的一部分：不写设置文件、不触发 `apply`/`commit`、不改权限。
+
+### 生效状态查询（`provider.state.v1`，可选）
+
+`ProviderIdentity.state` 声明一个只读能力名（MiMo 用 `provider.state.v1`）。Core 在 `hello`、
+`models.list`、插件启停、设置保存后用它询问当前生效状态，插件返回：
+
+```json
+{"protocolKind":"responses","thinkingLevel":"enabled","thinkingLabel":"开启思考",
+ "source":"plugin-settings","detail":"effort=medium"}
+```
+
+- `source` 取 `plugin-settings` 或 `server-default`；`detail` 是短提示，不得包含请求内容或凭据。
+- Core 只做合并：临时选择优先，`source` 记为 `session-override` 并置 `overridden=true`。
+- 未声明该能力的 Provider 没有实时状态，前端不得虚构默认值。
+
+### 分段耗时（`timing`）
+
+- 插件在 HTTP 边界用单调时钟记录：准备、发送、首个响应头、首个 SSE、首个 reasoning、首个正文、终态。
+  一次请求只发一条 `ProviderWireEvent(type:"timing", timing:{prepareMs,sendMs,firstResponseMs,
+  firstSSEMs,firstReasoningMs,firstTextMs,terminalMs,totalMs})`，紧挨终态事件之前。
+- 全部字段是整数毫秒；事件不含 prompt、回复、header、凭据。录制器显式跳过 `timing`，不写入 cassette。
+- 回放路径可只发 `totalMs`：离线测试据此显示“生成总耗时”，不伪造不存在的 HTTP 阶段。
+
+### 设置 Dirty 与鼠标相对坐标
+
+- `SettingsResponse.dirty` 由插件回答“草稿是否与保存结果不同”；`nil` 表示不跟踪，宿主按脏处理。
+- `SettingsInput(kind: .mouse)` 的 `row`/`column` 是**插件帧内部**的相对坐标（0 基），`delta` 为
+  `+1` 上滚 / `-1` 下滚。宿主绝不传终端绝对坐标；保存、退出、凭据确认仍由宿主独占。
+- 插件可只处理自己绘制过的区域；越界坐标应忽略。

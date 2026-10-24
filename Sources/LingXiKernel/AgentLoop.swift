@@ -720,7 +720,9 @@ private final class StreamAccumulator: @unchecked Sendable {
         defer { lock.unlock() }
         guard !concluded else { return }
         switch event {
-        case .providerRequestID, .started, .heartbeat, .reasoningDelta:
+        case .providerRequestID, .started, .heartbeat, .reasoningDelta, .timing:
+            // Timings are observation-only: they reach the caller's observer and never become
+            // stream state, so they cannot change a step's outcome.
             break
         case .textDelta(let fragment):
             text += fragment
