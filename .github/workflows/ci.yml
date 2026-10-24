@@ -84,10 +84,10 @@ jobs:
       - name: Plugin settings and MiMo offline contract
         # These tests are also in the main suite; this step makes their executed count explicit in
         # the CI log and fails if they are skipped. No network or API key is involved.
-        timeout-minutes: 10
+        timeout-minutes: 20
         run: |
           set -euo pipefail
-          swift test --filter 'settings|Settings|MiMo' | tee /tmp/settings.log
+          swift test --no-parallel --filter 'settings|Settings|MiMo' | tee /tmp/settings.log
           grep -E 'Test run with' /tmp/settings.log
 
       - name: Empty core starts without a provider and writes no journal records
