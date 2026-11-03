@@ -118,7 +118,12 @@ FROM run_events GROUP BY run_id;
 
 ## 六、CI
 
-本次提交推送后由 GitHub Actions 验证四个 job：macOS / Ubuntu / Windows 的 Rust 检查与测试、前端构建与路由测试。结果以本次运行记录为准（见提交说明与 Actions 页面）。
+GitHub Actions run [41651790983](https://github.com/LingXiFox/LingXiAgent/actions/runs/41651790983)（提交 `9afef4e`）四个 job 全部 success：
+
+- Frontend (TypeScript + Vite)：构建与 13 项路由测试通过。
+- Rust (macos-latest)：`cargo test --workspace` 通过。
+- Rust (ubuntu-24.04)：Rust 检查与单元测试通过。
+- Rust (windows-latest)：Rust 检查与单元测试通过。
 
 Windows/Linux 未做 Tauri 运行态验收，仅编译与单元测试通过；SQLite 路径、窗口刷新、`kill -9` 恢复未在这两个平台实测。
 
