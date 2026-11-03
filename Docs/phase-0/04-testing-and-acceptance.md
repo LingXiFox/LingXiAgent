@@ -78,10 +78,19 @@ TypeScript `strict` + `noUnusedLocals` + `noUnusedParameters` 全开，无 `any`
 | 平台 | 构建 | 启动 | UI 手工验收 | 结论 |
 | --- | --- | --- | --- | --- |
 | macOS 27.2 arm64 | ✅ `cargo build` + `pnpm build` + `tauri build` | ✅ | ✅ 全项 | **已验收** |
-| Windows 11 x64 | ⏳ CI 编译（`cargo check` + `pnpm build`） | ❌ 未执行 | ❌ 未执行 | **未验收** |
-| Linux x64 (Ubuntu 24.04) | ⏳ CI 编译（需 `libwebkit2gtk-4.1-dev` 等） | ❌ 未执行 | ❌ 未执行 | **未验收** |
+| Windows x64（GitHub runner） | ✅ CI `clippy` + `cargo test` | ❌ 未执行 | ❌ 未执行 | **仅编译验收** |
+| Linux x64（Ubuntu 24.04） | ✅ CI `clippy` + `cargo test`（含 WebKit 系统依赖） | ❌ 未执行 | ❌ 未执行 | **仅编译验收** |
 
-没有 Windows/Linux 实机或虚拟机可用，因此只承诺「代码与依赖在 CI 上可编译」，不承诺「运行行为已验收」。CI 配置见 `.github/workflows/ci.yml`；首次运行结果以 Actions 页面为准。
+CI 首跑（2026-11-03，run [41582762287](https://github.com/LingXiFox/LingXiAgent/actions/runs/41582762287)）四个 job 全部 success：
+
+```
+Rust (macos-latest)       success
+Rust (ubuntu-24.04)       success
+Rust (windows-latest)     success
+Frontend (TypeScript + Vite) success
+```
+
+没有 Windows/Linux 实机或虚拟机可用，因此只承诺「代码与依赖在 CI 上可编译并通过单测」，不承诺「运行行为已验收」。CI 配置见 `.github/workflows/ci.yml`。
 
 macOS 打包命令 `pnpm -C apps/desktop tauri build` 实际通过（release 编译 1m 09s），产物：
 

@@ -8,7 +8,7 @@
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
 - 阶段：Phase 0 — 框架与编辑器，不含真实 LLM 推理
-- 验收：macOS 全项通过；Windows / Linux 仅 CI 编译，运行行为**未验收**
+- 验收：macOS 全项通过；Windows / Linux CI 编译与单测通过，运行行为**未验收**
 - 测试：`cargo test --workspace` 21 passed；前端 `tsc` + `vite build` 通过
 
 ## 技术栈
