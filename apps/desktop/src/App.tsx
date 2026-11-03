@@ -17,6 +17,7 @@ import { RunHistoryDialog } from "./components/RunHistoryDialog";
 import { Toolbar } from "./components/Toolbar";
 import { WorkflowDialog } from "./components/WorkflowDialog";
 import { api, isPreview } from "./lib/api";
+import { drainEventQueue, enqueueRunEvent } from "./lib/eventReplay";
 import type { LogEntry, LogLevel, UiRunStatus } from "./lib/log";
 import type { LingXiNode } from "./lib/nodeData";
 import {
@@ -490,58 +491,26 @@ export default function App() {
   applyEventRef.current = applyEvent;
 
   const enqueueEvent = useCallback((event: RunEvent) => {
-    const queue = eventQueueRef.current;
-    let index = queue.length;
-    // Keep same-run events ordered even if a live event beats its snapshot.
-    while (index > 0) {
-      const previous = queue[index - 1];
-      if (previous.runId !== event.runId || previous.seq <= event.seq) break;
-      index -= 1;
-    }
-    queue.splice(index, 0, event);
+    enqueueRunEvent(eventQueueRef.current, event);
   }, []);
 
   const drainEvents = useCallback(async () => {
     if (drainingRef.current) return;
     drainingRef.current = true;
     try {
-      while (eventQueueRef.current.length > 0) {
-        const event = eventQueueRef.current[0];
-        const applied = appliedSeqRef.current.get(event.runId);
-        if (applied !== undefined && event.seq <= applied) {
-          eventQueueRef.current.shift();
-          continue;
-        }
-        const expected = applied === undefined ? 0 : applied + 1;
-        if (event.seq > expected) {
-          try {
-            const missing = await api.runEvents(event.runId, applied);
-            const unseen = missing.filter(
-              (candidate) => candidate.seq >= expected && candidate.seq < event.seq,
-            );
-            if (unseen.length > 0) {
-              unseen.forEach((candidate) => enqueueEvent(candidate));
-              continue;
-            }
-            pushLog(
-              "warn",
-              "event gap " + event.runId + " · seq " + expected + ".." + (event.seq - 1) + " missing",
-            );
-          } catch (error) {
-            pushLog("error", "event recovery failed: " + String(error));
-          }
-          // Never stall the queue on an unrecoverable gap: advance explicitly.
-          appliedSeqRef.current.set(event.runId, event.seq - 1);
-          continue;
-        }
-        applyEventRef.current(event);
-        appliedSeqRef.current.set(event.runId, event.seq);
-        eventQueueRef.current.shift();
-      }
+      await drainEventQueue(
+        eventQueueRef.current,
+        appliedSeqRef.current,
+        (runId, afterSeq) => api.runEvents(runId, afterSeq),
+        {
+          apply: (event) => applyEventRef.current(event),
+          log: (level, message) => pushLog(level, message),
+        },
+      );
     } finally {
       drainingRef.current = false;
     }
-  }, [enqueueEvent, pushLog]);
+  }, [pushLog]);
 
   const receiveEvent = useCallback(
     (event: RunEvent) => {

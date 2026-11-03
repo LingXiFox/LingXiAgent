@@ -68,8 +68,12 @@ pub fn redact_event(event: &RunEvent) -> RunEvent {
         }
         RunEvent::NodeFinished { label, outputs, .. } => {
             *label = redact_text(label);
-            for value in outputs.values_mut() {
-                redact_json(value);
+            for (name, value) in outputs.iter_mut() {
+                if is_sensitive_key(name) {
+                    *value = Value::String(REDACTED.to_string());
+                } else {
+                    redact_json(value);
+                }
             }
         }
         RunEvent::NodeFailed { label, message, .. } => {
@@ -184,11 +188,17 @@ fn secret_span(input: &str, index: usize) -> Option<(usize, usize)> {
                         break;
                     }
                 }
+                if input[value_start..].starts_with(REDACTED) {
+                    return None;
+                }
                 if key == "authorization" {
                     let tail = lower[value_start..].to_string();
                     for scheme in ["bearer ", "basic "] {
                         if tail.starts_with(scheme) {
                             let token_start = value_start + scheme.len();
+                            if input[token_start..].starts_with(REDACTED) {
+                                return None;
+                            }
                             let token_end = consume_token(input, token_start);
                             if token_end > token_start + 3 {
                                 return Some((token_start, token_end));
@@ -208,6 +218,9 @@ fn secret_span(input: &str, index: usize) -> Option<(usize, usize)> {
                 if let Some(quote) = input[value_start..].chars().next() {
                     if quote == '"' || quote == '\'' {
                         value_start += quote.len_utf8();
+                        if input[value_start..].starts_with(REDACTED) {
+                            return None;
+                        }
                         value_end = value_start;
                         while value_end < input.len() {
                             let ch = input[value_end..].chars().next().unwrap();
@@ -323,9 +336,15 @@ mod tests {
             node_id: "n1".into(),
             kind: "core.log".into(),
             label: "token=label-secret".into(),
-            outputs: [("payload".to_string(), json!({"apiKey": "abc"}))]
-                .into_iter()
-                .collect(),
+            outputs: [
+                ("apiKey".to_string(), json!("top-level-secret")),
+                (
+                    "payload".to_string(),
+                    json!({"apiKey": "abc", "safe": "keep"}),
+                ),
+            ]
+            .into_iter()
+            .collect(),
             duration_ms: 1,
             activation: 1,
             iteration: None,
@@ -334,7 +353,9 @@ mod tests {
             panic!("expected node finished");
         };
         assert_eq!(label, "token=[REDACTED]");
+        assert_eq!(outputs["apiKey"], REDACTED);
         assert_eq!(outputs["payload"]["apiKey"], REDACTED);
+        assert_eq!(outputs["payload"]["safe"], "keep");
 
         let finished = redact_event(&RunEvent::RunFinished {
             run_id: "run-1".into(),
@@ -348,6 +369,49 @@ mod tests {
             panic!("expected run finished");
         };
         assert_eq!(detail.as_deref(), Some("Authorization: Bearer [REDACTED]"));
+    }
+
+    #[test]
+    fn redacting_an_already_redacted_event_is_stable() {
+        let event = RunEvent::NodeFinished {
+            run_id: "run-1".into(),
+            seq: 0,
+            node_id: "n1".into(),
+            kind: "core.log".into(),
+            label: "token=label-secret".into(),
+            outputs: [
+                ("apiKey".to_string(), json!("top-level-secret")),
+                (
+                    "payload".to_string(),
+                    json!({"accessToken": "nested-secret", "safe": "keep"}),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            duration_ms: 1,
+            activation: 1,
+            iteration: None,
+        };
+        let once = redact_event(&event);
+        let twice = redact_event(&once);
+        assert_eq!(
+            serde_json::to_value(&twice).unwrap(),
+            serde_json::to_value(&once).unwrap(),
+            "the live sink redacts before the database sink; a second pass must be a no-op"
+        );
+    }
+
+    #[test]
+    fn redaction_is_idempotent() {
+        let once = redact_text(
+            "token=super-secret; Authorization: Bearer abc.def-123; client_secret: \"very-secret\"",
+        );
+        assert_eq!(redact_text(&once), once);
+        assert_eq!(
+            redact_text("token=[REDACTED]"),
+            "token=[REDACTED]",
+            "already-redacted values must not grow extra brackets"
+        );
     }
 
     #[test]

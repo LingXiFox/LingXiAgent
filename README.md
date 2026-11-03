@@ -1,15 +1,15 @@
 # 泠溪 · LingXiAgent 3.0
 
-跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连。工作流是可序列化 JSON，执行全部在 Rust 侧。
+跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连；Phase 1.2.1 补上单实例保护与实时/持久化事件的统一脱敏。工作流是可序列化 JSON，执行全部在 Rust 侧。
 
 ![Phase 1.1.1 循环演示](Docs/phase-1.1.1/assets/after-smart-routing.png)
 
 ## 当前状态
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
-- 阶段：Phase 1.2 — 运行状态持久化与事件恢复，不含真实 LLM 推理
+- 阶段：Phase 1.2.1 — 单实例保护与脱敏一致性，不含真实 LLM 推理
 - 验收：macOS 全项通过；Windows / Linux CI 编译与单测通过，运行行为**未验收**
-- 测试：`cargo test --workspace` 48 passed；前端 `tsc` + `vite build` 通过；路由测试 13 passed
+- 测试：`cargo test --workspace` 54 passed；前端 `tsc` + `vite build` 通过；事件重放 6 passed；路由 13 passed
 
 ## 技术栈
 
@@ -33,6 +33,7 @@ Docs/phase-0/            基础架构、节点规格、接口、测试、已知�
 Docs/phase-1.1/          控制流设计、测试与验收记录
 Docs/phase-1.1.1/        智能连线设计、测试与验收记录
 Docs/phase-1.2/          运行持久化设计、测试与验收记录
+Docs/phase-1.2.1/        单实例保护与脱敏一致性设计、测试与验收记录
 Docs/reference/2.0/      2.0 历史文档（只读参考）
 ```
 
@@ -75,7 +76,8 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - 交互节点（Approval Gate）批准/拒绝，运行暂停等待
 - SQLite 持久化运行记录、事件与终态；刷新后重新连接活动运行，按 `seq` 去重、补洞、恢复日志与节点状态
 - 应用异常退出后，未完成运行标记为 `interrupted`，不伪装完成、不自动重跑；支持运行列表、详情与历史事件
-- 持久化事件与实时事件统一脱敏；数据库写入失败显式告警并取消运行
+- 单实例保护：同一数据目录只允许一个桌面进程，第二个实例在打开运行库前安静退出，不破坏第一个实例的运行记录
+- 实时与持久化事件共用同一脱敏函数，顶层与嵌套输出一致；重复脱敏幂等；数据库写入失败显式告警并取消运行
 - 11 个内置节点：Boolean Input、Condition、Loop Gate、Counter、Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log
 
 ## 文档
@@ -90,6 +92,8 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - [Phase 1.1.1 测试与验收](Docs/phase-1.1.1/02-testing-and-acceptance.md)
 - [Phase 1.2 运行持久化设计](Docs/phase-1.2/01-design.md)
 - [Phase 1.2 测试与验收](Docs/phase-1.2/02-testing-and-acceptance.md)
+- [Phase 1.2.1 单实例与脱敏设计](Docs/phase-1.2.1/01-design.md)
+- [Phase 1.2.1 测试与验收](Docs/phase-1.2.1/02-testing-and-acceptance.md)
 - [Phase 0 测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
 - [Phase 0 已知问题](Docs/phase-0/05-known-issues.md)
 

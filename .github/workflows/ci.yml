@@ -90,3 +90,7 @@ jobs:
       - name: Edge routing tests
         working-directory: apps/desktop
         run: pnpm test:routing
+
+      - name: Event replay tests
+        working-directory: apps/desktop
+        run: pnpm test:events

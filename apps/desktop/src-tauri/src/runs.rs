@@ -10,7 +10,7 @@ use lingxi_spec::Workflow;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 
-use crate::redact::{redact_json, redact_text};
+use crate::redact::{redact_event, redact_json, redact_text};
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS runs (
@@ -191,7 +191,7 @@ impl RunDatabase {
                     params![
                         status_str(*status),
                         cause.map(cause_str),
-                        detail.as_deref(),
+                        detail.as_deref().map(redact_text),
                         at_ms as i64,
                         *duration_ms as i64,
                         run_id
@@ -376,6 +376,7 @@ fn events_locked(
 }
 
 fn interrupt_run(connection: &mut Connection, run_id: &str, detail: &str) -> Result<bool, String> {
+    let detail = redact_text(detail);
     let state: Option<(i64, i64, String)> = connection
         .query_row(
             "SELECT last_seq, started_at_ms, status FROM runs WHERE run_id = ?1",
@@ -398,7 +399,7 @@ fn interrupt_run(connection: &mut Connection, run_id: &str, detail: &str) -> Res
         seq,
         status: RunStatus::Interrupted,
         cause: Some(RunCause::Interrupted),
-        detail: Some(detail.to_string()),
+        detail: Some(detail.clone()),
         duration_ms,
     };
     let payload = redacted_event_json(&event)?;
@@ -435,7 +436,9 @@ fn row_to_record(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
         workflow_name: row.get(2)?,
         status: row.get(3)?,
         cause: row.get(4)?,
-        detail: row.get(5)?,
+        detail: row
+            .get::<_, Option<String>>(5)?
+            .map(|text| redact_text(&text)),
         started_at_ms: started_at_ms.max(0) as u64,
         finished_at_ms: finished_at_ms.map(|value| value.max(0) as u64),
         duration_ms: duration_ms.map(|value| value.max(0) as u64),
@@ -479,10 +482,11 @@ fn event_type(event: &RunEvent) -> &'static str {
 }
 
 fn redacted_event_json(event: &RunEvent) -> Result<String, String> {
-    let mut value =
-        serde_json::to_value(event).map_err(|error| format!("cannot encode run event: {error}"))?;
-    redact_json(&mut value);
-    serde_json::to_string(&value).map_err(|error| format!("cannot encode redacted event: {error}"))
+    // redact_event is the single event-redaction contract shared by the live
+    // bridge and the SQLite payload. Keeping one implementation prevents the
+    // two sinks from drifting (for example, top-level NodeFinished outputs).
+    serde_json::to_string(&redact_event(event))
+        .map_err(|error| format!("cannot encode redacted event: {error}"))
 }
 
 fn redacted_workflow_json(workflow: &Workflow) -> Result<String, String> {
@@ -503,9 +507,9 @@ pub fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::redact::REDACTED;
+    use crate::redact::{redact_event, REDACTED};
     use lingxi_spec::{Position, WorkflowNode};
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     fn workflow_with_secret() -> Workflow {
         let mut workflow = Workflow::new("token=workflow-secret");
@@ -637,6 +641,76 @@ mod tests {
             })
         ));
         assert_eq!(db.mark_interrupted_at_startup().unwrap(), 0);
+    }
+
+    #[test]
+    fn persisted_events_match_live_redaction_for_top_level_outputs() {
+        let db = RunDatabase::open_in_memory().unwrap();
+        db.create_run("run-1", &Workflow::new("redaction parity"), 100)
+            .unwrap();
+        let event = RunEvent::NodeFinished {
+            run_id: "run-1".into(),
+            seq: 0,
+            node_id: "n1".into(),
+            kind: "core.log".into(),
+            label: "safe label".into(),
+            outputs: [
+                ("apiKey".to_string(), json!("top-level-secret")),
+                (
+                    "payload".to_string(),
+                    json!({"accessToken": "nested-secret", "safe": "keep"}),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            duration_ms: 1,
+            activation: 1,
+            iteration: None,
+        };
+        let live = redact_event(&event);
+        db.append_event(&event).unwrap();
+        let stored = db.run_events("run-1", None).unwrap().pop().unwrap();
+        assert_eq!(
+            serde_json::to_value(&stored).unwrap(),
+            serde_json::to_value(&live).unwrap(),
+            "persisted and live events must carry identical redaction"
+        );
+        let RunEvent::NodeFinished { outputs, .. } = stored else {
+            panic!("expected node finished");
+        };
+        assert_eq!(outputs["apiKey"], REDACTED);
+        assert_eq!(outputs["payload"]["accessToken"], REDACTED);
+        assert_eq!(outputs["payload"]["safe"], "keep");
+    }
+
+    #[test]
+    fn terminal_detail_is_redacted_in_the_run_record() {
+        let db = RunDatabase::open_in_memory().unwrap();
+        db.create_run("run-1", &Workflow::new("detail redaction"), 100)
+            .unwrap();
+        db.append_event(&RunEvent::RunFinished {
+            run_id: "run-1".into(),
+            seq: 0,
+            status: RunStatus::Failed,
+            cause: Some(RunCause::NodeFailed),
+            detail: Some("token=super-secret".into()),
+            duration_ms: 2,
+        })
+        .unwrap();
+
+        let raw: String = db
+            .connection
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT detail FROM runs WHERE run_id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "token=[REDACTED]");
+        let detail = db.run_detail("run-1").unwrap().unwrap();
+        assert_eq!(detail.run.detail.as_deref(), Some("token=[REDACTED]"));
     }
 
     #[test]

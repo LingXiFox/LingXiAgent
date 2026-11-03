@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "test:events": "node --test tests/eventReplay.test.mjs",
     "test:routing": "node --test tests/edgeRouter.test.mjs",
     "bench:routing": "node tests/edgeRouter.bench.mjs",
     "tauri": "tauri"

@@ -1,6 +1,7 @@
 mod commands;
 mod redact;
 mod runs;
+mod single_instance;
 mod store;
 
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use lingxi_runtime::{
 use tauri::Manager;
 
 use crate::runs::RunDatabase;
+use crate::single_instance::InstanceLock;
 
 pub struct AppState {
     pub registry: Arc<NodeRegistry>,
@@ -21,10 +23,16 @@ pub struct AppState {
     pub runs: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
     pub store: store::WorkflowStore,
     pub db: Arc<RunDatabase>,
+    // Held for the lifetime of the app; dropping it releases the OS lock.
+    _instance_lock: InstanceLock,
 }
 
 impl AppState {
     fn new(data_dir: std::path::PathBuf) -> Result<Self, String> {
+        // Acquire the process guard before opening (and recovering) the run
+        // database. A second instance must never mark the first one's live run
+        // as interrupted.
+        let instance_lock = InstanceLock::acquire(&data_dir.join("instance.lock.sqlite3"))?;
         let db = Arc::new(RunDatabase::open(&data_dir.join("runs.sqlite3"))?);
         let recovered = db.mark_interrupted_at_startup()?;
         if recovered > 0 {
@@ -42,18 +50,33 @@ impl AppState {
             runs: Arc::new(Mutex::new(HashMap::new())),
             store: store::WorkflowStore::new(data_dir.join("workflows")),
             db,
+            _instance_lock: instance_lock,
         })
     }
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let result = tauri::Builder::default()
         .setup(|app| {
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|error| format!("cannot resolve app data directory: {error}"))?;
-            let state = AppState::new(data_dir).map_err(std::io::Error::other)?;
+            let data_dir = match app.path().app_data_dir() {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!(
+                        "LingXiAgent cannot start: cannot resolve app data directory: {error}"
+                    );
+                    std::process::exit(1);
+                }
+            };
+            let state = match AppState::new(data_dir) {
+                Ok(state) => state,
+                Err(error) => {
+                    // Tauri turns a setup error into a panic/abort. A second
+                    // instance must exit quietly instead of producing a crash
+                    // report while the first instance keeps running.
+                    eprintln!("LingXiAgent cannot start: {error}");
+                    std::process::exit(1);
+                }
+            };
             app.manage(state);
             Ok(())
         })
@@ -72,6 +95,57 @@ pub fn run() {
             commands::run_events,
             commands::active_run,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start LingXi desktop shell");
+        .run(tauri::generate_context!());
+    if let Err(error) = result {
+        eprintln!("LingXiAgent cannot start: {error}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lingxi_spec::Workflow;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_data_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "lingxi-app-state-{tag}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn a_second_instance_cannot_interrupt_the_first_instances_run() {
+        let dir = temp_data_dir("single-instance");
+        let first = AppState::new(dir.clone()).expect("first instance should start");
+        let workflow = Workflow::new("held by first instance");
+        first
+            .db
+            .create_run("run-held", &workflow, 100)
+            .expect("running record");
+
+        let error = match AppState::new(dir.clone()) {
+            Ok(_) => panic!("second instance must be refused"),
+            Err(error) => error,
+        };
+        assert!(error.contains("already running"), "{error}");
+
+        let held = first.db.run_detail("run-held").unwrap().unwrap();
+        assert_eq!(
+            held.run.status, "running",
+            "the second instance must not run startup recovery"
+        );
+
+        drop(first);
+        let second = AppState::new(dir.clone()).expect("lock is released with the first instance");
+        let recovered = second.db.run_detail("run-held").unwrap().unwrap();
+        assert_eq!(recovered.run.status, "interrupted");
+        drop(second);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
