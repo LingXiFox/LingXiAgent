@@ -35,7 +35,7 @@ Phase 1.1 的旧截图保留在 `Docs/phase-1.1.1/assets/before-smoothstep.png`�
 | `apps/desktop/src/App.tsx` | 新建边与加载文档统一写 `type: "smart"`、`data.control` |
 | `apps/desktop/src/styles.css` | data 实线、control 紫色虚线、fallback 降透明度、hover/selected |
 
-坐标全部使用 React Flow 的 flow 坐标；节点尺寸取 `node.measured`，未测量时回退 `NODE_FALLBACK_WIDTH = 252`。路由不依赖 DOM 测量，因此缩放不会触发重新路由。
+坐标全部使用 React Flow 的 flow 坐标；节点宽度取 `measured.width` / `width`，都没有时回退 `NODE_FALLBACK_WIDTH = 252`；高度未测量时跳过该障碍物，等 React Flow 测量后再重建索引。路由不依赖 DOM 测量，因此缩放不会触发重新路由。
 
 ## 四、障碍物索引
 
@@ -115,7 +115,7 @@ interface RouteResult {
 ## 六、视觉规范
 
 - data 边：`#677283` 实线，1.6px。
-- control 边：`#b98cff` 虚线 `5 4`，1.8px，圆头。
+- control 边：`#b98cff` 虚线 `5 4`，1.8px。
 - hover / selected：琥珀色，不改变路径。
 - fallback：透明度 `.72`，保留原线型，附 native title。
 - 所有路径统一走 `pointsToRoundedPath`，转角半径 9px；短段自动收缩到段长一半，避免圆角过冲。
