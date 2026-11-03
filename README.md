@@ -37,7 +37,7 @@ Docs/reference/2.0/      2.0 历史文档（只读参考）
 
 ## 快速开始
 
-需要 Rust ≥ 1.77、Node ≥ 20、pnpm 9。
+需要 Rust ≥ 1.90（Tauri 2.12 的实际 MSRV）、Node ≥ 20、pnpm 9。
 
 ```bash
 pnpm -C apps/desktop install

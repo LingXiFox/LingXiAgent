@@ -3,6 +3,7 @@ name = "lingxi-runtime"
 description = "Node execution engine for LingXiAgent workflows"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 lingxi-spec = { workspace = true }

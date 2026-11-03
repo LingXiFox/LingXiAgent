@@ -3,6 +3,7 @@ name = "lingxi-desktop"
 description = "LingXiAgent desktop shell"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "lingxi_desktop"

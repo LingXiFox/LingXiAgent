@@ -3,6 +3,7 @@ name = "lingxi-spec"
 description = "Workflow model and Node Specification v1 for LingXiAgent"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 serde = { workspace = true }

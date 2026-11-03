@@ -114,7 +114,7 @@ target/release/bundle/dmg/LingXi_0.1.0_aarch64.dmg           2.38 MiB
 
 ```bash
 # 1. 依赖
-rustup toolchain install 1.77   # 或更新；仓库 rust-version = 1.77
+rustup toolchain install stable  # 仓库 rust-version = 1.90（Tauri 2.12 的 MSRV）
 pnpm install --dir apps/desktop
 
 # 2. 测试
