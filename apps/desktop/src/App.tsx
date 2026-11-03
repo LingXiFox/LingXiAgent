@@ -13,6 +13,7 @@ import { InteractionDialog, type InteractionRequest } from "./components/Interac
 import { LogPanel } from "./components/LogPanel";
 import { NodeLibrary } from "./components/NodeLibrary";
 import { ProblemsPanel } from "./components/ProblemsPanel";
+import { RunHistoryDialog } from "./components/RunHistoryDialog";
 import { Toolbar } from "./components/Toolbar";
 import { WorkflowDialog } from "./components/WorkflowDialog";
 import { api, isPreview } from "./lib/api";
@@ -150,6 +151,11 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [viewportKey, setViewportKey] = useState(0);
+  const [catalogReady, setCatalogReady] = useState(false);
+  const [bridgeReady, setBridgeReady] = useState(false);
+  const [recovering, setRecovering] = useState(true);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [persistenceError, setPersistenceError] = useState<string | null>(null);
   // Terminal events can arrive before runWorkflow resolves; remember them so the
   // late `setStatus("running")` does not overwrite the real outcome.
   const finishedRunsRef = useRef(new Map<string, RunStatus>());
@@ -162,15 +168,24 @@ export default function App() {
   const runIdRef = useRef<string | null>(null);
   const logSeq = useRef(0);
   const toastTimer = useRef<number | null>(null);
+  // Events are applied strictly by seq. Live events that arrive while the
+  // initial snapshot is loading are queued, then merged with replayed history
+  // in one sorted queue so a terminal event can never overtake its history.
+  const appliedSeqRef = useRef(new Map<string, number>());
+  const eventQueueRef = useRef<RunEvent[]>([]);
+  const drainingRef = useRef(false);
+  const recoveringRef = useRef(true);
+  const reconnectedLogRef = useRef<string | null>(null);
+  const applyEventRef = useRef<(event: RunEvent) => void>(() => {});
 
   nodesRef.current = nodes;
   edgesRef.current = edges;
   metaRef.current = meta;
   statusRef.current = status;
 
-  const pushLog = useCallback((level: LogLevel, text: string) => {
+  const pushLog = useCallback((level: LogLevel, text: string, at = Date.now()) => {
     setLogs((previous) => {
-      const next = [...previous, { id: ++logSeq.current, at: Date.now(), level, text }];
+      const next = [...previous, { id: ++logSeq.current, at, level, text }];
       return next.length > 600 ? next.slice(next.length - 600) : next;
     });
   }, []);
@@ -366,6 +381,9 @@ export default function App() {
       setReport(null);
       setProblemsOpen(false);
       setViewportKey((key) => key + 1);
+      setPending(null);
+      runIdRef.current = null;
+      setStatus("idle");
       if (missing.length > 0) {
         pushLog("warn", "loaded workflow references unregistered kinds: " + missing.join(", "));
       }
@@ -373,10 +391,21 @@ export default function App() {
     [handleParamChange, handleToggleEnabled, pushLog, setEdges, setNodes, specMap],
   );
 
-  const handleEvent = useCallback(
+  const applyEvent = useCallback(
     (event: RunEvent) => {
+      const activeRunId = runIdRef.current;
+      // A late event from a previous run must not overwrite the current one.
+      // A new run.started is allowed to take over explicitly.
+      if (
+        event.type !== "run.started" &&
+        activeRunId !== null &&
+        event.runId !== activeRunId
+      ) {
+        return;
+      }
       switch (event.type) {
         case "run.started":
+          runIdRef.current = event.runId;
           pushLog("info", "run started · " + event.workflowName + " · " + event.nodeCount + " nodes");
           setNodes((current) =>
             current.map((node) =>
@@ -431,7 +460,7 @@ export default function App() {
           });
           break;
         case "log":
-          pushLog(event.level === "debug" ? "info" : event.level, event.message);
+          pushLog(event.level === "debug" ? "info" : event.level, event.message, event.atMs);
           break;
         case "interaction.requested":
           pushLog("warn", "⏸ waiting for approval · " + event.prompt);
@@ -458,22 +487,109 @@ export default function App() {
     },
     [flash, pushLog, setNodeRun, setNodes],
   );
+  applyEventRef.current = applyEvent;
+
+  const enqueueEvent = useCallback((event: RunEvent) => {
+    const queue = eventQueueRef.current;
+    let index = queue.length;
+    // Keep same-run events ordered even if a live event beats its snapshot.
+    while (index > 0) {
+      const previous = queue[index - 1];
+      if (previous.runId !== event.runId || previous.seq <= event.seq) break;
+      index -= 1;
+    }
+    queue.splice(index, 0, event);
+  }, []);
+
+  const drainEvents = useCallback(async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    try {
+      while (eventQueueRef.current.length > 0) {
+        const event = eventQueueRef.current[0];
+        const applied = appliedSeqRef.current.get(event.runId);
+        if (applied !== undefined && event.seq <= applied) {
+          eventQueueRef.current.shift();
+          continue;
+        }
+        const expected = applied === undefined ? 0 : applied + 1;
+        if (event.seq > expected) {
+          try {
+            const missing = await api.runEvents(event.runId, applied);
+            const unseen = missing.filter(
+              (candidate) => candidate.seq >= expected && candidate.seq < event.seq,
+            );
+            if (unseen.length > 0) {
+              unseen.forEach((candidate) => enqueueEvent(candidate));
+              continue;
+            }
+            pushLog(
+              "warn",
+              "event gap " + event.runId + " · seq " + expected + ".." + (event.seq - 1) + " missing",
+            );
+          } catch (error) {
+            pushLog("error", "event recovery failed: " + String(error));
+          }
+          // Never stall the queue on an unrecoverable gap: advance explicitly.
+          appliedSeqRef.current.set(event.runId, event.seq - 1);
+          continue;
+        }
+        applyEventRef.current(event);
+        appliedSeqRef.current.set(event.runId, event.seq);
+        eventQueueRef.current.shift();
+      }
+    } finally {
+      drainingRef.current = false;
+    }
+  }, [enqueueEvent, pushLog]);
+
+  const receiveEvent = useCallback(
+    (event: RunEvent) => {
+      enqueueEvent(event);
+      if (!recoveringRef.current) void drainEvents();
+    },
+    [drainEvents, enqueueEvent],
+  );
 
   useEffect(() => {
-    let dispose: (() => void) | undefined;
     let cancelled = false;
-    api
-      .onRunEvent(handleEvent)
-      .then((cleanup) => {
-        if (cancelled) cleanup();
-        else dispose = cleanup;
-      })
-      .catch((error: unknown) => pushLog("error", "event bridge failed: " + String(error)));
+    let disposeRun: (() => void) | undefined;
+    let disposeError: (() => void) | undefined;
+    const subscriptions: Promise<void>[] = [];
+
+    subscriptions.push(
+      api
+        .onRunEvent(receiveEvent)
+        .then((cleanup) => {
+          if (cancelled) cleanup();
+          else disposeRun = cleanup;
+        })
+        .catch((error: unknown) => pushLog("error", "event bridge failed: " + String(error))),
+    );
+    subscriptions.push(
+      api
+        .onPersistenceError((error) => {
+          setPersistenceError(error.message);
+          pushLog("error", "持久化失败 · " + error.message);
+        })
+        .then((cleanup) => {
+          if (cancelled) cleanup();
+          else disposeError = cleanup;
+        })
+        .catch((error: unknown) =>
+          pushLog("error", "persistence bridge failed: " + String(error)),
+        ),
+    );
+    void Promise.all(subscriptions).then(() => {
+      if (!cancelled) setBridgeReady(true);
+    });
+
     return () => {
       cancelled = true;
-      dispose?.();
+      disposeRun?.();
+      disposeError?.();
     };
-  }, [handleEvent, pushLog]);
+  }, [pushLog, receiveEvent]);
 
   useEffect(() => {
     api
@@ -482,8 +598,52 @@ export default function App() {
         setSpecs(catalog);
         pushLog("info", "node catalog ready · " + catalog.length + " kinds");
       })
-      .catch((error: unknown) => pushLog("error", "failed to load node catalog: " + String(error)));
+      .catch((error: unknown) => pushLog("error", "failed to load node catalog: " + String(error)))
+      .finally(() => setCatalogReady(true));
   }, [pushLog]);
+
+  useEffect(() => {
+    if (!catalogReady || !bridgeReady) return;
+    let cancelled = false;
+    recoveringRef.current = true;
+    setRecovering(true);
+
+    void (async () => {
+      try {
+        const snapshot = await api.activeRun();
+        if (cancelled) return;
+        if (snapshot) {
+          applyDoc(snapshot.workflow);
+          runIdRef.current = snapshot.run.runId;
+          setStatus(snapshot.run.status === "running" ? "running" : snapshot.run.status);
+          if (reconnectedLogRef.current !== snapshot.run.runId) {
+            reconnectedLogRef.current = snapshot.run.runId;
+            pushLog(
+              "info",
+              "reconnected to run · " +
+                (snapshot.run.workflowName || "未命名工作流") +
+                " · " +
+                snapshot.events.length +
+                " events replayed",
+            );
+          }
+          snapshot.events.forEach((event) => enqueueEvent(event));
+        }
+      } catch (error) {
+        pushLog("error", "run recovery failed: " + String(error));
+      } finally {
+        if (!cancelled) {
+          recoveringRef.current = false;
+          setRecovering(false);
+          void drainEvents();
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDoc, bridgeReady, catalogReady, drainEvents, enqueueEvent, pushLog]);
 
   const resetCanvas = useCallback(() => {
     const workflow = newWorkflow("未命名工作流");
@@ -499,6 +659,9 @@ export default function App() {
       viewport: workflow.viewport,
     });
     setViewportKey((key) => key + 1);
+    setPending(null);
+    runIdRef.current = null;
+    setStatus("idle");
     pushLog("info", "new workflow");
   }, [pushLog, setEdges, setNodes]);
 
@@ -616,13 +779,14 @@ export default function App() {
   }, [buildDoc, pushLog]);
 
   const handleRun = useCallback(async () => {
-    if (statusRef.current === "running") return;
+    if (recoveringRef.current || statusRef.current === "running") return;
     if (nodesRef.current.length === 0) {
       flash("画布还是空的");
       return;
     }
     setBusy(true);
     setPending(null);
+    setPersistenceError(null);
     try {
       const response = await api.runWorkflow(buildDoc());
       setReport(response.report);
@@ -681,14 +845,18 @@ export default function App() {
 
   return (
     <div className="app">
-      <NodeLibrary specs={specs} onAdd={addFromLibrary} disabled={status === "running"} />
+      <NodeLibrary
+        specs={specs}
+        onAdd={addFromLibrary}
+        disabled={status === "running" || recovering}
+      />
 
       <Toolbar
         name={meta.name}
         status={status}
         nodeCount={nodes.length}
         edgeCount={edges.length}
-        busy={busy}
+        busy={busy || recovering}
         preview={isPreview}
         onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
         onNew={handleNew}
@@ -696,6 +864,7 @@ export default function App() {
         onOpen={() => void openDialog()}
         onSave={() => void handleSave()}
         onValidate={() => void handleValidate()}
+        onHistory={() => setHistoryOpen(true)}
         onRun={() => void handleRun()}
         onStop={() => void handleStop()}
       />
@@ -745,6 +914,8 @@ export default function App() {
 
       <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
 
+      <RunHistoryDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />
+
       <ConfirmDialog
         open={confirmAction !== null}
         title={confirmAction === "demo" ? "载入示例" : "新建工作流"}
@@ -757,6 +928,23 @@ export default function App() {
         onConfirm={confirmReplace}
         onCancel={() => setConfirmAction(null)}
       />
+
+      {persistenceError ? (
+        <div className="persistence-alert" role="alert">
+          <div>
+            <div className="persistence-alert__title">持久化失败</div>
+            <div className="persistence-alert__body">{persistenceError}</div>
+          </div>
+          <button
+            type="button"
+            className="persistence-alert__close"
+            onClick={() => setPersistenceError(null)}
+            aria-label="关闭持久化错误提示"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
 
       {toast ? <div className="toast">{toast}</div> : null}
     </div>

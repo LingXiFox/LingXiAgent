@@ -7,7 +7,6 @@
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -17,7 +16,7 @@ use serde::Serialize;
 use crate::context::NodeContext;
 use crate::control::RunControl;
 use crate::error::{error_codes, NodeError};
-use crate::event::{unix_millis, EventSink, LogLevel, RunCause, RunEvent, RunStatus};
+use crate::event::{EventEmitter, EventSink, LogLevel, RunCause, RunEvent, RunStatus};
 use crate::interaction::InteractionBroker;
 use crate::registry::NodeRegistry;
 
@@ -91,10 +90,11 @@ impl Engine {
         sink: &dyn EventSink,
     ) -> RunSummary {
         let started = Instant::now();
-        let seq = AtomicU64::new(0);
+        let emitter = EventEmitter::new(sink);
 
-        sink.emit(RunEvent::RunStarted {
+        emitter.emit(RunEvent::RunStarted {
             run_id: run_id.to_string(),
+            seq: 0,
             workflow_id: workflow.id.clone(),
             workflow_name: workflow.name.clone(),
             node_count: workflow.nodes.len(),
@@ -109,17 +109,16 @@ impl Engine {
                 .map(|issue| format!("{}: {}", issue.path, issue.message))
                 .collect::<Vec<_>>()
                 .join("; ");
-            emit_log(
-                sink,
+            emitter.log(
                 run_id,
-                &seq,
                 LogLevel::Error,
                 None,
                 format!("workflow rejected before execution: {detail}"),
             );
             let duration_ms = elapsed_ms(started);
-            sink.emit(RunEvent::RunFinished {
+            emitter.emit(RunEvent::RunFinished {
                 run_id: run_id.to_string(),
+                seq: 0,
                 status: RunStatus::Failed,
                 cause: Some(RunCause::ValidationFailed),
                 detail: Some(detail),
@@ -136,7 +135,7 @@ impl Engine {
 
         if requires_control_flow(workflow, self.registry.as_ref()) {
             return crate::control_flow::execute(
-                self, workflow, run_id, control, sink, started, &seq,
+                self, workflow, run_id, control, &emitter, started,
             )
             .await;
         }
@@ -145,10 +144,11 @@ impl Engine {
             Some(order) => order,
             None => {
                 let detail = "workflow graph contains a cycle".to_string();
-                emit_log(sink, run_id, &seq, LogLevel::Error, None, detail.clone());
+                emitter.log(run_id, LogLevel::Error, None, detail.clone());
                 let duration_ms = elapsed_ms(started);
-                sink.emit(RunEvent::RunFinished {
+                emitter.emit(RunEvent::RunFinished {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     status: RunStatus::Failed,
                     cause: Some(RunCause::EngineError),
                     detail: Some(detail),
@@ -164,10 +164,8 @@ impl Engine {
             }
         };
 
-        emit_log(
-            sink,
+        emitter.log(
             run_id,
-            &seq,
             LogLevel::Info,
             None,
             format!(
@@ -192,8 +190,9 @@ impl Engine {
 
             let Some(spec) = self.registry.spec(&node.kind) else {
                 let label = node.display_name(None);
-                sink.emit(RunEvent::NodeFailed {
+                emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -211,8 +210,9 @@ impl Engine {
             let label = node.display_name(Some(spec));
 
             if !node.enabled {
-                sink.emit(RunEvent::NodeSkipped {
+                emitter.emit(RunEvent::NodeSkipped {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -230,8 +230,9 @@ impl Engine {
                 .map(|edge| edge.source.clone())
                 .find(|source| unavailable.contains(source));
             if let Some(source) = blocked_by {
-                sink.emit(RunEvent::NodeSkipped {
+                emitter.emit(RunEvent::NodeSkipped {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -244,8 +245,9 @@ impl Engine {
                 continue;
             }
 
-            sink.emit(RunEvent::NodeStarted {
+            emitter.emit(RunEvent::NodeStarted {
                 run_id: run_id.to_string(),
+                seq: 0,
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 label: label.clone(),
@@ -274,8 +276,9 @@ impl Engine {
             }
 
             if let Some(message) = missing_input {
-                sink.emit(RunEvent::NodeFailed {
+                emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -304,8 +307,9 @@ impl Engine {
                 }
             }
             if let Some(error) = denied {
-                sink.emit(RunEvent::NodeFailed {
+                emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -321,8 +325,9 @@ impl Engine {
             }
 
             let Some(executor) = self.registry.executor(&node.kind) else {
-                sink.emit(RunEvent::NodeFailed {
+                emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -344,8 +349,7 @@ impl Engine {
                 &inputs,
                 control.as_ref(),
                 self.interactions.as_ref(),
-                sink,
-                &seq,
+                &emitter,
             );
             let node_started = Instant::now();
             let outcome = tokio::select! {
@@ -356,8 +360,9 @@ impl Engine {
 
             match outcome {
                 None => {
-                    sink.emit(RunEvent::NodeCancelled {
+                    emitter.emit(RunEvent::NodeCancelled {
                         run_id: run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -370,8 +375,9 @@ impl Engine {
                 }
                 Some(Ok(output)) => {
                     let duration_ms = elapsed_ms(node_started);
-                    sink.emit(RunEvent::NodeFinished {
+                    emitter.emit(RunEvent::NodeFinished {
                         run_id: run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -384,8 +390,9 @@ impl Engine {
                 }
                 Some(Err(error)) => {
                     let duration_ms = elapsed_ms(node_started);
-                    sink.emit(RunEvent::NodeFailed {
+                    emitter.emit(RunEvent::NodeFailed {
                         run_id: run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -412,11 +419,13 @@ impl Engine {
             RunStatus::Completed => None,
             RunStatus::Failed => Some(RunCause::NodeFailed),
             RunStatus::Cancelled => Some(RunCause::Cancelled),
+            RunStatus::Interrupted => Some(RunCause::Interrupted),
         };
         let detail = match status {
             RunStatus::Completed => None,
             RunStatus::Failed => Some(format!("failed nodes: {}", failed.join(", "))),
             RunStatus::Cancelled => Some("run cancelled by user".to_string()),
+            RunStatus::Interrupted => Some("run interrupted".to_string()),
         };
         let duration_ms = elapsed_ms(started);
 
@@ -428,20 +437,19 @@ impl Engine {
             duration_ms,
         };
 
-        emit_log(
-            sink,
+        emitter.log(
             run_id,
-            &seq,
             match status {
                 RunStatus::Completed => LogLevel::Info,
                 RunStatus::Failed => LogLevel::Error,
-                RunStatus::Cancelled => LogLevel::Warn,
+                RunStatus::Cancelled | RunStatus::Interrupted => LogLevel::Warn,
             },
             None,
             format!("run finished: {:?} in {} ms", status, duration_ms),
         );
-        sink.emit(RunEvent::RunFinished {
+        emitter.emit(RunEvent::RunFinished {
             run_id: run_id.to_string(),
+            seq: 0,
             status,
             cause,
             detail,
@@ -450,24 +458,6 @@ impl Engine {
 
         summary
     }
-}
-
-pub(crate) fn emit_log(
-    sink: &dyn EventSink,
-    run_id: &str,
-    seq: &AtomicU64,
-    level: LogLevel,
-    node_id: Option<String>,
-    message: impl Into<String>,
-) {
-    sink.emit(RunEvent::Log {
-        run_id: run_id.to_string(),
-        seq: seq.fetch_add(1, Ordering::Relaxed),
-        at_ms: unix_millis(),
-        level,
-        node_id,
-        message: message.into(),
-    });
 }
 
 pub(crate) fn elapsed_ms(started: Instant) -> u64 {

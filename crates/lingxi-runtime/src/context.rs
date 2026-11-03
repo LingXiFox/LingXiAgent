@@ -1,12 +1,11 @@
 use lingxi_spec::{NodeSpec, WorkflowNode};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::control::RunControl;
 use crate::error::{error_codes, NodeError};
-use crate::event::{unix_millis, EventSink, LogLevel, RunEvent};
+use crate::event::{EventEmitter, LogLevel, RunEvent};
 use crate::interaction::{
     InteractionBroker, InteractionDecision, InteractionOption, InteractionRequest,
 };
@@ -22,8 +21,7 @@ pub struct NodeContext<'a> {
     pub inputs: &'a BTreeMap<String, Value>,
     pub control: &'a RunControl,
     pub broker: &'a dyn InteractionBroker,
-    pub sink: &'a dyn EventSink,
-    seq: &'a AtomicU64,
+    pub emitter: &'a EventEmitter<'a>,
 }
 
 impl<'a> NodeContext<'a> {
@@ -35,8 +33,7 @@ impl<'a> NodeContext<'a> {
         inputs: &'a BTreeMap<String, Value>,
         control: &'a RunControl,
         broker: &'a dyn InteractionBroker,
-        sink: &'a dyn EventSink,
-        seq: &'a AtomicU64,
+        emitter: &'a EventEmitter<'a>,
     ) -> Self {
         Self {
             run_id,
@@ -45,8 +42,7 @@ impl<'a> NodeContext<'a> {
             inputs,
             control,
             broker,
-            sink,
-            seq,
+            emitter,
         }
     }
 
@@ -159,14 +155,8 @@ impl<'a> NodeContext<'a> {
     }
 
     pub fn log(&self, level: LogLevel, message: impl Into<String>) {
-        self.sink.emit(RunEvent::Log {
-            run_id: self.run_id.to_string(),
-            seq: self.seq.fetch_add(1, Ordering::Relaxed),
-            at_ms: unix_millis(),
-            level,
-            node_id: Some(self.node.id.clone()),
-            message: message.into(),
-        });
+        self.emitter
+            .log(self.run_id, level, Some(self.node.id.clone()), message);
     }
 
     pub fn check_cancelled(&self) -> Result<(), NodeError> {
@@ -185,20 +175,20 @@ impl<'a> NodeContext<'a> {
         options: Vec<InteractionOption>,
     ) -> Result<InteractionDecision, NodeError> {
         let prompt = prompt.into();
-        let request_id = format!(
-            "{}:{}:{}",
-            self.run_id,
-            self.node.id,
-            self.seq.fetch_add(1, Ordering::Relaxed)
-        );
+        let seq = self.emitter.allocate_seq();
+        let request_id = format!("{}:{}:{}", self.run_id, self.node.id, seq);
 
-        self.sink.emit(RunEvent::InteractionRequested {
-            run_id: self.run_id.to_string(),
-            request_id: request_id.clone(),
-            node_id: self.node.id.clone(),
-            prompt: prompt.clone(),
-            options: options.clone(),
-        });
+        self.emitter.emit_with_seq(
+            RunEvent::InteractionRequested {
+                run_id: self.run_id.to_string(),
+                seq,
+                request_id: request_id.clone(),
+                node_id: self.node.id.clone(),
+                prompt: prompt.clone(),
+                options: options.clone(),
+            },
+            seq,
+        );
 
         let request = InteractionRequest {
             request_id: request_id.clone(),
@@ -224,8 +214,9 @@ impl<'a> NodeContext<'a> {
         };
 
         if let Ok(decision) = &outcome {
-            self.sink.emit(RunEvent::InteractionResolved {
+            self.emitter.emit(RunEvent::InteractionResolved {
                 run_id: self.run_id.to_string(),
+                seq: 0,
                 request_id,
                 node_id: self.node.id.clone(),
                 decision: *decision,

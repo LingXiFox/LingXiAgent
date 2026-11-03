@@ -294,6 +294,15 @@ textarea {
   background: var(--amber-soft);
 }
 
+.status--interrupted {
+  color: #f0a5a2;
+  border-color: rgba(226, 99, 95, 0.35);
+}
+
+.status--interrupted .status__dot {
+  background: var(--red);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
@@ -971,6 +980,11 @@ textarea {
   width: min(420px, calc(100vw - 48px));
 }
 
+.modal__card--wide {
+  width: min(860px, calc(100vw - 48px));
+  max-height: min(78vh, 680px);
+}
+
 .modal__head {
   display: flex;
   align-items: center;
@@ -1056,6 +1070,192 @@ textarea {
   display: flex;
   gap: 6px;
   flex: none;
+}
+
+/* ---------- run history ---------- */
+
+.runhistory__head-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.runhistory {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.runhistory__list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line-soft);
+}
+
+.runrow {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 7px 8px;
+  text-align: left;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: #151b22;
+  color: inherit;
+  cursor: pointer;
+}
+
+.runrow:hover {
+  border-color: #39424f;
+}
+
+.runrow--active {
+  border-color: #c2842f;
+  background: #1c2027;
+}
+
+.runrow__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.runrow__time {
+  font-size: 9.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.runrow__name {
+  font-size: 12px;
+  font-weight: 550;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runrow__sub {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.runhistory__detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 12px 12px;
+  gap: 8px;
+}
+
+.runhistory__summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.runhistory__name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.runhistory__meta {
+  margin: 3px 0 0;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+}
+
+.runhistory__cause {
+  margin: 0;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: rgba(226, 99, 95, 0.1);
+  color: #f0a5a2;
+  font-size: 11px;
+}
+
+.runhistory__events {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  border: 1px solid var(--line-soft);
+  background: #0d1116;
+  font-family: "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.runhistory__event {
+  display: flex;
+  gap: 7px;
+  padding: 1px 0;
+  color: var(--text-dim);
+}
+
+.runhistory__seq {
+  flex: none;
+  width: 38px;
+  color: #4f5a67;
+}
+
+.runhistory__event-text {
+  word-break: break-word;
+}
+
+.runhistory__event--success .runhistory__event-text { color: var(--green); }
+.runhistory__event--warn .runhistory__event-text { color: var(--amber-soft); }
+.runhistory__event--error .runhistory__event-text { color: #f0a5a2; }
+
+/* ---------- persistence alert ---------- */
+
+.persistence-alert {
+  position: fixed;
+  top: 62px;
+  right: 16px;
+  z-index: 45;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(460px, calc(100vw - 32px));
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(226, 99, 95, 0.5);
+  background: rgba(43, 19, 21, 0.97);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.persistence-alert__title {
+  font-weight: 600;
+  color: #f0a5a2;
+}
+
+.persistence-alert__body {
+  color: var(--text-dim);
+  word-break: break-word;
+}
+
+.persistence-alert__close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0 2px;
 }
 
 /* ---------- toast ---------- */

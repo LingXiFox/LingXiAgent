@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 
-import type { LogEntry, UiRunStatus } from "../lib/log";
+import { RUN_STATUS_TEXT, type LogEntry, type UiRunStatus } from "../lib/log";
 
 interface LogPanelProps {
   entries: LogEntry[];
@@ -34,7 +34,7 @@ export function LogPanel({ entries, open, status, onToggle, onClear }: LogPanelP
         <div className="logpanel__actions">
           <span className={"status status--" + status}>
             <span className="status__dot" />
-            {status === "running" ? "运行中" : status === "failed" ? "失败" : status === "completed" ? "完成" : status === "cancelled" ? "已终止" : "空闲"}
+            {status === "idle" ? "空闲" : RUN_STATUS_TEXT[status]}
           </span>
           <button type="button" className="btn btn--tiny" onClick={onClear} disabled={entries.length === 0}>
             清空

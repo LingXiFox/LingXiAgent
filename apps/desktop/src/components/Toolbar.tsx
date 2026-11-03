@@ -1,4 +1,4 @@
-import type { UiRunStatus } from "../lib/log";
+import { RUN_STATUS_TEXT, type UiRunStatus } from "../lib/log";
 
 interface ToolbarProps {
   name: string;
@@ -13,17 +13,10 @@ interface ToolbarProps {
   onOpen: () => void;
   onSave: () => void;
   onValidate: () => void;
+  onHistory: () => void;
   onRun: () => void;
   onStop: () => void;
 }
-
-const STATUS_TEXT: Record<UiRunStatus, string> = {
-  idle: "就绪",
-  running: "运行中",
-  completed: "已完成",
-  failed: "失败",
-  cancelled: "已终止",
-};
 
 export function Toolbar({
   name,
@@ -38,6 +31,7 @@ export function Toolbar({
   onOpen,
   onSave,
   onValidate,
+  onHistory,
   onRun,
   onStop,
 }: ToolbarProps) {
@@ -56,7 +50,7 @@ export function Toolbar({
         />
         <span className={"status status--" + status}>
           <span className="status__dot" />
-          {STATUS_TEXT[status]}
+          {RUN_STATUS_TEXT[status]}
         </span>
         <span className="toolbar__counts">
           {nodeCount} 节点 · {edgeCount} 连线
@@ -79,6 +73,9 @@ export function Toolbar({
         </button>
         <button type="button" className="btn btn--ghost" onClick={onValidate} disabled={busy}>
           校验
+        </button>
+        <button type="button" className="btn btn--ghost" onClick={onHistory}>
+          历史
         </button>
         <button
           type="button"

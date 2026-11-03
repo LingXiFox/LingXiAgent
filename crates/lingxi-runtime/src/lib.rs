@@ -16,7 +16,7 @@ pub use context::NodeContext;
 pub use control::RunControl;
 pub use engine::{AllowAllPolicy, CapabilityPolicy, CapabilityRequest, Engine, RunSummary};
 pub use error::{error_codes, NodeError, RegistryError};
-pub use event::{EventSink, LogLevel, RunCause, RunEvent, RunStatus};
+pub use event::{EventEmitter, EventSink, LogLevel, RunCause, RunEvent, RunStatus};
 pub use interaction::{
     InteractionBroker, InteractionDecision, InteractionOption, InteractionRequest,
     PendingInteractions,

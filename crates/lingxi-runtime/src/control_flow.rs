@@ -3,7 +3,6 @@
 //! ordinary Phase 0 workflows keep their exact behavior.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,9 +11,9 @@ use serde_json::Value;
 
 use crate::context::NodeContext;
 use crate::control::RunControl;
-use crate::engine::{elapsed_ms, emit_log, CapabilityRequest, Engine, RunSummary};
+use crate::engine::{elapsed_ms, CapabilityRequest, Engine, RunSummary};
 use crate::error::{error_codes, NodeError};
-use crate::event::{EventSink, LogLevel, RunCause, RunEvent, RunStatus};
+use crate::event::{EventEmitter, LogLevel, RunCause, RunEvent, RunStatus};
 use crate::registry::NodeOutput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,8 +35,7 @@ struct Scheduler<'a> {
     workflow: &'a Workflow,
     run_id: &'a str,
     control: &'a RunControl,
-    sink: &'a dyn EventSink,
-    seq: &'a AtomicU64,
+    emitter: &'a EventEmitter<'a>,
     index: HashMap<String, usize>,
     incoming: Vec<Vec<usize>>,
     outgoing: Vec<Vec<usize>>,
@@ -61,14 +59,11 @@ pub(crate) async fn execute(
     workflow: &Workflow,
     run_id: &str,
     control: Arc<RunControl>,
-    sink: &dyn EventSink,
+    emitter: &EventEmitter<'_>,
     started: Instant,
-    seq: &AtomicU64,
 ) -> RunSummary {
-    emit_log(
-        sink,
+    emitter.log(
         run_id,
-        seq,
         LogLevel::Info,
         None,
         format!(
@@ -78,7 +73,7 @@ pub(crate) async fn execute(
         ),
     );
 
-    let mut scheduler = Scheduler::new(engine, workflow, run_id, control.as_ref(), sink, seq);
+    let mut scheduler = Scheduler::new(engine, workflow, run_id, control.as_ref(), emitter);
     scheduler.prepare();
     scheduler.run().await;
     scheduler.finish(started)
@@ -90,8 +85,7 @@ impl<'a> Scheduler<'a> {
         workflow: &'a Workflow,
         run_id: &'a str,
         control: &'a RunControl,
-        sink: &'a dyn EventSink,
-        seq: &'a AtomicU64,
+        emitter: &'a EventEmitter<'a>,
     ) -> Self {
         let mut index = HashMap::with_capacity(workflow.nodes.len());
         for (position, node) in workflow.nodes.iter().enumerate() {
@@ -112,8 +106,7 @@ impl<'a> Scheduler<'a> {
             workflow,
             run_id,
             control,
-            sink,
-            seq,
+            emitter,
             index,
             incoming,
             outgoing,
@@ -196,27 +189,28 @@ impl<'a> Scheduler<'a> {
             RunStatus::Completed => None,
             RunStatus::Failed => Some(RunCause::NodeFailed),
             RunStatus::Cancelled => Some(RunCause::Cancelled),
+            RunStatus::Interrupted => Some(RunCause::Interrupted),
         };
         let detail = match status {
             RunStatus::Completed => None,
             RunStatus::Failed => Some(format!("failed nodes: {}", self.failed.join(", "))),
             RunStatus::Cancelled => Some("run cancelled by user".to_string()),
+            RunStatus::Interrupted => Some("run interrupted".to_string()),
         };
         let duration_ms = elapsed_ms(started);
-        emit_log(
-            self.sink,
+        self.emitter.log(
             self.run_id,
-            self.seq,
             match status {
                 RunStatus::Completed => LogLevel::Info,
                 RunStatus::Failed => LogLevel::Error,
-                RunStatus::Cancelled => LogLevel::Warn,
+                RunStatus::Cancelled | RunStatus::Interrupted => LogLevel::Warn,
             },
             None,
             format!("run finished: {:?} in {} ms", status, duration_ms),
         );
-        self.sink.emit(RunEvent::RunFinished {
+        self.emitter.emit(RunEvent::RunFinished {
             run_id: self.run_id.to_string(),
+            seq: 0,
             status,
             cause,
             detail,
@@ -377,8 +371,9 @@ impl<'a> Scheduler<'a> {
             return;
         }
         let node = &self.workflow.nodes[index];
-        self.sink.emit(RunEvent::NodeSkipped {
+        self.emitter.emit(RunEvent::NodeSkipped {
             run_id: self.run_id.to_string(),
+            seq: 0,
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: self.label(index),
@@ -416,8 +411,9 @@ impl<'a> Scheduler<'a> {
             return true;
         };
         let label = self.label(index);
-        self.sink.emit(RunEvent::NodeStarted {
+        self.emitter.emit(RunEvent::NodeStarted {
             run_id: self.run_id.to_string(),
+            seq: 0,
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: label.clone(),
@@ -459,8 +455,7 @@ impl<'a> Scheduler<'a> {
             &inputs,
             self.control,
             self.engine.interactions.as_ref(),
-            self.sink,
-            self.seq,
+            self.emitter,
         );
         let deadline = self.loop_state.map(|state| state.deadline);
         let node_started = Instant::now();
@@ -488,8 +483,9 @@ impl<'a> Scheduler<'a> {
 
         match outcome {
             Outcome::Cancelled => {
-                self.sink.emit(RunEvent::NodeCancelled {
+                self.emitter.emit(RunEvent::NodeCancelled {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -516,8 +512,9 @@ impl<'a> Scheduler<'a> {
             }
             Outcome::Result(Ok(output)) => {
                 let duration_ms = elapsed_ms(node_started);
-                self.sink.emit(RunEvent::NodeFinished {
+                self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -553,8 +550,9 @@ impl<'a> Scheduler<'a> {
         duration_ms: u64,
     ) {
         let node = &self.workflow.nodes[index];
-        self.sink.emit(RunEvent::NodeFailed {
+        self.emitter.emit(RunEvent::NodeFailed {
             run_id: self.run_id.to_string(),
+            seq: 0,
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: self.label(index),
@@ -590,8 +588,9 @@ impl<'a> Scheduler<'a> {
             Ok(budget) => budget,
             Err(error) => {
                 let iteration = self.iteration();
-                self.sink.emit(RunEvent::NodeStarted {
+                self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -615,8 +614,9 @@ impl<'a> Scheduler<'a> {
                 "loop gate activated without a start, next or stop trigger",
             );
             let iteration = self.iteration();
-            self.sink.emit(RunEvent::NodeStarted {
+            self.emitter.emit(RunEvent::NodeStarted {
                 run_id: self.run_id.to_string(),
+                seq: 0,
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 label: self.label(index),
@@ -637,8 +637,9 @@ impl<'a> Scheduler<'a> {
             "start" => {
                 if self.loop_state.is_some() {
                     let iteration = self.iteration();
-                    self.sink.emit(RunEvent::NodeStarted {
+                    self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -665,8 +666,9 @@ impl<'a> Scheduler<'a> {
                     deadline,
                 });
                 self.current_iteration = Some(1);
-                self.sink.emit(RunEvent::NodeStarted {
+                self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -674,8 +676,9 @@ impl<'a> Scheduler<'a> {
                     iteration: Some(1),
                 });
                 let outputs = BTreeMap::from([("continue".to_string(), payload)]);
-                self.sink.emit(RunEvent::NodeFinished {
+                self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -685,10 +688,8 @@ impl<'a> Scheduler<'a> {
                     iteration: Some(1),
                 });
                 self.propagate_outputs(index, &outputs);
-                emit_log(
-                    self.sink,
+                self.emitter.log(
                     self.run_id,
-                    self.seq,
                     LogLevel::Info,
                     Some(node.id.clone()),
                     format!(
@@ -700,8 +701,9 @@ impl<'a> Scheduler<'a> {
             "next" => {
                 let Some(mut state) = self.loop_state else {
                     let iteration = self.iteration();
-                    self.sink.emit(RunEvent::NodeStarted {
+                    self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -726,8 +728,9 @@ impl<'a> Scheduler<'a> {
                     return false;
                 }
                 if u64::from(next) > max_iterations {
-                    self.sink.emit(RunEvent::NodeStarted {
+                    self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
+                        seq: 0,
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -753,8 +756,9 @@ impl<'a> Scheduler<'a> {
                 state.iteration = next;
                 self.loop_state = Some(state);
                 self.current_iteration = Some(next);
-                self.sink.emit(RunEvent::NodeStarted {
+                self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -762,8 +766,9 @@ impl<'a> Scheduler<'a> {
                     iteration: Some(next),
                 });
                 let outputs = BTreeMap::from([("continue".to_string(), payload)]);
-                self.sink.emit(RunEvent::NodeFinished {
+                self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -773,10 +778,8 @@ impl<'a> Scheduler<'a> {
                     iteration: Some(next),
                 });
                 self.propagate_outputs(index, &outputs);
-                emit_log(
-                    self.sink,
+                self.emitter.log(
                     self.run_id,
-                    self.seq,
                     LogLevel::Info,
                     Some(node.id.clone()),
                     format!("loop iteration {next}/{max_iterations}"),
@@ -785,8 +788,9 @@ impl<'a> Scheduler<'a> {
             }
             "stop" => {
                 let iteration = self.loop_state.map(|state| state.iteration).unwrap_or(0);
-                self.sink.emit(RunEvent::NodeStarted {
+                self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -794,8 +798,9 @@ impl<'a> Scheduler<'a> {
                     iteration: Some(iteration),
                 });
                 let outputs = BTreeMap::from([("exit".to_string(), payload)]);
-                self.sink.emit(RunEvent::NodeFinished {
+                self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
+                    seq: 0,
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -804,10 +809,8 @@ impl<'a> Scheduler<'a> {
                     activation,
                     iteration: Some(iteration),
                 });
-                emit_log(
-                    self.sink,
+                self.emitter.log(
                     self.run_id,
-                    self.seq,
                     LogLevel::Info,
                     Some(node.id.clone()),
                     format!("loop exited after {iteration} iteration(s)"),
@@ -822,8 +825,9 @@ impl<'a> Scheduler<'a> {
     }
 
     fn fail_gate_timeout(&mut self, index: usize, activation: u64, iteration: u32) {
-        self.sink.emit(RunEvent::NodeStarted {
+        self.emitter.emit(RunEvent::NodeStarted {
             run_id: self.run_id.to_string(),
+            seq: 0,
             node_id: self.workflow.nodes[index].id.clone(),
             kind: self.workflow.nodes[index].kind.clone(),
             label: self.label(index),

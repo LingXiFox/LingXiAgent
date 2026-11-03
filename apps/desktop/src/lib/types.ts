@@ -117,7 +117,9 @@ export interface RunStartResponse {
   report: ValidationReport;
 }
 
-export type RunStatus = "completed" | "failed" | "cancelled";
+export type RunStatus = "completed" | "failed" | "cancelled" | "interrupted";
+
+export type StoredRunStatus = "running" | RunStatus;
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -128,6 +130,8 @@ export interface InteractionOption {
 
 interface RunEventBase {
   runId: string;
+  /** Monotonic within a run; used for replay deduplication and gap recovery. */
+  seq: number;
 }
 
 export type RunEvent =
@@ -185,7 +189,6 @@ export type RunEvent =
     })
   | (RunEventBase & {
       type: "log";
-      seq: number;
       atMs: number;
       level: LogLevel;
       nodeId: string | null;
@@ -212,4 +215,30 @@ export type RunEvent =
       durationMs: number;
     });
 
+export interface RunRecord {
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  status: StoredRunStatus;
+  cause: string | null;
+  detail: string | null;
+  startedAtMs: number;
+  finishedAtMs: number | null;
+  durationMs: number | null;
+  nodeCount: number;
+  lastSeq: number;
+}
+
+export interface RunDetail {
+  run: RunRecord;
+  workflow: WorkflowDoc;
+  events: RunEvent[];
+}
+
+export interface PersistenceError {
+  runId: string;
+  message: string;
+}
+
 export const RUN_EVENT_NAME = "lingxi:run-event";
+export const PERSISTENCE_ERROR_NAME = "lingxi:persistence-error";

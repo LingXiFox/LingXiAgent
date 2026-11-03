@@ -1,6 +1,9 @@
 import type {
   NodeSpec,
+  PersistenceError,
+  RunDetail,
   RunEvent,
+  RunRecord,
   RunStartResponse,
   ValidationReport,
   WorkflowDoc,
@@ -19,5 +22,10 @@ export interface Transport {
   saveWorkflow(name: string, workflow: WorkflowDoc): Promise<WorkflowSummary>;
   loadWorkflow(name: string): Promise<WorkflowDoc>;
   deleteWorkflow(name: string): Promise<boolean>;
+  runList(limit?: number): Promise<RunRecord[]>;
+  runDetail(runId: string): Promise<RunDetail | null>;
+  runEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
+  activeRun(): Promise<RunDetail | null>;
   onRunEvent(handler: (event: RunEvent) => void): Promise<() => void>;
+  onPersistenceError(handler: (error: PersistenceError) => void): Promise<() => void>;
 }

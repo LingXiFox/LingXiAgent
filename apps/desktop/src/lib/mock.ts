@@ -5,6 +5,7 @@
 import type { Transport } from "./transport";
 import type {
   NodeSpec,
+  RunDetail,
   RunEvent,
   RunStartResponse,
   ValidationIssue,
@@ -185,6 +186,9 @@ const specs: NodeSpec[] = rawSpecs.map((spec) => ({
 
 const specByKind = new Map(specs.map((spec) => [spec.kind, spec]));
 
+type WithoutSeq<T> = T extends unknown ? Omit<T, "seq"> : never;
+type RunEventInput = WithoutSeq<RunEvent>;
+
 function reportFor(workflow: WorkflowDoc, issues: ValidationIssue[]): ValidationReport {
   const errors = issues.filter((issue) => issue.severity === "error").length;
   return {
@@ -259,6 +263,7 @@ export function createMockTransport(): Transport {
   const files = new Map<string, WorkflowDoc>();
   const listeners = new Set<(event: RunEvent) => void>();
   const pending = new Map<string, (approved: boolean) => void>();
+  const runs = new Map<string, RunDetail>();
   let counter = 0;
 
   const emit = (event: RunEvent) => {
@@ -294,6 +299,13 @@ export function createMockTransport(): Transport {
         return { started: false, runId: null, report };
       }
       const runId = "mock-" + ++counter;
+      const runEvents: RunEvent[] = [];
+      let seq = 0;
+      const emitRun = (event: RunEventInput) => {
+        const sequenced = { ...event, seq: seq++ } as RunEvent;
+        runEvents.push(sequenced);
+        emit(sequenced);
+      };
       void (async () => {
         const outputs = new Map<string, Record<string, unknown>>();
         let cancelled = false;
@@ -301,19 +313,43 @@ export function createMockTransport(): Transport {
         const startedAt = Date.now();
         const finish = (status: "completed" | "failed" | "cancelled", detail: string | null) => {
           finished = true;
-          emit({
+          const finishedAt = Date.now();
+          const durationMs = finishedAt - startedAt;
+          emitRun({
             type: "run.finished",
             runId,
             status,
             cause: status === "failed" ? "node_failed" : status === "cancelled" ? "cancelled" : null,
             detail,
-            durationMs: Date.now() - startedAt,
+            durationMs,
+          });
+          runs.set(runId, {
+            run: {
+              runId,
+              workflowId: workflow.id,
+              workflowName: workflow.name,
+              status,
+              cause:
+                status === "failed"
+                  ? "node_failed"
+                  : status === "cancelled"
+                    ? "cancelled"
+                    : null,
+              detail,
+              startedAtMs: startedAt,
+              finishedAtMs: finishedAt,
+              durationMs,
+              nodeCount: workflow.nodes.length,
+              lastSeq: runEvents.length - 1,
+            },
+            workflow,
+            events: [...runEvents],
           });
         };
         stopHandlers.set(runId, () => {
           cancelled = true;
         });
-        emit({
+        emitRun({
           type: "run.started",
           runId,
           workflowId: workflow.id,
@@ -322,7 +358,7 @@ export function createMockTransport(): Transport {
         });
         for (const node of workflow.nodes) {
           if (cancelled) {
-            emit({
+            emitRun({
               type: "node.cancelled",
               runId,
               nodeId: node.id,
@@ -336,7 +372,7 @@ export function createMockTransport(): Transport {
           if (!spec) continue;
           const label = node.label?.trim() || spec.title;
           if (!node.enabled) {
-            emit({
+            emitRun({
               type: "node.skipped",
               runId,
               nodeId: node.id,
@@ -347,11 +383,11 @@ export function createMockTransport(): Transport {
             });
             continue;
           }
-          emit({ type: "node.started", runId, nodeId: node.id, kind: node.kind, label, activation: 1 });
+          emitRun({ type: "node.started", runId, nodeId: node.id, kind: node.kind, label, activation: 1 });
           await delay(240);
           if (node.kind === "core.approval") {
             const requestId = "req-" + ++counter;
-            emit({
+            emitRun({
               type: "interaction.requested",
               runId,
               requestId,
@@ -363,7 +399,7 @@ export function createMockTransport(): Transport {
               ],
             });
             const approved = await new Promise<boolean>((resolve) => pending.set(requestId, resolve));
-            emit({
+            emitRun({
               type: "interaction.resolved",
               runId,
               requestId,
@@ -371,7 +407,7 @@ export function createMockTransport(): Transport {
               decision: approved ? "approved" : "rejected",
             });
             if (!approved) {
-              emit({
+              emitRun({
                 type: "node.failed",
                 runId,
                 nodeId: node.id,
@@ -410,10 +446,9 @@ export function createMockTransport(): Transport {
               break;
             case "core.log": {
               const value = inputOf(node.id, "value", workflow, outputs);
-              emit({
+              emitRun({
                 type: "log",
                 runId,
-                seq: ++counter,
                 atMs: Date.now(),
                 level: "info",
                 nodeId: node.id,
@@ -428,7 +463,7 @@ export function createMockTransport(): Transport {
               break;
           }
           outputs.set(node.id, out);
-          emit({
+          emitRun({
             type: "node.finished",
             runId,
             nodeId: node.id,
@@ -484,11 +519,39 @@ export function createMockTransport(): Transport {
       return files.delete(name);
     },
 
+    async runList(limit) {
+      return [...runs.values()]
+        .map((detail) => detail.run)
+        .sort((a, b) => b.startedAtMs - a.startedAtMs)
+        .slice(0, limit ?? 50);
+    },
+
+    async runDetail(runId) {
+      return runs.get(runId) ?? null;
+    },
+
+    async runEvents(runId, afterSeq) {
+      const detail = runs.get(runId);
+      if (!detail) return [];
+      return detail.events.filter((event) => afterSeq === undefined || event.seq > afterSeq);
+    },
+
+    async activeRun() {
+      for (const detail of runs.values()) {
+        if (detail.run.status === "running") return detail;
+      }
+      return null;
+    },
+
     async onRunEvent(handler) {
       listeners.add(handler);
       return () => {
         listeners.delete(handler);
       };
+    },
+
+    async onPersistenceError() {
+      return () => {};
     },
   };
 }

@@ -1,4 +1,6 @@
 mod commands;
+mod redact;
+mod runs;
 mod store;
 
 use std::collections::HashMap;
@@ -10,28 +12,37 @@ use lingxi_runtime::{
 };
 use tauri::Manager;
 
+use crate::runs::RunDatabase;
+
 pub struct AppState {
     pub registry: Arc<NodeRegistry>,
     pub engine: Arc<Engine>,
     pub interactions: Arc<PendingInteractions>,
     pub runs: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
     pub store: store::WorkflowStore,
+    pub db: Arc<RunDatabase>,
 }
 
 impl AppState {
-    fn new(data_dir: std::path::PathBuf) -> Self {
+    fn new(data_dir: std::path::PathBuf) -> Result<Self, String> {
+        let db = Arc::new(RunDatabase::open(&data_dir.join("runs.sqlite3"))?);
+        let recovered = db.mark_interrupted_at_startup()?;
+        if recovered > 0 {
+            eprintln!("marked {recovered} unfinished run(s) as interrupted after restart");
+        }
         let registry = Arc::new(NodeRegistry::builtin());
         let interactions = Arc::new(PendingInteractions::new());
         let broker: Arc<dyn InteractionBroker> = interactions.clone();
         let policy: Arc<dyn CapabilityPolicy> = Arc::new(AllowAllPolicy);
         let engine = Arc::new(Engine::new(registry.clone(), policy, broker));
-        Self {
+        Ok(Self {
             registry,
             engine,
             interactions,
             runs: Arc::new(Mutex::new(HashMap::new())),
             store: store::WorkflowStore::new(data_dir.join("workflows")),
-        }
+            db,
+        })
     }
 }
 
@@ -42,7 +53,8 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| format!("cannot resolve app data directory: {error}"))?;
-            app.manage(AppState::new(data_dir));
+            let state = AppState::new(data_dir).map_err(std::io::Error::other)?;
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,6 +67,10 @@ pub fn run() {
             commands::save_workflow,
             commands::load_workflow,
             commands::delete_workflow,
+            commands::run_list,
+            commands::run_detail,
+            commands::run_events,
+            commands::active_run,
         ])
         .run(tauri::generate_context!())
         .expect("failed to start LingXi desktop shell");

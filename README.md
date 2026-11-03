@@ -1,15 +1,15 @@
 # 泠溪 · LingXiAgent 3.0
 
-跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染。工作流是可序列化 JSON，执行全部在 Rust 侧。
+跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连。工作流是可序列化 JSON，执行全部在 Rust 侧。
 
 ![Phase 1.1.1 循环演示](Docs/phase-1.1.1/assets/after-smart-routing.png)
 
 ## 当前状态
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
-- 阶段：Phase 1.1.1 — 智能连线与避障（在 Phase 1.1 控制流之上），不含真实 LLM 推理
+- 阶段：Phase 1.2 — 运行状态持久化与事件恢复，不含真实 LLM 推理
 - 验收：macOS 全项通过；Windows / Linux CI 编译与单测通过，运行行为**未验收**
-- 测试：`cargo test --workspace` 36 passed；前端 `tsc` + `vite build` 通过；路由测试 13 passed
+- 测试：`cargo test --workspace` 48 passed；前端 `tsc` + `vite build` 通过；路由测试 13 passed
 
 ## 技术栈
 
@@ -19,7 +19,7 @@
 | 桌面壳 | Tauri 2 |
 | 前端 | React 18 + TypeScript 5（strict） |
 | 画布 | `@xyflow/react` 12 |
-| 存储 | JSON 文件（SQLite 预留，Phase 0 未引入） |
+| 存储 | 工作流 JSON 文件 + SQLite 运行历史 |
 
 ## 仓库结构
 
@@ -28,10 +28,11 @@ crates/lingxi-spec/      工作流模型、节点规格、校验（纯数据，�
 crates/lingxi-runtime/   执行引擎、控制调度器、内置节点、事件、能力策略、交互总线
 apps/desktop/            React UI + Tauri 壳
   src/                   画布、节点库、日志、对话框、transport
-  src-tauri/             9 个 command、工作流存储、事件桥
+  src-tauri/             13 个 command、工作流存储、SQLite 运行库、事件桥
 Docs/phase-0/            基础架构、节点规格、接口、测试、已知问题
 Docs/phase-1.1/          控制流设计、测试与验收记录
 Docs/phase-1.1.1/        智能连线设计、测试与验收记录
+Docs/phase-1.2/          运行持久化设计、测试与验收记录
 Docs/reference/2.0/      2.0 历史文档（只读参考）
 ```
 
@@ -70,8 +71,11 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - Rust 顺序执行：普通 DAG 走 Kahn 拓扑序，含控制节点的图走 token/activation 调度器；支持取消、失败隔离、禁用节点、能力拒绝
 - 条件分支（Condition）与受控循环（Loop Gate）：显式预算、迭代计数、超时、预算耗尽失败、取消中断
 - 自定义边路由：按实测节点矩形避障、反向边外侧绕行、圆角正交、平行边分道、无解 fallback，支持拖拽/缩放/保存重载
-- 运行时事件流：节点状态、迭代/激活编号、日志、交互请求
+- 运行时事件流：每次运行内连续 `seq`、节点状态、迭代/激活编号、日志、交互请求
 - 交互节点（Approval Gate）批准/拒绝，运行暂停等待
+- SQLite 持久化运行记录、事件与终态；刷新后重新连接活动运行，按 `seq` 去重、补洞、恢复日志与节点状态
+- 应用异常退出后，未完成运行标记为 `interrupted`，不伪装完成、不自动重跑；支持运行列表、详情与历史事件
+- 持久化事件与实时事件统一脱敏；数据库写入失败显式告警并取消运行
 - 11 个内置节点：Boolean Input、Condition、Loop Gate、Counter、Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log
 
 ## 文档
@@ -84,6 +88,8 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - [Phase 1.1 测试与验收](Docs/phase-1.1/02-testing-and-acceptance.md)
 - [Phase 1.1.1 智能连线设计](Docs/phase-1.1.1/01-design.md)
 - [Phase 1.1.1 测试与验收](Docs/phase-1.1.1/02-testing-and-acceptance.md)
+- [Phase 1.2 运行持久化设计](Docs/phase-1.2/01-design.md)
+- [Phase 1.2 测试与验收](Docs/phase-1.2/02-testing-and-acceptance.md)
 - [Phase 0 测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
 - [Phase 0 已知问题](Docs/phase-0/05-known-issues.md)
 
