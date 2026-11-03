@@ -120,6 +120,7 @@ UI: 弹窗 → invoke respond_interaction({ requestId, approved })
 
 - `approved=true` → `InteractionDecision::Approved`；false → `Rejected`（节点以 `node.interaction_denied` 失败）。
 - 决议只生效一次；重复/未知 `requestId` 返回 `false`。
+- 等待上限 300 秒；超时以 `node.interaction_timeout` 失败，避免无人值守的运行永久挂起。
 - 运行取消时，挂起交互的等待任务随节点被丢弃，不会阻塞停止流程。
 - 当前只有 `core.approval` 使用该通道；协议本身与节点类型无关。
 

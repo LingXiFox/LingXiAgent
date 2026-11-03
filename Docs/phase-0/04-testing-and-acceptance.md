@@ -90,6 +90,8 @@ Rust (windows-latest)     success
 Frontend (TypeScript + Vite) success
 ```
 
+MSRV 修正后的 run [41583362328](https://github.com/LingXiFox/LingXiAgent/actions/runs/41583362328) 同样四 job 全绿。
+
 没有 Windows/Linux 实机或虚拟机可用，因此只承诺「代码与依赖在 CI 上可编译并通过单测」，不承诺「运行行为已验收」。CI 配置见 `.github/workflows/ci.yml`。
 
 macOS 打包命令 `pnpm -C apps/desktop tauri build` 实际通过（release 编译 1m 09s），产物：
