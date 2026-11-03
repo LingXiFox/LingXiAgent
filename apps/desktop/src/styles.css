@@ -451,13 +451,29 @@ textarea {
 }
 
 .react-flow__edge-path {
-  stroke: #4c5766;
+  stroke: #677283;
   stroke-width: 1.6;
+  transition: stroke 120ms ease;
+}
+
+.react-flow__edge-path.edge-path--data {
+  stroke: #677283;
+  stroke-dasharray: none;
+}
+
+.react-flow__edge-path.edge-path--control {
+  stroke: #b98cff;
+  stroke-width: 1.8;
+  stroke-dasharray: 5 4;
 }
 
 .react-flow__edge.selected .react-flow__edge-path,
 .react-flow__edge:hover .react-flow__edge-path {
   stroke: var(--amber);
+}
+
+.react-flow__edge-path.edge-path--fallback {
+  opacity: 0.72;
 }
 
 .react-flow__connection-path {

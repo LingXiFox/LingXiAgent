@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, type DragEvent } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -6,20 +6,25 @@ import {
   MiniMap,
   ReactFlow,
   useReactFlow,
+  useStore,
   type Connection,
   type Edge,
+  type EdgeTypes,
   type NodeTypes,
   type OnEdgesChange,
   type OnNodesChange,
   type Viewport,
 } from "@xyflow/react";
 
+import { nodeObstacles, ObstacleIndex } from "../lib/edgeGeometry";
 import type { LingXiNode } from "../lib/nodeData";
 import type { ViewportDoc } from "../lib/types";
 import { LingXiNode as LingXiNodeView } from "./LingXiNode";
 import { NODE_DRAG_TYPE } from "./NodeLibrary";
+import { EdgeRoutingProvider, SmartEdge } from "./SmartEdge";
 
 const nodeTypes: NodeTypes = { lingxi: LingXiNodeView };
+const edgeTypes: EdgeTypes = { smart: SmartEdge };
 
 interface CanvasProps {
   nodes: LingXiNode[];
@@ -47,6 +52,11 @@ export function Canvas({
   onViewportChange,
 }: CanvasProps) {
   const { screenToFlowPosition, setViewport } = useReactFlow();
+  const nodeLookup = useStore((state) => state.nodeLookup);
+  const routingIndex = useMemo(
+    () => new ObstacleIndex(nodeObstacles(nodeLookup.values())),
+    [nodeLookup, nodes],
+  );
 
   // Applying the stored viewport happens only on explicit loads (viewportKey),
   // never on every render, so panning is not fought by a re-sync loop.
@@ -78,35 +88,38 @@ export function Canvas({
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        onMoveEnd={(_event, viewport) => onViewportChange(viewport)}
-        nodeTypes={nodeTypes}
-        defaultEdgeOptions={{ type: "smoothstep" }}
-        fitView
-        fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-        minZoom={0.2}
-        maxZoom={2.5}
-        snapToGrid
-        snapGrid={[16, 16]}
-        proOptions={{ hideAttribution: true }}
-        deleteKeyCode={["Backspace", "Delete"]}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#262c35" />
-        <Controls showInteractive={false} position="bottom-right" />
-        <MiniMap
-          pannable
-          zoomable
-          position="top-right"
-          maskColor="rgba(8, 10, 14, 0.72)"
-          nodeColor="#4a5563"
-          style={{ width: 132, height: 88 }}
-        />
-      </ReactFlow>
+      <EdgeRoutingProvider index={routingIndex}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          onMoveEnd={(_event, viewport) => onViewportChange(viewport)}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          defaultEdgeOptions={{ type: "smart" }}
+          fitView
+          fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
+          minZoom={0.2}
+          maxZoom={2.5}
+          snapToGrid
+          snapGrid={[16, 16]}
+          proOptions={{ hideAttribution: true }}
+          deleteKeyCode={["Backspace", "Delete"]}
+        >
+          <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#262c35" />
+          <Controls showInteractive={false} position="bottom-right" />
+          <MiniMap
+            pannable
+            zoomable
+            position="top-right"
+            maskColor="rgba(8, 10, 14, 0.72)"
+            nodeColor="#4a5563"
+            style={{ width: 132, height: 88 }}
+          />
+        </ReactFlow>
+      </EdgeRoutingProvider>
       {nodes.length === 0 ? (
         <div className="canvas__empty">
           <p className="canvas__empty-title">拖拽左侧节点到画布开始</p>

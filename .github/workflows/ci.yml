@@ -86,3 +86,7 @@ jobs:
       - name: Type-check and build
         working-directory: apps/desktop
         run: pnpm build
+
+      - name: Edge routing tests
+        working-directory: apps/desktop
+        run: pnpm test:routing

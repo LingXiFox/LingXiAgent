@@ -49,12 +49,6 @@ const UNKNOWN_SPEC = (kind: string): NodeSpec => ({
   control: "normal",
 });
 
-const CONTROL_EDGE_STYLE = {
-  stroke: "#b98cff",
-  strokeWidth: 1.8,
-  strokeDasharray: "5 4",
-} as const;
-
 function edgeIsControl(edge: Edge): boolean {
   return Boolean((edge.data as { control?: boolean } | undefined)?.control);
 }
@@ -294,9 +288,8 @@ export default function App() {
             sourceHandle,
             target,
             targetHandle,
-            type: "smoothstep",
+            type: "smart",
             data: { control },
-            style: control ? CONTROL_EDGE_STYLE : undefined,
           },
         ];
       });
@@ -358,9 +351,8 @@ export default function App() {
             sourceHandle: edge.sourcePort,
             target: edge.target,
             targetHandle: edge.targetPort,
-            type: "smoothstep",
+            type: "smart",
             data: { control },
-            style: control ? CONTROL_EDGE_STYLE : undefined,
           };
         }),
       );
