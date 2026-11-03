@@ -17,7 +17,7 @@
 | 重复脱敏不产生 `[[REDACTED]]` | 通过 | 幂等单测 + 实机日志 |
 | 前端事件重放排序/去重/补洞/跳过 | 通过 | 6 项纯函数测试全部通过 |
 | 原有 48 项 Rust、13 项路由无回归 | 通过 | 54 项 Rust 全绿；路由 13/13 |
-| Windows/Linux CI | 待本次提交后验证 | 见第六节 |
+| Windows/Linux CI | 通过 | CI run 41656816027 四 job 全绿；仅编译+单测 |
 
 ## 二、自动化测试
 
@@ -123,12 +123,12 @@ ORDER BY seq;
 
 ## 六、CI
 
-本次提交推送后运行 GitHub Actions。预期四个 job：
+代码提交 `e528c4e` 推送后运行 [GitHub Actions run 41656816027](https://github.com/LingXiFox/LingXiAgent/actions/runs/41656816027)，四个 job 全部通过：
 
 - Frontend (TypeScript + Vite)：构建、13 项路由测试、6 项事件重放测试。
 - Rust (macos-latest)：格式、Clippy、`cargo test --workspace`。
 - Rust (ubuntu-24.04)：同上。
-- Rust (windows-latest)：同上。
+- Rust (windows-latest)：同上，耗时 4m37s。
 
 Windows/Linux 未做 Tauri 运行态验收；单实例锁、SQLite 路径、第二实例退出码、WebView 刷新等仅 macOS 实测。
 
