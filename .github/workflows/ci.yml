@@ -1,15 +1,13 @@
 name: CI
 
-# Phase 1.1 macOS gate. Deliberately minimal: one runner, no matrix, no third-party action
-# beyond checkout + cache. The chunked L3 harness described in Testing-and-Acceptance.md §八
-# arrives with the phase that needs it; this workflow is the permanent-red baseline for the
-# kernel tests and the empty-core startup contract (Kernel-Design.md §一, QA-013).
+# LingXiAgent 3.0 gate: Rust workspace + React frontend.
+# No third-party actions beyond checkout/setup-node. No secrets, no signing, no network tests.
 
 on:
   push:
-    branches: [rewrite/2.0]
+    branches: [rewrite/3.0]
   pull_request:
-    branches: [main]
+    branches: [main, rewrite/3.0]
   workflow_dispatch:
 
 permissions:
@@ -19,108 +17,72 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  macos:
-    name: macOS 26 (arm64) build & test
-    runs-on: macos-26
-    timeout-minutes: 30
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
-      - name: Select newest Xcode
-        # The package declares macOS 26, so the gate needs an SDK that SwiftPM accepts. Pick the
-        # newest toolchain installed on the image instead of pinning one that predates the SDK.
+      - name: Install Linux WebKit dependencies
+        if: runner.os == 'Linux'
         run: |
-          set -euo pipefail
-          XCODE_APP="$(find /Applications -maxdepth 1 -name 'Xcode_*.app' -print | sort -V | tail -n 1)"
-          if [ -n "$XCODE_APP" ]; then
-            sudo xcode-select -s "$XCODE_APP"
-            echo "xcode: $XCODE_APP"
-          else
-            echo "xcode: keeping the image default ($(xcode-select -p))"
-          fi
-          swift --version
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            curl wget file
 
-      - name: Cache SwiftPM artifacts
-        uses: actions/cache@v4
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend (TypeScript + Vite)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          path: |
-            .build
-            ~/Library/Caches/org.swift.swiftpm
-          key: spm-macos-${{ hashFiles('Package.swift', 'Package.resolved') }}
-          restore-keys: spm-macos-
+          node-version: 22
 
-      - name: Build products and tests
-        timeout-minutes: 15
-        run: swift build --build-tests
+      - name: Install pnpm
+        run: npm install -g pnpm@9.15.9
 
-      - name: Run tests
-        # The contract suite spawns real Plugin Host processes. Running it serially keeps the
-        # macOS runner from exhausting process/file-descriptor limits; it is still the full suite.
-        timeout-minutes: 30
-        run: swift test --no-parallel
+      - name: Install dependencies
+        working-directory: apps/desktop
+        run: pnpm install --frozen-lockfile
 
-      - name: TUI and settings end-to-end in a PTY
-        # The PTY tests spawn whole process trees; run them together but outside the main test
-        # process so they do not compete for the runner. Keyboard, mouse and the settings
-        # save/exit dialog must execute here, not be skipped for a missing environment variable.
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          LINGXI_RUN_TUI_PTY_TEST=1 swift test --filter 'TUI_|SETTINGS_' | tee /tmp/tui-pty.log
-          grep -E 'Test run with' /tmp/tui-pty.log
-
-      - name: Keychain and hidden credential input (no API keys)
-        # Uses a fresh Keychain service per test; never reads the runner's provider credentials.
-        # settingsDisabledCredentialIsolation covers the settings-page credential path specifically.
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          LINGXI_RUN_KEYCHAIN_TESTS=1 LINGXI_RUN_TUI_PTY_TEST=1 \
-            swift test --filter 'AUTH_|settingsDisabledCredentialIsolation|SETTINGS_004' | tee /tmp/keychain.log
-          grep -E 'Test run with' /tmp/keychain.log
-
-      - name: Reasoning selection, run diagnostics and kernel accounting
-        # Proves each protocol-scoped level reaches the real HTTP body (loopback), that the timing
-        # report is one small numeric event per run, and that kernel phases account for the whole
-        # run on a file-backed journal. No network, no API key.
-        timeout-minutes: 25
-        run: |
-          set -euo pipefail
-          swift test --no-parallel --filter 'REASONING_|TIMING_|PERF_' | tee /tmp/diagnostics.log
-          grep -E 'Test run with' /tmp/diagnostics.log
-
-      - name: Plugin settings and MiMo offline contract
-        # These tests are also in the main suite; this step makes their executed count explicit in
-        # the CI log and fails if they are skipped. No network or API key is involved.
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          swift test --no-parallel --filter 'settings|Settings|MiMo' | tee /tmp/settings.log
-          grep -E 'Test run with' /tmp/settings.log
-
-      - name: Empty core starts without a provider and writes no journal records
-        # QA-013: with no provider plugin the host must start, report guidance, and write nothing.
-        # A fresh data directory must stay clean — an empty journal is the whole point of the
-        # "cannot infer, but can boot" contract; recovery of an empty journal appends no records.
-        timeout-minutes: 5
-        run: |
-          set -euo pipefail
-          HOST=".build/debug/LingXiCoreHost"
-          test -x "$HOST"
-          DATA_DIR="$(mktemp -d)"
-          OUTPUT="$(LINGXI_DATA_DIR="$DATA_DIR" "$HOST")"
-          printf '%s\n' "$OUTPUT"
-
-          grep -Eq 'providers:[[:space:]]*0' <<<"$OUTPUT"
-          grep -q 'No provider plugin is active' <<<"$OUTPUT"
-          grep -q 'No inference was attempted' <<<"$OUTPUT"
-
-          JOURNAL="$DATA_DIR/events.jsonl"
-          if [ -s "$JOURNAL" ]; then
-            echo "::error::empty-core startup wrote journal records:"
-            cat "$JOURNAL"
-            exit 1
-          fi
-          echo "empty-core startup clean: guidance printed, no journal records"
+      - name: Type-check and build
+        working-directory: apps/desktop
+        run: pnpm build

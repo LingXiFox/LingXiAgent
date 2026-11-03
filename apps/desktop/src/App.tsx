@@ -1,0 +1,613 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  ReactFlowProvider,
+  type Connection,
+  type Edge,
+  useEdgesState,
+  useNodesState,
+} from "@xyflow/react";
+
+import { Canvas } from "./components/Canvas";
+import { InteractionDialog, type InteractionRequest } from "./components/InteractionDialog";
+import { LogPanel } from "./components/LogPanel";
+import { NodeLibrary } from "./components/NodeLibrary";
+import { ProblemsPanel } from "./components/ProblemsPanel";
+import { Toolbar } from "./components/Toolbar";
+import { WorkflowDialog } from "./components/WorkflowDialog";
+import { api, isPreview } from "./lib/api";
+import type { LogEntry, LogLevel, UiRunStatus } from "./lib/log";
+import type { LingXiNode } from "./lib/nodeData";
+import {
+  accepts,
+  defaultParams,
+  newWorkflow,
+  SCHEMA_VERSION,
+  toDocEdge,
+  type WorkflowMeta,
+} from "./lib/workflow";
+import type {
+  NodeSpec,
+  PositionDoc,
+  RunEvent,
+  RunStatus,
+  ValidationReport,
+  WorkflowDoc,
+  WorkflowNodeDoc,
+  WorkflowSummary,
+} from "./lib/types";
+
+const UNKNOWN_SPEC = (kind: string): NodeSpec => ({
+  kind,
+  title: kind,
+  category: "Unknown",
+  description: "This node kind is not registered in the current build.",
+  inputs: [],
+  outputs: [],
+  params: [],
+  capabilities: [],
+});
+
+function buildNode(
+  id: string,
+  spec: NodeSpec,
+  position: PositionDoc,
+  params: Record<string, unknown>,
+  label: string | null,
+  enabled: boolean,
+  onParamChange: LingXiNode["data"]["onParamChange"],
+  onToggleEnabled: LingXiNode["data"]["onToggleEnabled"],
+): LingXiNode {
+  return {
+    id,
+    type: "lingxi",
+    position,
+    data: {
+      kind: spec.kind,
+      label,
+      params,
+      enabled,
+      spec,
+      onParamChange,
+      onToggleEnabled,
+    },
+  };
+}
+
+export default function App() {
+  const [specs, setSpecs] = useState<NodeSpec[]>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<LingXiNode>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [meta, setMeta] = useState<WorkflowMeta>(() => {
+    const workflow = newWorkflow("未命名工作流");
+    return {
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      metadata: workflow.metadata,
+      viewport: workflow.viewport,
+    };
+  });
+  const [status, setStatus] = useState<UiRunStatus>("idle");
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [logOpen, setLogOpen] = useState(true);
+  const [report, setReport] = useState<ValidationReport | null>(null);
+  const [problemsOpen, setProblemsOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
+  const [pending, setPending] = useState<InteractionRequest | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [viewportKey, setViewportKey] = useState(0);
+  // Terminal events can arrive before runWorkflow resolves; remember them so the
+  // late `setStatus("running")` does not overwrite the real outcome.
+  const finishedRunsRef = useRef(new Map<string, RunStatus>());
+
+  const specMap = useMemo(() => new Map(specs.map((spec) => [spec.kind, spec])), [specs]);
+  const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
+  const metaRef = useRef(meta);
+  const statusRef = useRef(status);
+  const runIdRef = useRef<string | null>(null);
+  const logSeq = useRef(0);
+  const toastTimer = useRef<number | null>(null);
+
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+  metaRef.current = meta;
+  statusRef.current = status;
+
+  const pushLog = useCallback((level: LogLevel, text: string) => {
+    setLogs((previous) => {
+      const next = [...previous, { id: ++logSeq.current, at: Date.now(), level, text }];
+      return next.length > 600 ? next.slice(next.length - 600) : next;
+    });
+  }, []);
+
+  const flash = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2400);
+  }, []);
+
+  const handleParamChange = useCallback(
+    (nodeId: string, name: string, value: unknown) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === nodeId
+            ? { ...node, data: { ...node.data, params: { ...node.data.params, [name]: value } } }
+            : node,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  const handleToggleEnabled = useCallback(
+    (nodeId: string) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === nodeId ? { ...node, data: { ...node.data, enabled: !node.data.enabled } } : node,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
+  const addNode = useCallback(
+    (kind: string, position: PositionDoc) => {
+      const spec = specMap.get(kind);
+      if (!spec) {
+        pushLog("warn", "node kind " + kind + " is not in the catalog");
+        return;
+      }
+      const id = "n-" + crypto.randomUUID().slice(0, 8);
+      const node = buildNode(
+        id,
+        spec,
+        position,
+        defaultParams(spec),
+        null,
+        true,
+        handleParamChange,
+        handleToggleEnabled,
+      );
+      setNodes((current) => [...current, node]);
+    },
+    [handleParamChange, handleToggleEnabled, pushLog, setNodes, specMap],
+  );
+
+  const addFromLibrary = useCallback(
+    (kind: string) => {
+      const index = nodesRef.current.length;
+      addNode(kind, { x: 160 + (index % 4) * 60, y: 120 + (index % 5) * 50 });
+    },
+    [addNode],
+  );
+
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      const source = connection.source;
+      const target = connection.target;
+      const sourceHandle = connection.sourceHandle;
+      const targetHandle = connection.targetHandle;
+      if (!source || !target || !sourceHandle || !targetHandle) return;
+      if (source === target) {
+        flash("不能连接自身");
+        return;
+      }
+      const sourceNode = nodesRef.current.find((node) => node.id === source);
+      const targetNode = nodesRef.current.find((node) => node.id === target);
+      const sourcePort = sourceNode?.data.spec.outputs.find((port) => port.name === sourceHandle);
+      const targetPort = targetNode?.data.spec.inputs.find((port) => port.name === targetHandle);
+      if (!sourcePort || !targetPort) return;
+      if (!accepts(targetPort.dataType, sourcePort.dataType)) {
+        flash("端口类型不兼容：" + sourcePort.dataType + " → " + targetPort.dataType);
+        return;
+      }
+      const docEdge = toDocEdge(source, sourceHandle, target, targetHandle);
+      setEdges((current) => {
+        if (current.some((edge) => edge.id === docEdge.id)) return current;
+        const withoutOccupied = current.filter(
+          (edge) => !(edge.target === target && edge.targetHandle === targetHandle),
+        );
+        return [
+          ...withoutOccupied,
+          {
+            id: docEdge.id,
+            source,
+            sourceHandle,
+            target,
+            targetHandle,
+            type: "smoothstep",
+          },
+        ];
+      });
+    },
+    [flash, setEdges],
+  );
+
+  const buildDoc = useCallback((): WorkflowDoc => {
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      id: metaRef.current.id,
+      name: metaRef.current.name,
+      description: metaRef.current.description,
+      nodes: nodesRef.current.map<WorkflowNodeDoc>((node) => ({
+        id: node.id,
+        kind: node.data.kind,
+        label: node.data.label,
+        position: { x: node.position.x, y: node.position.y },
+        params: node.data.params,
+        enabled: node.data.enabled,
+      })),
+      edges: edgesRef.current.map((edge) => ({
+        id: edge.id,
+        source: edge.source,
+        sourcePort: edge.sourceHandle ?? "",
+        target: edge.target,
+        targetPort: edge.targetHandle ?? "",
+      })),
+      viewport: metaRef.current.viewport,
+      metadata: metaRef.current.metadata,
+    };
+  }, []);
+
+  const applyDoc = useCallback(
+    (document: WorkflowDoc) => {
+      const missing: string[] = [];
+      const nextNodes = document.nodes.map((node) => {
+        const known = specMap.get(node.kind);
+        if (!known) missing.push(node.kind);
+        return buildNode(
+          node.id,
+          known ?? UNKNOWN_SPEC(node.kind),
+          { x: node.position.x, y: node.position.y },
+          node.params ?? {},
+          node.label ?? null,
+          node.enabled ?? true,
+          handleParamChange,
+          handleToggleEnabled,
+        );
+      });
+      setNodes(nextNodes);
+      setEdges(
+        document.edges.map((edge) => ({
+          id: edge.id,
+          source: edge.source,
+          sourceHandle: edge.sourcePort,
+          target: edge.target,
+          targetHandle: edge.targetPort,
+          type: "smoothstep",
+        })),
+      );
+      setMeta({
+        id: document.id,
+        name: document.name,
+        description: document.description ?? "",
+        metadata: document.metadata ?? {},
+        viewport: document.viewport ?? { x: 0, y: 0, zoom: 1 },
+      });
+      setReport(null);
+      setProblemsOpen(false);
+      setViewportKey((key) => key + 1);
+      if (missing.length > 0) {
+        pushLog("warn", "loaded workflow references unregistered kinds: " + missing.join(", "));
+      }
+    },
+    [handleParamChange, handleToggleEnabled, pushLog, setEdges, setNodes, specMap],
+  );
+
+  const handleEvent = useCallback(
+    (event: RunEvent) => {
+      switch (event.type) {
+        case "run.started":
+          pushLog("info", "run started · " + event.workflowName + " · " + event.nodeCount + " nodes");
+          setStatus("running");
+          break;
+        case "node.started":
+          pushLog("info", "▶ " + event.label + " · " + event.kind);
+          break;
+        case "node.finished": {
+          const names = Object.keys(event.outputs);
+          const detail = names.length > 0 ? " · " + JSON.stringify(event.outputs) : "";
+          pushLog("success", "✓ " + event.label + " · " + event.durationMs + "ms" + detail);
+          break;
+        }
+        case "node.failed":
+          pushLog("error", "✕ " + event.label + " · " + event.code + ": " + event.message);
+          break;
+        case "node.skipped":
+          pushLog("warn", "⤼ " + event.label + " skipped · " + event.reason);
+          break;
+        case "node.cancelled":
+          pushLog("warn", "⏹ " + event.label + " cancelled");
+          break;
+        case "log":
+          pushLog(event.level === "debug" ? "info" : event.level, event.message);
+          break;
+        case "interaction.requested":
+          pushLog("warn", "⏸ waiting for approval · " + event.prompt);
+          setPending({ requestId: event.requestId, nodeId: event.nodeId, prompt: event.prompt });
+          setLogOpen(true);
+          break;
+        case "interaction.resolved":
+          pushLog("info", "interaction " + event.decision + " · " + event.nodeId);
+          setPending((current) =>
+            current && current.requestId === event.requestId ? null : current,
+          );
+          break;
+        case "run.finished":
+          pushLog(
+            event.status === "completed" ? "success" : event.status === "cancelled" ? "warn" : "error",
+            "run " + event.status + " · " + event.durationMs + "ms" + (event.detail ? " · " + event.detail : ""),
+          );
+          finishedRunsRef.current.set(event.runId, event.status);
+          setStatus(event.status);
+          runIdRef.current = null;
+          setPending(null);
+          break;
+      }
+    },
+    [pushLog],
+  );
+
+  useEffect(() => {
+    let dispose: (() => void) | undefined;
+    let cancelled = false;
+    api
+      .onRunEvent(handleEvent)
+      .then((cleanup) => {
+        if (cancelled) cleanup();
+        else dispose = cleanup;
+      })
+      .catch((error: unknown) => pushLog("error", "event bridge failed: " + String(error)));
+    return () => {
+      cancelled = true;
+      dispose?.();
+    };
+  }, [handleEvent, pushLog]);
+
+  useEffect(() => {
+    api
+      .listNodeSpecs()
+      .then((catalog) => {
+        setSpecs(catalog);
+        pushLog("info", "node catalog ready · " + catalog.length + " kinds");
+      })
+      .catch((error: unknown) => pushLog("error", "failed to load node catalog: " + String(error)));
+  }, [pushLog]);
+
+  const handleNew = useCallback(() => {
+    if (nodesRef.current.length > 0 && !window.confirm("新建会清空当前画布，继续？")) return;
+    const workflow = newWorkflow("未命名工作流");
+    setNodes([]);
+    setEdges([]);
+    setReport(null);
+    setProblemsOpen(false);
+    setMeta({
+      id: workflow.id,
+      name: workflow.name,
+      description: workflow.description,
+      metadata: workflow.metadata,
+      viewport: workflow.viewport,
+    });
+    setViewportKey((key) => key + 1);
+    pushLog("info", "new workflow");
+  }, [pushLog, setEdges, setNodes]);
+
+  const handleSave = useCallback(async () => {
+    const name = metaRef.current.name.trim();
+    if (!name) {
+      pushLog("error", "workflow name is empty");
+      setToast("请先填写工作流名称");
+      return;
+    }
+    setBusy(true);
+    try {
+      const summary = await api.saveWorkflow(name, buildDoc());
+      flash("已保存 · " + summary.name);
+      pushLog("success", "saved " + summary.name + " · " + summary.nodeCount + " nodes");
+    } catch (error) {
+      pushLog("error", "save failed: " + String(error));
+      flash("保存失败");
+    } finally {
+      setBusy(false);
+    }
+  }, [buildDoc, flash, pushLog]);
+
+  const openDialog = useCallback(async () => {
+    setDialogOpen(true);
+    setDialogBusy(true);
+    setDialogError(null);
+    try {
+      setWorkflows(await api.workflowList());
+    } catch (error) {
+      setDialogError(String(error));
+    } finally {
+      setDialogBusy(false);
+    }
+  }, []);
+
+  const loadNamed = useCallback(
+    async (name: string) => {
+      setDialogBusy(true);
+      setDialogError(null);
+      try {
+        const document = await api.loadWorkflow(name);
+        applyDoc(document);
+        setDialogOpen(false);
+        pushLog("success", "loaded " + name);
+      } catch (error) {
+        setDialogError(String(error));
+      } finally {
+        setDialogBusy(false);
+      }
+    },
+    [applyDoc, pushLog],
+  );
+
+  const deleteNamed = useCallback(
+    async (name: string) => {
+      try {
+        await api.deleteWorkflow(name);
+        setWorkflows((current) => current.filter((item) => item.name !== name));
+        pushLog("info", "deleted " + name);
+      } catch (error) {
+        setDialogError(String(error));
+      }
+    },
+    [pushLog],
+  );
+
+  const handleValidate = useCallback(async () => {
+    setBusy(true);
+    try {
+      const result = await api.validateWorkflow(buildDoc());
+      setReport(result);
+      setProblemsOpen(true);
+      pushLog(
+        result.ok ? "success" : "error",
+        "validation · " + result.errors + " errors · " + result.warnings + " warnings",
+      );
+    } catch (error) {
+      pushLog("error", "validation failed: " + String(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [buildDoc, pushLog]);
+
+  const handleRun = useCallback(async () => {
+    if (statusRef.current === "running") return;
+    if (nodesRef.current.length === 0) {
+      flash("画布还是空的");
+      return;
+    }
+    setBusy(true);
+    setPending(null);
+    try {
+      const response = await api.runWorkflow(buildDoc());
+      setReport(response.report);
+      setProblemsOpen(!response.report.ok);
+      if (!response.started || !response.runId) {
+        pushLog("error", "run rejected · " + response.report.errors + " validation errors");
+        setStatus("failed");
+        return;
+      }
+      runIdRef.current = response.runId;
+      setStatus(finishedRunsRef.current.get(response.runId) ?? "running");
+      setLogOpen(true);
+    } catch (error) {
+      pushLog("error", "run failed: " + String(error));
+      setStatus("failed");
+    } finally {
+      setBusy(false);
+    }
+  }, [buildDoc, flash, pushLog]);
+
+  const handleStop = useCallback(async () => {
+    const runId = runIdRef.current;
+    if (!runId) return;
+    try {
+      const stopped = await api.stopWorkflow(runId);
+      pushLog(stopped ? "warn" : "info", stopped ? "stop requested" : "run already finished");
+    } catch (error) {
+      pushLog("error", "stop failed: " + String(error));
+    }
+  }, [pushLog]);
+
+  const decide = useCallback(
+    async (approved: boolean) => {
+      if (!pending) return;
+      const requestId = pending.requestId;
+      setPending(null);
+      try {
+        await api.respondInteraction(requestId, approved);
+      } catch (error) {
+        pushLog("error", "interaction failed: " + String(error));
+      }
+    },
+    [pending, pushLog],
+  );
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void handleSave();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [handleSave]);
+
+  return (
+    <div className="app">
+      <NodeLibrary specs={specs} onAdd={addFromLibrary} disabled={status === "running"} />
+
+      <Toolbar
+        name={meta.name}
+        status={status}
+        nodeCount={nodes.length}
+        edgeCount={edges.length}
+        busy={busy}
+        preview={isPreview}
+        onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
+        onNew={handleNew}
+        onOpen={() => void openDialog()}
+        onSave={() => void handleSave()}
+        onValidate={() => void handleValidate()}
+        onRun={() => void handleRun()}
+        onStop={() => void handleStop()}
+      />
+
+      <main className="stage">
+        <ReactFlowProvider>
+          <Canvas
+            nodes={nodes}
+            edges={edges}
+            running={status === "running"}
+            viewport={meta.viewport}
+            viewportKey={viewportKey}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            onDropNode={addNode}
+            onViewportChange={(viewport) =>
+              setMeta((current) => ({
+                ...current,
+                viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
+              }))
+            }
+          />
+        </ReactFlowProvider>
+        {problemsOpen && report ? (
+          <ProblemsPanel report={report} onClose={() => setProblemsOpen(false)} />
+        ) : null}
+      </main>
+
+      <LogPanel
+        entries={logs}
+        open={logOpen}
+        status={status}
+        onToggle={() => setLogOpen((open) => !open)}
+        onClear={() => setLogs([])}
+      />
+
+      <WorkflowDialog
+        open={dialogOpen}
+        workflows={workflows}
+        busy={dialogBusy}
+        error={dialogError}
+        onClose={() => setDialogOpen(false)}
+        onLoad={(name) => void loadNamed(name)}
+        onDelete={(name) => void deleteNamed(name)}
+      />
+
+      <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
+
+      {toast ? <div className="toast">{toast}</div> : null}
+    </div>
+  );
+}

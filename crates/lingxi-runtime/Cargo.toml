@@ -1,0 +1,17 @@
+[package]
+name = "lingxi-runtime"
+description = "Node execution engine for LingXiAgent workflows"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+lingxi-spec = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }

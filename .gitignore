@@ -37,3 +37,12 @@ Server/models-site/public/publication.json.prev
 
 # Local CLI permission state (machine-local; contains host/username grants)
 .qoder/
+
+# LingXiAgent 3.0 — Rust workspace artifacts
+target/
+
+# LingXiAgent 3.0 — frontend dependencies
+node_modules/
+
+# Tauri generated bundle staging
+apps/desktop/src-tauri/gen/
