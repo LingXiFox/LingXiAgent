@@ -56,9 +56,9 @@ pub struct RunSummary {
 }
 
 pub struct Engine {
-    registry: Arc<NodeRegistry>,
-    policy: Arc<dyn CapabilityPolicy>,
-    interactions: Arc<dyn InteractionBroker>,
+    pub(crate) registry: Arc<NodeRegistry>,
+    pub(crate) policy: Arc<dyn CapabilityPolicy>,
+    pub(crate) interactions: Arc<dyn InteractionBroker>,
 }
 
 impl Engine {
@@ -134,6 +134,13 @@ impl Engine {
             };
         }
 
+        if requires_control_flow(workflow, self.registry.as_ref()) {
+            return crate::control_flow::execute(
+                self, workflow, run_id, control, sink, started, &seq,
+            )
+            .await;
+        }
+
         let order = match execution_order(workflow) {
             Some(order) => order,
             None => {
@@ -193,6 +200,8 @@ impl Engine {
                     code: "node.unknown_kind".to_string(),
                     message: format!("node kind {:?} is not registered", node.kind),
                     duration_ms: 0,
+                    activation: 1,
+                    iteration: None,
                 });
                 failed.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -208,6 +217,8 @@ impl Engine {
                     kind: node.kind.clone(),
                     label,
                     reason: "node is disabled".to_string(),
+                    activation: 0,
+                    iteration: None,
                 });
                 skipped.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -225,6 +236,8 @@ impl Engine {
                     kind: node.kind.clone(),
                     label,
                     reason: format!("upstream node {source} produced no output"),
+                    activation: 0,
+                    iteration: None,
                 });
                 skipped.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -236,6 +249,8 @@ impl Engine {
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 label: label.clone(),
+                activation: 1,
+                iteration: None,
             });
 
             let mut inputs: BTreeMap<String, serde_json::Value> = BTreeMap::new();
@@ -267,6 +282,8 @@ impl Engine {
                     code: error_codes::MISSING_INPUT.to_string(),
                     message,
                     duration_ms: 0,
+                    activation: 1,
+                    iteration: None,
                 });
                 failed.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -295,6 +312,8 @@ impl Engine {
                     code: error.code,
                     message: error.message,
                     duration_ms: 0,
+                    activation: 1,
+                    iteration: None,
                 });
                 failed.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -310,6 +329,8 @@ impl Engine {
                     code: error_codes::EXECUTOR_FAILED.to_string(),
                     message: format!("node kind {:?} has no executor", node.kind),
                     duration_ms: 0,
+                    activation: 1,
+                    iteration: None,
                 });
                 failed.push(node.id.clone());
                 unavailable.insert(node.id.clone());
@@ -340,6 +361,8 @@ impl Engine {
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
+                        activation: 1,
+                        iteration: None,
                     });
                     unavailable.insert(node.id.clone());
                     cancelled = true;
@@ -354,6 +377,8 @@ impl Engine {
                         label,
                         outputs: output.outputs.clone(),
                         duration_ms,
+                        activation: 1,
+                        iteration: None,
                     });
                     outputs.insert(node.id.clone(), output.outputs);
                 }
@@ -367,6 +392,8 @@ impl Engine {
                         code: error.code,
                         message: error.message,
                         duration_ms,
+                        activation: 1,
+                        iteration: None,
                     });
                     failed.push(node.id.clone());
                     unavailable.insert(node.id.clone());
@@ -425,7 +452,7 @@ impl Engine {
     }
 }
 
-fn emit_log(
+pub(crate) fn emit_log(
     sink: &dyn EventSink,
     run_id: &str,
     seq: &AtomicU64,
@@ -443,8 +470,20 @@ fn emit_log(
     });
 }
 
-fn elapsed_ms(started: Instant) -> u64 {
+pub(crate) fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis() as u64
+}
+
+fn requires_control_flow(workflow: &Workflow, registry: &NodeRegistry) -> bool {
+    workflow
+        .edges
+        .iter()
+        .any(|edge| edge.kind == lingxi_spec::EdgeKind::Control)
+        || workflow.nodes.iter().any(|node| {
+            registry
+                .spec(&node.kind)
+                .is_some_and(|spec| spec.control != lingxi_spec::ControlKind::Normal)
+        })
 }
 
 /// Kahn's algorithm with a stable tie-break on document order. Returns None

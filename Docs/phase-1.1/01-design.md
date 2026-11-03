@@ -1,6 +1,6 @@
 # Phase 1.1 · 控制流与自定义循环设计
 
-状态：设计草案，实现前提交。
+状态：已实现。Rust 自动化测试与 macOS 实机 Tauri 验收通过；Windows/Linux 仅通过 CI 编译与单元测试，运行行为未验收。
 范围：条件分支、受控循环、重复激活调度、静态循环校验、最小 UI 适配。
 
 ## 一、目标与非目标
@@ -43,7 +43,7 @@
 - 控制角色：`loop_gate`
 - 输入：`start`、`next`、`stop`（Any，均为 control）
 - 输出：`continue`、`exit`（Any，均为 control）
-- 参数：`maxIterations: number = 10`（整数 ≥ 1）、`timeoutMs: number = 60000`（整数 ≥ 1）
+- 参数：`maxIterations`（整数 1..=1_000_000）、`timeoutMs`（整数 1..=86_400_000），两者都必须显式写入工作流；UI 新建 Loop Gate 时预填 10 / 60000，但 Runtime 与校验器不提供隐式默认值。
 - 语义：由 Engine 驱动，不走普通 executor。
   - `start`：第 1 次迭代，输出 `continue`。
   - `next`：迭代 +1，预算内输出 `continue`，否则失败 `loop.budget_exhausted`。
@@ -116,7 +116,7 @@ now > startedAt + timeout --> Failed(loop.timeout)
    - 移除 gate（及其边）后 SCC 内仍有环 → `loop.uncontrolled_cycle`（存在绕过 Loop Gate 的闭合路径）。
    - gate 没有 `exit` 出边指向 SCC 外 → `loop.no_exit_path`。
    - gate 缺少 `start` 或 `next` 入边 → `loop.missing_trigger`。
-2. gate 预算参数缺失/非整数/越界 → `loop.invalid_budget`。
+2. 任何 Loop Gate（无论是否成环）预算参数缺失/非整数/越界 → `loop.invalid_budget`。
 3. branch/gate 的控制输出边必须是 `kind: "control"` → `edge.control_required`。
 4. 普通无环图行为不变；自环、悬空、类型、端口、必填输入规则保持。
 
@@ -129,7 +129,7 @@ now > startedAt + timeout --> Failed(loop.timeout)
 - 节点库自动出现 4 个新节点。
 - Condition 两个输出 handle；Loop Gate 三个输入、两个输出；控制边用虚线 + 冷色描边。
 - 节点头部显示 `迭代 N` / `激活 N` 徽标；日志显示 loop iteration / exit / budget exhausted。
-- 工具栏新增「循环演示」：加载 Counter → Condition → Loop Gate → Log 图并可直接运行。
+- 工具栏「示例」加载 Counter → Condition → Loop Gate → Log 图并可直接运行。
 - 校验问题仍由底部 ProblemsPanel 展示，新增 code 直接显示路径。
 
 演示拓扑：
@@ -150,7 +150,7 @@ loop_gate.exit ──> log.value
 
 Rust：
 
-1. 既有 21 个测试全部保留且通过。
+1. Phase 0 的 21 个测试全部保留且通过；新增 15 个控制流测试，总计 36 个。
 2. Condition true 只执行 true 分支。
 3. Condition false 只执行 false 分支。
 4. 循环 3 次后 exit，Counter 输出 1/2/3。
@@ -172,3 +172,12 @@ CI：macOS / Ubuntu / Windows 全绿。
 3. 测试：校验 + 引擎 10 项。
 4. 前端：类型、控制边、节点徽标、演示按钮。
 5. 文档、截图、真实 Tauri 验证、CI、提交。
+
+## 九、实现结果
+
+- spec：`Edge.kind`、`NodeSpec.control`、`PortSpec.control` 已落地；`crates/lingxi-spec/src/validation.rs` 使用迭代版 Kosaraju SCC，Phase 0 的无环校验路径保持原行为。
+- runtime：`crates/lingxi-runtime/src/control_flow.rs` 实现控制调度器与 Loop Gate 状态机；普通 DAG 仍走原有 Kahn 调度器。具体差异见其模块文档。
+- 内置节点：`core.boolean_input`、`core.condition`、`core.loop_gate`、`core.counter`，内置节点总数为 11。
+- 校验：新增 6 个稳定 code（`loop.multiple_gates`、`loop.uncontrolled_cycle`、`loop.no_exit_path`、`loop.missing_trigger`、`loop.invalid_budget`、`edge.control_required`），总数 26。
+- 前端：控制边虚线样式、Condition/Loop Gate handle、迭代徽标、示例工作流及自定义确认弹窗；未新增右栏或仪表盘。
+- 验收证据、测试映射、平台矩阵与已知限制见 `Docs/phase-1.1/02-testing-and-acceptance.md`。

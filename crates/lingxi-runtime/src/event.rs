@@ -49,6 +49,10 @@ pub enum RunEvent {
         node_id: String,
         kind: String,
         label: String,
+        #[serde(default)]
+        activation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        iteration: Option<u32>,
     },
     #[serde(rename = "node.finished")]
     NodeFinished {
@@ -58,6 +62,10 @@ pub enum RunEvent {
         label: String,
         outputs: BTreeMap<String, Value>,
         duration_ms: u64,
+        #[serde(default)]
+        activation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        iteration: Option<u32>,
     },
     #[serde(rename = "node.failed")]
     NodeFailed {
@@ -68,6 +76,10 @@ pub enum RunEvent {
         code: String,
         message: String,
         duration_ms: u64,
+        #[serde(default)]
+        activation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        iteration: Option<u32>,
     },
     #[serde(rename = "node.skipped")]
     NodeSkipped {
@@ -76,6 +88,10 @@ pub enum RunEvent {
         kind: String,
         label: String,
         reason: String,
+        #[serde(default)]
+        activation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        iteration: Option<u32>,
     },
     #[serde(rename = "node.cancelled")]
     NodeCancelled {
@@ -83,6 +99,10 @@ pub enum RunEvent {
         node_id: String,
         kind: String,
         label: String,
+        #[serde(default)]
+        activation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        iteration: Option<u32>,
     },
     #[serde(rename = "log")]
     Log {

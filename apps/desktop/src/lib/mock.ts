@@ -13,7 +13,7 @@ import type {
   WorkflowSummary,
 } from "./types";
 
-const specs: NodeSpec[] = [
+const rawSpecs: NodeSpec[] = [
   {
     kind: "core.text_input",
     title: "Text Input",
@@ -77,6 +77,73 @@ const specs: NodeSpec[] = [
     capabilities: [],
   },
   {
+    kind: "core.boolean_input",
+    title: "Boolean Input",
+    category: "Input",
+    description: "Emits a fixed boolean value.",
+    inputs: [],
+    outputs: [{ name: "boolean", label: "Boolean", dataType: "boolean", required: false }],
+    params: [
+      { name: "value", label: "Value", kind: "boolean", defaultValue: false, required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.condition",
+    title: "Condition",
+    category: "Control",
+    description: "Routes the payload to exactly one Boolean branch.",
+    control: "branch",
+    inputs: [
+      { name: "condition", label: "Condition", dataType: "boolean", required: true },
+      { name: "payload", label: "Payload", dataType: "any", required: false },
+    ],
+    outputs: [
+      { name: "true", label: "True", dataType: "any", required: false, control: true },
+      { name: "false", label: "False", dataType: "any", required: false, control: true },
+    ],
+    params: [],
+    capabilities: [],
+  },
+  {
+    kind: "core.loop_gate",
+    title: "Loop Gate",
+    category: "Control",
+    description: "Drives a user-defined loop with an iteration and time budget.",
+    control: "loop_gate",
+    inputs: [
+      { name: "start", label: "Start", dataType: "any", required: false, control: true },
+      { name: "next", label: "Next", dataType: "any", required: false, control: true },
+      { name: "stop", label: "Stop", dataType: "any", required: false, control: true },
+    ],
+    outputs: [
+      { name: "continue", label: "Continue", dataType: "any", required: false, control: true },
+      { name: "exit", label: "Exit", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "maxIterations", label: "Max iterations", kind: "number", defaultValue: 10, required: false, options: [] },
+      { name: "timeoutMs", label: "Timeout (ms)", kind: "number", defaultValue: 60000, required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.counter",
+    title: "Counter",
+    category: "Logic",
+    description: "Increments the incoming value and reports when a threshold is reached.",
+    inputs: [{ name: "value", label: "Value", dataType: "number", required: false }],
+    outputs: [
+      { name: "number", label: "Number", dataType: "number", required: false },
+      { name: "done", label: "Done", dataType: "boolean", required: false },
+    ],
+    params: [
+      { name: "start", label: "Start", kind: "number", defaultValue: 0, required: false, options: [] },
+      { name: "step", label: "Step", kind: "number", defaultValue: 1, required: false, options: [] },
+      { name: "threshold", label: "Threshold", kind: "number", defaultValue: 3, required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
     kind: "core.log",
     title: "Log",
     category: "Output",
@@ -109,6 +176,13 @@ const specs: NodeSpec[] = [
   },
 ];
 
+const specs: NodeSpec[] = rawSpecs.map((spec) => ({
+  ...spec,
+  control: spec.control ?? "normal",
+  inputs: spec.inputs.map((port) => ({ ...port, control: port.control ?? false })),
+  outputs: spec.outputs.map((port) => ({ ...port, control: port.control ?? false })),
+}));
+
 const specByKind = new Map(specs.map((spec) => [spec.kind, spec]));
 
 function reportFor(workflow: WorkflowDoc, issues: ValidationIssue[]): ValidationReport {
@@ -122,6 +196,15 @@ function reportFor(workflow: WorkflowDoc, issues: ValidationIssue[]): Validation
     warnings: issues.length - errors,
     issues,
   };
+}
+
+function usesControlFlow(workflow: WorkflowDoc): boolean {
+  return (
+    workflow.nodes.some((node) => {
+      const control = specByKind.get(node.kind)?.control;
+      return control === "branch" || control === "loop_gate";
+    }) || workflow.edges.some((edge) => edge.kind === "control")
+  );
 }
 
 function validate(workflow: WorkflowDoc): ValidationReport {
@@ -194,6 +277,18 @@ export function createMockTransport(): Transport {
     },
 
     async runWorkflow(workflow): Promise<RunStartResponse> {
+      if (usesControlFlow(workflow)) {
+        const report = reportFor(workflow, [
+          {
+            code: "mock.control_flow_unsupported",
+            severity: "error",
+            path: "workflow",
+            message:
+              "control flow is executed by the Rust runtime; the browser preview cannot run this workflow",
+          },
+        ]);
+        return { started: false, runId: null, report };
+      }
       const report = validate(workflow);
       if (!report.ok) {
         return { started: false, runId: null, report };
@@ -227,17 +322,32 @@ export function createMockTransport(): Transport {
         });
         for (const node of workflow.nodes) {
           if (cancelled) {
-            emit({ type: "node.cancelled", runId, nodeId: node.id, kind: node.kind, label: node.label ?? node.kind });
+            emit({
+              type: "node.cancelled",
+              runId,
+              nodeId: node.id,
+              kind: node.kind,
+              label: node.label ?? node.kind,
+              activation: 1,
+            });
             break;
           }
           const spec = specByKind.get(node.kind);
           if (!spec) continue;
           const label = node.label?.trim() || spec.title;
           if (!node.enabled) {
-            emit({ type: "node.skipped", runId, nodeId: node.id, kind: node.kind, label, reason: "node is disabled" });
+            emit({
+              type: "node.skipped",
+              runId,
+              nodeId: node.id,
+              kind: node.kind,
+              label,
+              reason: "node is disabled",
+              activation: 1,
+            });
             continue;
           }
-          emit({ type: "node.started", runId, nodeId: node.id, kind: node.kind, label });
+          emit({ type: "node.started", runId, nodeId: node.id, kind: node.kind, label, activation: 1 });
           await delay(240);
           if (node.kind === "core.approval") {
             const requestId = "req-" + ++counter;
@@ -270,6 +380,7 @@ export function createMockTransport(): Transport {
                 code: "node.interaction_denied",
                 message: "approval was rejected",
                 durationMs: 0,
+                activation: 1,
               });
               finish("failed", "approval was rejected");
               return;
@@ -325,6 +436,7 @@ export function createMockTransport(): Transport {
             label,
             outputs: out,
             durationMs: 240,
+            activation: 1,
           });
         }
         stopHandlers.delete(runId);

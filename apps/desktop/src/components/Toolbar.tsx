@@ -9,6 +9,7 @@ interface ToolbarProps {
   preview: boolean;
   onNameChange: (name: string) => void;
   onNew: () => void;
+  onDemo: () => void;
   onOpen: () => void;
   onSave: () => void;
   onValidate: () => void;
@@ -33,6 +34,7 @@ export function Toolbar({
   preview,
   onNameChange,
   onNew,
+  onDemo,
   onOpen,
   onSave,
   onValidate,
@@ -65,6 +67,9 @@ export function Toolbar({
       <div className="toolbar__right">
         <button type="button" className="btn btn--ghost" onClick={onNew} disabled={running}>
           新建
+        </button>
+        <button type="button" className="btn btn--ghost" onClick={onDemo} disabled={running}>
+          示例
         </button>
         <button type="button" className="btn btn--ghost" onClick={onOpen} disabled={running}>
           打开

@@ -1,15 +1,15 @@
 # 泠溪 · LingXiAgent 3.0
 
-跨平台、节点式 Agent 工作流平台。Phase 0 完成基础框架：Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布，工作流是可序列化 JSON，执行全部在 Rust 侧。
+跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环。工作流是可序列化 JSON，执行全部在 Rust 侧。
 
-![Phase 0 running workflow](Docs/phase-0/assets/phase-0-run.jpg)
+![Phase 1.1 循环演示](Docs/phase-1.1/assets/phase-1.1-loop-demo.png)
 
 ## 当前状态
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
-- 阶段：Phase 0 — 框架与编辑器，不含真实 LLM 推理
+- 阶段：Phase 1.1 — 条件分支与受控循环，不含真实 LLM 推理
 - 验收：macOS 全项通过；Windows / Linux CI 编译与单测通过，运行行为**未验收**
-- 测试：`cargo test --workspace` 21 passed；前端 `tsc` + `vite build` 通过
+- 测试：`cargo test --workspace` 36 passed；前端 `tsc` + `vite build` 通过
 
 ## 技术栈
 
@@ -25,11 +25,12 @@
 
 ```
 crates/lingxi-spec/      工作流模型、节点规格、校验（纯数据，无 IO）
-crates/lingxi-runtime/   执行引擎、内置节点、事件、能力策略、交互总线
+crates/lingxi-runtime/   执行引擎、控制调度器、内置节点、事件、能力策略、交互总线
 apps/desktop/            React UI + Tauri 壳
   src/                   画布、节点库、日志、对话框、transport
   src-tauri/             9 个 command、工作流存储、事件桥
-Docs/phase-0/            架构、节点规格、接口、测试、已知问题
+Docs/phase-0/            基础架构、节点规格、接口、测试、已知问题
+Docs/phase-1.1/          控制流设计、测试与验收记录
 Docs/reference/2.0/      2.0 历史文档（只读参考）
 ```
 
@@ -64,11 +65,12 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - ComfyUI 式布局：左侧节点库、中央自由画布、右上运行/终止、底部可收起日志
 - 节点创建（拖入/点击）、移动、缩放、删除、连线、断线、参数内联编辑
 - 工作流保存 / 打开 / 删除，视口一并持久化
-- Rust 校验并返回结构化问题（20 个稳定 code）
-- Rust 顺序执行（Kahn 拓扑序），支持取消、失败隔离、禁用节点、能力拒绝
-- 运行时事件流：节点状态、日志、交互请求
+- Rust 校验并返回结构化问题（26 个稳定 code，含 6 个循环/控制边规则）
+- Rust 顺序执行：普通 DAG 走 Kahn 拓扑序，含控制节点的图走 token/activation 调度器；支持取消、失败隔离、禁用节点、能力拒绝
+- 条件分支（Condition）与受控循环（Loop Gate）：显式预算、迭代计数、超时、预算耗尽失败、取消中断
+- 运行时事件流：节点状态、迭代/激活编号、日志、交互请求
 - 交互节点（Approval Gate）批准/拒绝，运行暂停等待
-- 7 个内置节点：Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log
+- 11 个内置节点：Boolean Input、Condition、Loop Gate、Counter、Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log
 
 ## 文档
 
@@ -76,12 +78,14 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - [架构说明](Docs/phase-0/01-architecture.md)
 - [Node Specification v1](Docs/phase-0/02-node-spec-v1.md)
 - [运行时接口](Docs/phase-0/03-runtime-interfaces.md)
-- [测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
-- [已知问题](Docs/phase-0/05-known-issues.md)
+- [Phase 1.1 控制流设计](Docs/phase-1.1/01-design.md)
+- [Phase 1.1 测试与验收](Docs/phase-1.1/02-testing-and-acceptance.md)
+- [Phase 0 测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
+- [Phase 0 已知问题](Docs/phase-0/05-known-issues.md)
 
 ## 设计约束
 
-- 不内置固定 Agent Loop；节点即执行单元
+- 不内置固定 Agent Loop；节点即执行单元，循环由 Loop Gate 与用户连边组合
 - 前端不执行工作流，只编辑与提交命令
 - 拖动/缩放等高频交互不调用 Rust
 - 核心不依赖 macOS 专属能力

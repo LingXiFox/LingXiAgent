@@ -1,8 +1,8 @@
 //! Structural validation of a workflow document. Validation is pure: it never
 //! executes nodes and it never mutates the document.
 
-use crate::model::{Workflow, SCHEMA_VERSION};
-use crate::node::{NodeSpec, ParamKind, ParamSpec};
+use crate::model::{EdgeKind, Workflow, SCHEMA_VERSION};
+use crate::node::{ControlKind, NodeSpec, ParamKind, ParamSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
@@ -30,6 +30,12 @@ pub mod codes {
     pub const DUPLICATE_EDGE: &str = "edge.duplicate";
     pub const UNCONNECTED_INPUT: &str = "port.unconnected";
     pub const CYCLE: &str = "graph.cycle";
+    pub const CONTROL_REQUIRED: &str = "edge.control_required";
+    pub const LOOP_MULTIPLE_GATES: &str = "loop.multiple_gates";
+    pub const LOOP_UNCONTROLLED_CYCLE: &str = "loop.uncontrolled_cycle";
+    pub const LOOP_NO_EXIT_PATH: &str = "loop.no_exit_path";
+    pub const LOOP_MISSING_TRIGGER: &str = "loop.missing_trigger";
+    pub const LOOP_INVALID_BUDGET: &str = "loop.invalid_budget";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,12 +163,17 @@ pub fn validate(workflow: &Workflow, resolver: &dyn NodeKindResolver) -> Validat
                 format!("{path}.kind"),
                 format!("unknown node kind {:?}", node.kind),
             )),
-            Some(spec) => validate_params(node, spec, &path, &mut issues),
+            Some(spec) => {
+                validate_params(node, spec, &path, &mut issues);
+                if spec.control == ControlKind::LoopGate {
+                    validate_gate_budget(node, index, &mut issues);
+                }
+            }
         }
     }
 
     validate_edges(workflow, resolver, &mut issues);
-    validate_cycle(workflow, &mut issues);
+    validate_control_flow(workflow, resolver, &mut issues);
 
     ValidationReport::new(workflow, issues)
 }
@@ -365,6 +376,16 @@ fn validate_edges(
                         ),
                     ));
                 }
+                if (output.control || input.control) && edge.kind != EdgeKind::Control {
+                    issues.push(ValidationIssue::error(
+                        codes::CONTROL_REQUIRED,
+                        format!("{path}.kind"),
+                        format!(
+                            "connection {:?} -> {:?} uses a control port and must be a control edge",
+                            edge.source_port, edge.target_port
+                        ),
+                    ));
+                }
             }
         }
     }
@@ -402,52 +423,269 @@ fn validate_edges(
     }
 }
 
-fn validate_cycle(workflow: &Workflow, issues: &mut Vec<ValidationIssue>) {
+fn validate_control_flow(
+    workflow: &Workflow,
+    resolver: &dyn NodeKindResolver,
+    issues: &mut Vec<ValidationIssue>,
+) {
     let count = workflow.nodes.len();
     let mut index: HashMap<&str, usize> = HashMap::with_capacity(count);
     for (position, node) in workflow.nodes.iter().enumerate() {
         index.entry(node.id.as_str()).or_insert(position);
     }
 
-    let mut indegree = vec![0usize; count];
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); count];
     for edge in &workflow.edges {
-        if edge.source == edge.target {
-            continue;
-        }
         if let (Some(&source), Some(&target)) = (
             index.get(edge.source.as_str()),
             index.get(edge.target.as_str()),
         ) {
             adjacency[source].push(target);
-            indegree[target] += 1;
         }
     }
 
-    let mut queue: VecDeque<usize> = (0..count).filter(|&i| indegree[i] == 0).collect();
+    let components = strongly_connected_components(&adjacency);
+    let mut component_of = vec![usize::MAX; count];
+    for (component_id, component) in components.iter().enumerate() {
+        for &node in component {
+            component_of[node] = component_id;
+        }
+    }
+
+    for (component_id, component) in components.iter().enumerate() {
+        let cyclic = component.len() > 1
+            || component
+                .first()
+                .is_some_and(|&node| adjacency[node].contains(&node));
+        if !cyclic {
+            continue;
+        }
+
+        let gates: Vec<usize> = component
+            .iter()
+            .copied()
+            .filter(|&node| {
+                resolver
+                    .node_spec(&workflow.nodes[node].kind)
+                    .is_some_and(|spec| spec.control == ControlKind::LoopGate)
+            })
+            .collect();
+
+        if gates.is_empty() {
+            let names: BTreeSet<&str> = component
+                .iter()
+                .map(|&node| workflow.nodes[node].id.as_str())
+                .collect();
+            issues.push(ValidationIssue::error(
+                codes::CYCLE,
+                "edges",
+                format!(
+                    "graph contains an uncontrolled cycle involving nodes: {}",
+                    names.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+            continue;
+        }
+        if gates.len() > 1 {
+            let names: BTreeSet<&str> = gates
+                .iter()
+                .map(|&node| workflow.nodes[node].id.as_str())
+                .collect();
+            issues.push(ValidationIssue::error(
+                codes::LOOP_MULTIPLE_GATES,
+                "edges",
+                format!(
+                    "cycle contains more than one loop gate: {}",
+                    names.into_iter().collect::<Vec<_>>().join(", ")
+                ),
+            ));
+            continue;
+        }
+
+        let gate = gates[0];
+        let gate_node = &workflow.nodes[gate];
+        if has_cycle_without(component, gate, &adjacency) {
+            issues.push(ValidationIssue::error(
+                codes::LOOP_UNCONTROLLED_CYCLE,
+                format!("nodes[{gate}].kind"),
+                format!(
+                    "cycle still contains a feedback path after removing loop gate {:?}",
+                    gate_node.id
+                ),
+            ));
+        }
+
+        let has_exit = workflow.outgoing(&gate_node.id).any(|edge| {
+            edge.source_port == "exit"
+                && index
+                    .get(edge.target.as_str())
+                    .is_some_and(|&target| component_of[target] != component_id)
+        });
+        if !has_exit {
+            issues.push(ValidationIssue::error(
+                codes::LOOP_NO_EXIT_PATH,
+                format!("nodes[{gate}].outputs.exit"),
+                format!(
+                    "loop gate {:?} has no exit edge leaving the cycle",
+                    gate_node.id
+                ),
+            ));
+        }
+
+        let has_start = workflow
+            .incoming(&gate_node.id)
+            .any(|edge| edge.target_port == "start");
+        let has_next = workflow
+            .incoming(&gate_node.id)
+            .any(|edge| edge.target_port == "next");
+        if !has_start || !has_next {
+            let missing = match (has_start, has_next) {
+                (false, false) => "start and next",
+                (false, true) => "start",
+                (true, false) => "next",
+                (true, true) => unreachable!(),
+            };
+            issues.push(ValidationIssue::error(
+                codes::LOOP_MISSING_TRIGGER,
+                format!("nodes[{gate}].inputs"),
+                format!(
+                    "loop gate {:?} is missing the {missing} trigger",
+                    gate_node.id
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_gate_budget(
+    node: &crate::model::WorkflowNode,
+    index: usize,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    for (name, maximum) in [
+        ("maxIterations", 1_000_000u64),
+        ("timeoutMs", 86_400_000u64),
+    ] {
+        // NodeSpec defaults prefill the editor, but a serialized loop must carry
+        // an explicit budget. A missing parameter is not silently replaced.
+        let value = node.params.get(name);
+        let valid = value
+            .and_then(positive_integer)
+            .is_some_and(|value| value <= maximum);
+        if !valid {
+            issues.push(ValidationIssue::error(
+                codes::LOOP_INVALID_BUDGET,
+                format!("nodes[{index}].params.{name}"),
+                format!(
+                    "loop gate parameter {name:?} must be set to an integer between 1 and {maximum}"
+                ),
+            ));
+        }
+    }
+}
+
+fn positive_integer(value: &Value) -> Option<u64> {
+    if let Some(value) = value.as_u64() {
+        return (value > 0).then_some(value);
+    }
+    let value = value.as_f64()?;
+    if value >= 1.0 && value.fract() == 0.0 {
+        Some(value as u64)
+    } else {
+        None
+    }
+}
+
+fn has_cycle_without(component: &[usize], gate: usize, adjacency: &[Vec<usize>]) -> bool {
+    let members: HashSet<usize> = component
+        .iter()
+        .copied()
+        .filter(|&node| node != gate)
+        .collect();
+    let mut indegree = vec![0usize; adjacency.len()];
+    for &source in &members {
+        for &target in &adjacency[source] {
+            if members.contains(&target) {
+                indegree[target] += 1;
+            }
+        }
+    }
+    let mut queue: VecDeque<usize> = members
+        .iter()
+        .copied()
+        .filter(|&node| indegree[node] == 0)
+        .collect();
     let mut visited = 0usize;
     while let Some(node) = queue.pop_front() {
         visited += 1;
-        for &next in &adjacency[node] {
-            indegree[next] -= 1;
-            if indegree[next] == 0 {
-                queue.push_back(next);
+        for &target in &adjacency[node] {
+            if !members.contains(&target) {
+                continue;
+            }
+            indegree[target] -= 1;
+            if indegree[target] == 0 {
+                queue.push_back(target);
+            }
+        }
+    }
+    visited < members.len()
+}
+
+/// Iterative Kosaraju. Iterative on purpose: validation must not overflow the
+/// stack on large imported workflows.
+fn strongly_connected_components(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let count = adjacency.len();
+    let mut visited = vec![false; count];
+    let mut order = Vec::with_capacity(count);
+
+    for start in 0..count {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut stack = vec![(start, 0usize)];
+        while let Some((node, next)) = stack.last_mut() {
+            if *next < adjacency[*node].len() {
+                let target = adjacency[*node][*next];
+                *next += 1;
+                if !visited[target] {
+                    visited[target] = true;
+                    stack.push((target, 0));
+                }
+            } else {
+                order.push(*node);
+                stack.pop();
             }
         }
     }
 
-    if visited < count {
-        let remaining: BTreeSet<&str> = (0..count)
-            .filter(|&i| indegree[i] > 0)
-            .map(|i| workflow.nodes[i].id.as_str())
-            .collect();
-        issues.push(ValidationIssue::error(
-            codes::CYCLE,
-            "edges",
-            format!(
-                "graph contains a cycle involving nodes: {}",
-                remaining.into_iter().collect::<Vec<_>>().join(", ")
-            ),
-        ));
+    let mut reverse = vec![Vec::new(); count];
+    for (source, targets) in adjacency.iter().enumerate() {
+        for &target in targets {
+            reverse[target].push(source);
+        }
     }
+
+    let mut assigned = vec![false; count];
+    let mut components = Vec::new();
+    for &start in order.iter().rev() {
+        if assigned[start] {
+            continue;
+        }
+        assigned[start] = true;
+        let mut component = Vec::new();
+        let mut stack = vec![start];
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for &source in &reverse[node] {
+                if !assigned[source] {
+                    assigned[source] = true;
+                    stack.push(source);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
 }

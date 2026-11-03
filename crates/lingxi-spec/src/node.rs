@@ -55,6 +55,24 @@ impl fmt::Display for DataType {
     }
 }
 
+/// How the runtime treats a node beyond executing it once.
+///
+/// `Normal` nodes are ordinary data producers/consumers. `Branch` nodes route
+/// exactly one of their control outputs. `LoopGate` nodes are driven by the
+/// engine's loop controller and never by a normal executor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlKind {
+    #[default]
+    Normal,
+    Branch,
+    LoopGate,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParamKind {
@@ -89,6 +107,9 @@ pub struct PortSpec {
     pub data_type: DataType,
     #[serde(default)]
     pub required: bool,
+    /// True when this port carries an execution trigger rather than plain data.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub control: bool,
 }
 
 impl PortSpec {
@@ -98,11 +119,17 @@ impl PortSpec {
             label: label.into(),
             data_type,
             required: false,
+            control: false,
         }
     }
 
     pub fn required(mut self) -> Self {
         self.required = true;
+        self
+    }
+
+    pub fn control(mut self) -> Self {
+        self.control = true;
         self
     }
 }
@@ -210,6 +237,8 @@ pub struct NodeSpec {
     pub params: Vec<ParamSpec>,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    #[serde(default)]
+    pub control: ControlKind,
 }
 
 impl NodeSpec {
@@ -223,7 +252,13 @@ impl NodeSpec {
             outputs: Vec::new(),
             params: Vec::new(),
             capabilities: Vec::new(),
+            control: ControlKind::Normal,
         }
+    }
+
+    pub fn control(mut self, control: ControlKind) -> Self {
+        self.control = control;
+        self
     }
 
     pub fn description(mut self, description: impl Into<String>) -> Self {

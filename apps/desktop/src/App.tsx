@@ -8,6 +8,7 @@ import {
 } from "@xyflow/react";
 
 import { Canvas } from "./components/Canvas";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { InteractionDialog, type InteractionRequest } from "./components/InteractionDialog";
 import { LogPanel } from "./components/LogPanel";
 import { NodeLibrary } from "./components/NodeLibrary";
@@ -45,7 +46,62 @@ const UNKNOWN_SPEC = (kind: string): NodeSpec => ({
   outputs: [],
   params: [],
   capabilities: [],
+  control: "normal",
 });
+
+const CONTROL_EDGE_STYLE = {
+  stroke: "#b98cff",
+  strokeWidth: 1.8,
+  strokeDasharray: "5 4",
+} as const;
+
+function edgeIsControl(edge: Edge): boolean {
+  return Boolean((edge.data as { control?: boolean } | undefined)?.control);
+}
+
+function demoWorkflow(): WorkflowDoc {
+  const document = newWorkflow("计数器循环示例");
+  const node = (
+    id: string,
+    kind: string,
+    label: string,
+    x: number,
+    y: number,
+    params: Record<string, unknown>,
+  ): WorkflowNodeDoc => ({
+    id,
+    kind,
+    label,
+    position: { x, y },
+    params,
+    enabled: true,
+  });
+  document.nodes = [
+    node("demo-seed", "core.number_input", "起始值", 20, 160, { value: 0 }),
+    node("demo-gate", "core.loop_gate", "循环门", 300, 160, {
+      maxIterations: 10,
+      timeoutMs: 60000,
+    }),
+    node("demo-counter", "core.counter", "计数器", 580, 160, {
+      start: 0,
+      step: 1,
+      threshold: 3,
+    }),
+    node("demo-condition", "core.condition", "条件", 860, 160, {}),
+    node("demo-log", "core.log", "输出", 1140, 300, { prefix: "count: " }),
+  ];
+  document.edges = [
+    toDocEdge("demo-seed", "number", "demo-gate", "start", "control"),
+    toDocEdge("demo-gate", "continue", "demo-counter", "value", "control"),
+    toDocEdge("demo-counter", "number", "demo-condition", "payload", "data"),
+    toDocEdge("demo-counter", "done", "demo-condition", "condition", "data"),
+    toDocEdge("demo-condition", "false", "demo-gate", "next", "control"),
+    toDocEdge("demo-condition", "true", "demo-gate", "stop", "control"),
+    toDocEdge("demo-gate", "exit", "demo-log", "value", "control"),
+  ];
+  document.viewport = { x: 20, y: 140, zoom: 0.8 };
+  return document;
+}
 
 function buildNode(
   id: string,
@@ -155,6 +211,17 @@ export default function App() {
     [setNodes],
   );
 
+  const setNodeRun = useCallback(
+    (nodeId: string, run: LingXiNode["data"]["run"]) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === nodeId ? { ...node, data: { ...node.data, run } } : node,
+        ),
+      );
+    },
+    [setNodes],
+  );
+
   const addNode = useCallback(
     (kind: string, position: PositionDoc) => {
       const spec = specMap.get(kind);
@@ -206,7 +273,14 @@ export default function App() {
         flash("端口类型不兼容：" + sourcePort.dataType + " → " + targetPort.dataType);
         return;
       }
-      const docEdge = toDocEdge(source, sourceHandle, target, targetHandle);
+      const control = sourcePort.control || targetPort.control;
+      const docEdge = toDocEdge(
+        source,
+        sourceHandle,
+        target,
+        targetHandle,
+        control ? "control" : "data",
+      );
       setEdges((current) => {
         if (current.some((edge) => edge.id === docEdge.id)) return current;
         const withoutOccupied = current.filter(
@@ -221,6 +295,8 @@ export default function App() {
             target,
             targetHandle,
             type: "smoothstep",
+            data: { control },
+            style: control ? CONTROL_EDGE_STYLE : undefined,
           },
         ];
       });
@@ -248,6 +324,7 @@ export default function App() {
         sourcePort: edge.sourceHandle ?? "",
         target: edge.target,
         targetPort: edge.targetHandle ?? "",
+        kind: edgeIsControl(edge) ? "control" : "data",
       })),
       viewport: metaRef.current.viewport,
       metadata: metaRef.current.metadata,
@@ -273,14 +350,19 @@ export default function App() {
       });
       setNodes(nextNodes);
       setEdges(
-        document.edges.map((edge) => ({
-          id: edge.id,
-          source: edge.source,
-          sourceHandle: edge.sourcePort,
-          target: edge.target,
-          targetHandle: edge.targetPort,
-          type: "smoothstep",
-        })),
+        document.edges.map((edge) => {
+          const control = edge.kind === "control";
+          return {
+            id: edge.id,
+            source: edge.source,
+            sourceHandle: edge.sourcePort,
+            target: edge.target,
+            targetHandle: edge.targetPort,
+            type: "smoothstep",
+            data: { control },
+            style: control ? CONTROL_EDGE_STYLE : undefined,
+          };
+        }),
       );
       setMeta({
         id: document.id,
@@ -304,25 +386,57 @@ export default function App() {
       switch (event.type) {
         case "run.started":
           pushLog("info", "run started · " + event.workflowName + " · " + event.nodeCount + " nodes");
+          setNodes((current) =>
+            current.map((node) =>
+              node.data.run ? { ...node, data: { ...node.data, run: undefined } } : node,
+            ),
+          );
           setStatus("running");
           break;
         case "node.started":
           pushLog("info", "▶ " + event.label + " · " + event.kind);
+          setNodeRun(event.nodeId, {
+            state: "running",
+            activation: event.activation,
+            iteration: event.iteration,
+          });
           break;
         case "node.finished": {
           const names = Object.keys(event.outputs);
           const detail = names.length > 0 ? " · " + JSON.stringify(event.outputs) : "";
           pushLog("success", "✓ " + event.label + " · " + event.durationMs + "ms" + detail);
+          setNodeRun(event.nodeId, {
+            state: "completed",
+            activation: event.activation,
+            iteration: event.iteration,
+          });
           break;
         }
         case "node.failed":
           pushLog("error", "✕ " + event.label + " · " + event.code + ": " + event.message);
+          if (event.code === "loop.budget_exhausted") flash("循环预算耗尽，运行失败");
+          if (event.code === "loop.timeout") flash("循环超时，运行已终止");
+          setNodeRun(event.nodeId, {
+            state: "failed",
+            activation: event.activation,
+            iteration: event.iteration,
+          });
           break;
         case "node.skipped":
           pushLog("warn", "⤼ " + event.label + " skipped · " + event.reason);
+          setNodeRun(event.nodeId, {
+            state: "skipped",
+            activation: event.activation,
+            iteration: event.iteration,
+          });
           break;
         case "node.cancelled":
           pushLog("warn", "⏹ " + event.label + " cancelled");
+          setNodeRun(event.nodeId, {
+            state: "cancelled",
+            activation: event.activation,
+            iteration: event.iteration,
+          });
           break;
         case "log":
           pushLog(event.level === "debug" ? "info" : event.level, event.message);
@@ -350,7 +464,7 @@ export default function App() {
           break;
       }
     },
-    [pushLog],
+    [flash, pushLog, setNodeRun, setNodes],
   );
 
   useEffect(() => {
@@ -379,8 +493,7 @@ export default function App() {
       .catch((error: unknown) => pushLog("error", "failed to load node catalog: " + String(error)));
   }, [pushLog]);
 
-  const handleNew = useCallback(() => {
-    if (nodesRef.current.length > 0 && !window.confirm("新建会清空当前画布，继续？")) return;
+  const resetCanvas = useCallback(() => {
     const workflow = newWorkflow("未命名工作流");
     setNodes([]);
     setEdges([]);
@@ -396,6 +509,38 @@ export default function App() {
     setViewportKey((key) => key + 1);
     pushLog("info", "new workflow");
   }, [pushLog, setEdges, setNodes]);
+
+  const [confirmAction, setConfirmAction] = useState<"new" | "demo" | null>(null);
+
+  const handleNew = useCallback(() => {
+    if (nodesRef.current.length > 0) {
+      setConfirmAction("new");
+      return;
+    }
+    resetCanvas();
+  }, [resetCanvas]);
+
+  const handleDemo = useCallback(() => {
+    if (nodesRef.current.length > 0) {
+      setConfirmAction("demo");
+      return;
+    }
+    applyDoc(demoWorkflow());
+    pushLog("info", "loaded demo workflow · counter → condition → loop gate");
+  }, [applyDoc, pushLog]);
+
+  const confirmReplace = useCallback(() => {
+    const action = confirmAction;
+    setConfirmAction(null);
+    if (action === "new") {
+      resetCanvas();
+      return;
+    }
+    if (action === "demo") {
+      applyDoc(demoWorkflow());
+      pushLog("info", "loaded demo workflow · counter → condition → loop gate");
+    }
+  }, [applyDoc, confirmAction, pushLog, resetCanvas]);
 
   const handleSave = useCallback(async () => {
     const name = metaRef.current.name.trim();
@@ -555,6 +700,7 @@ export default function App() {
         preview={isPreview}
         onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
         onNew={handleNew}
+        onDemo={handleDemo}
         onOpen={() => void openDialog()}
         onSave={() => void handleSave()}
         onValidate={() => void handleValidate()}
@@ -606,6 +752,19 @@ export default function App() {
       />
 
       <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
+
+      <ConfirmDialog
+        open={confirmAction !== null}
+        title={confirmAction === "demo" ? "载入示例" : "新建工作流"}
+        message={
+          confirmAction === "demo"
+            ? "载入示例会替换当前画布，未保存的修改将丢失。"
+            : "新建会清空当前画布，未保存的修改将丢失。"
+        }
+        confirmLabel={confirmAction === "demo" ? "载入示例" : "清空并新建"}
+        onConfirm={confirmReplace}
+        onCancel={() => setConfirmAction(null)}
+      />
 
       {toast ? <div className="toast">{toast}</div> : null}
     </div>

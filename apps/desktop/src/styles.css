@@ -488,6 +488,10 @@ textarea {
   opacity: 0.55;
 }
 
+.node--running { border-color: rgba(90, 169, 255, 0.65); }
+.node--failed { border-color: rgba(233, 107, 107, 0.75); }
+.node--completed { border-color: rgba(92, 201, 141, 0.4); }
+
 .node__header {
   display: flex;
   align-items: center;
@@ -551,6 +555,36 @@ textarea {
 .node__power--on {
   color: var(--green);
   border-color: rgba(92, 201, 141, 0.35);
+}
+
+.node__run {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(90, 169, 255, 0.45);
+  background: rgba(90, 169, 255, 0.12);
+  color: var(--blue);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.node__run--completed {
+  border-color: rgba(92, 201, 141, 0.35);
+  background: rgba(92, 201, 141, 0.1);
+  color: var(--green);
+}
+
+.node__run--failed {
+  border-color: rgba(233, 107, 107, 0.45);
+  background: rgba(233, 107, 107, 0.12);
+  color: var(--red);
+}
+
+.node__run--skipped,
+.node__run--cancelled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text-faint);
 }
 
 .node__ports {
@@ -619,6 +653,10 @@ textarea {
 .react-flow__handle.port__handle.dt-boolean { background: var(--amber); }
 .react-flow__handle.port__handle.dt-json { background: var(--violet); }
 .react-flow__handle.port__handle.dt-any { background: #8b97a6; }
+.react-flow__handle.port__handle.port__handle--control {
+  background: var(--violet);
+  border-color: #241a33;
+}
 
 .react-flow__handle.port__handle:hover {
   box-shadow: 0 0 0 3px rgba(232, 161, 58, 0.22);

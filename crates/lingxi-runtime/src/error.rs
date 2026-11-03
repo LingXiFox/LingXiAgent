@@ -10,6 +10,11 @@ pub mod error_codes {
     pub const INTERACTION_TIMEOUT: &str = "node.interaction_timeout";
     pub const CANCELLED: &str = "node.cancelled";
     pub const EXECUTOR_FAILED: &str = "node.executor_failed";
+    pub const LOOP_BUDGET_EXHAUSTED: &str = "loop.budget_exhausted";
+    pub const LOOP_TIMEOUT: &str = "loop.timeout";
+    pub const LOOP_INVALID_BUDGET: &str = "loop.invalid_budget";
+    pub const LOOP_MISSING_TRIGGER: &str = "loop.missing_trigger";
+    pub const LOOP_INVALID_STATE: &str = "loop.invalid_state";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

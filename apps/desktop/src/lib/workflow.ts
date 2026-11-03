@@ -1,6 +1,7 @@
 import type {
   DataType,
   EdgeDoc,
+  EdgeKind,
   NodeSpec,
   PositionDoc,
   WorkflowDoc,
@@ -47,6 +48,7 @@ export function toDocEdge(
   sourcePort: string,
   target: string,
   targetPort: string,
+  kind: EdgeKind = "data",
 ): EdgeDoc {
   return {
     id: `${source}:${sourcePort}->${target}:${targetPort}`,
@@ -54,6 +56,7 @@ export function toDocEdge(
     sourcePort,
     target,
     targetPort,
+    kind,
   };
 }
 

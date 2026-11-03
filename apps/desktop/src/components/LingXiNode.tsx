@@ -1,7 +1,15 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 
-import type { LingXiNode as LingXiNodeModel } from "../lib/nodeData";
+import type { LingXiNode as LingXiNodeModel, NodeRunState } from "../lib/nodeData";
 import type { ParamSpec } from "../lib/types";
+
+const RUN_STATE_TEXT: Record<NodeRunState, string> = {
+  running: "运行中",
+  completed: "完成",
+  failed: "失败",
+  skipped: "跳过",
+  cancelled: "终止",
+};
 
 interface ParamFieldProps {
   nodeId: string;
@@ -118,7 +126,7 @@ function categoryClass(category: string): string {
 }
 
 export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
-  const { spec, params, enabled } = data;
+  const { spec, params, enabled, run } = data;
   const title = data.label?.trim() ? data.label.trim() : spec.title;
 
   return (
@@ -126,7 +134,8 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
       className={
         "node" +
         (selected ? " node--selected" : "") +
-        (enabled ? "" : " node--disabled")
+        (enabled ? "" : " node--disabled") +
+        (run ? " node--" + run.state : "")
       }
     >
       <header className="node__header">
@@ -135,6 +144,18 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
           <span className="node__title">{title}</span>
           <span className="node__kind">{spec.kind}</span>
         </div>
+        {run ? (
+          <span
+            className={"node__run node__run--" + run.state}
+            title={
+              "activation " +
+              run.activation +
+              (run.iteration != null ? " · iteration " + run.iteration : "")
+            }
+          >
+            {run.iteration != null ? "迭代 " + run.iteration : RUN_STATE_TEXT[run.state]}
+          </span>
+        ) : null}
         <button
           type="button"
           className={"node__power nodrag" + (enabled ? " node__power--on" : "")}
@@ -153,7 +174,9 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
                 type="target"
                 position={Position.Left}
                 id={port.name}
-                className={"port__handle dt-" + port.dataType}
+                className={
+                  "port__handle dt-" + port.dataType + (port.control ? " port__handle--control" : "")
+                }
               />
               <span className={port.required ? "port__label port__label--required" : "port__label"}>
                 {port.label}
@@ -169,7 +192,9 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
                 type="source"
                 position={Position.Right}
                 id={port.name}
-                className={"port__handle dt-" + port.dataType}
+                className={
+                  "port__handle dt-" + port.dataType + (port.control ? " port__handle--control" : "")
+                }
               />
             </div>
           ))}

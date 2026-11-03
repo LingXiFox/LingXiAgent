@@ -119,6 +119,14 @@ pub struct Position {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    #[default]
+    Data,
+    Control,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Edge {
@@ -129,6 +137,9 @@ pub struct Edge {
     pub target: String,
     #[serde(default)]
     pub target_port: String,
+    /// Data edges carry values; control edges additionally trigger execution.
+    #[serde(default)]
+    pub kind: EdgeKind,
 }
 
 impl Edge {
@@ -148,7 +159,25 @@ impl Edge {
             source_port,
             target,
             target_port,
+            kind: EdgeKind::Data,
         }
+    }
+
+    pub fn control(
+        source: impl Into<String>,
+        source_port: impl Into<String>,
+        target: impl Into<String>,
+        target_port: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: EdgeKind::Control,
+            ..Self::new(source, source_port, target, target_port)
+        }
+    }
+
+    pub fn with_kind(mut self, kind: EdgeKind) -> Self {
+        self.kind = kind;
+        self
     }
 }
 

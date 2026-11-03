@@ -5,6 +5,10 @@ export type DataType = "text" | "number" | "boolean" | "json" | "any";
 
 export type ParamKind = "text" | "text_area" | "number" | "boolean" | "select";
 
+export type ControlKind = "normal" | "branch" | "loop_gate";
+
+export type EdgeKind = "data" | "control";
+
 export interface ParamOption {
   value: string;
   label: string;
@@ -25,6 +29,8 @@ export interface PortSpec {
   label: string;
   dataType: DataType;
   required: boolean;
+  /** Missing on older payloads means a data port. */
+  control?: boolean;
 }
 
 export interface NodeSpec {
@@ -36,6 +42,8 @@ export interface NodeSpec {
   outputs: PortSpec[];
   params: ParamSpec[];
   capabilities: string[];
+  /** Missing on older payloads means a normal node. */
+  control?: ControlKind;
 }
 
 export interface PositionDoc {
@@ -58,6 +66,7 @@ export interface EdgeDoc {
   sourcePort: string;
   target: string;
   targetPort: string;
+  kind: EdgeKind;
 }
 
 export interface ViewportDoc {
@@ -133,6 +142,8 @@ export type RunEvent =
       nodeId: string;
       kind: string;
       label: string;
+      activation: number;
+      iteration?: number;
     })
   | (RunEventBase & {
       type: "node.finished";
@@ -141,6 +152,8 @@ export type RunEvent =
       label: string;
       outputs: Record<string, unknown>;
       durationMs: number;
+      activation: number;
+      iteration?: number;
     })
   | (RunEventBase & {
       type: "node.failed";
@@ -150,6 +163,8 @@ export type RunEvent =
       code: string;
       message: string;
       durationMs: number;
+      activation: number;
+      iteration?: number;
     })
   | (RunEventBase & {
       type: "node.skipped";
@@ -157,12 +172,16 @@ export type RunEvent =
       kind: string;
       label: string;
       reason: string;
+      activation: number;
+      iteration?: number;
     })
   | (RunEventBase & {
       type: "node.cancelled";
       nodeId: string;
       kind: string;
       label: string;
+      activation: number;
+      iteration?: number;
     })
   | (RunEventBase & {
       type: "log";

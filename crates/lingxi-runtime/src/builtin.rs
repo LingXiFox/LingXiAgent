@@ -2,7 +2,7 @@
 //! engine knows these names, and plugins register through the same API.
 
 use async_trait::async_trait;
-use lingxi_spec::{capabilities, DataType, NodeSpec, ParamSpec, PortSpec};
+use lingxi_spec::{capabilities, ControlKind, DataType, NodeSpec, ParamSpec, PortSpec};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -33,6 +33,18 @@ pub fn register(registry: &mut NodeRegistry) {
         .expect("built-in node kinds are unique");
     registry
         .register(approval_spec(), Arc::new(Approval))
+        .expect("built-in node kinds are unique");
+    registry
+        .register(boolean_input_spec(), Arc::new(BooleanInput))
+        .expect("built-in node kinds are unique");
+    registry
+        .register(condition_spec(), Arc::new(Condition))
+        .expect("built-in node kinds are unique");
+    registry
+        .register(loop_gate_spec(), Arc::new(LoopGatePlaceholder))
+        .expect("built-in node kinds are unique");
+    registry
+        .register(counter_spec(), Arc::new(Counter))
         .expect("built-in node kinds are unique");
 }
 
@@ -92,6 +104,53 @@ pub fn approval_spec() -> NodeSpec {
             "Prompt",
             "Approve this step?",
         ))
+}
+
+pub fn boolean_input_spec() -> NodeSpec {
+    NodeSpec::new("core.boolean_input", "Boolean Input", "Input")
+        .description("Emits a fixed boolean value.")
+        .param(ParamSpec::boolean("value", "Value", false))
+        .output(PortSpec::new("boolean", "Boolean", DataType::Boolean))
+}
+
+pub fn condition_spec() -> NodeSpec {
+    NodeSpec::new("core.condition", "Condition", "Control")
+        .description("Routes the payload to exactly one Boolean branch.")
+        .control(ControlKind::Branch)
+        .input(PortSpec::new("condition", "Condition", DataType::Boolean).required())
+        .input(PortSpec::new("payload", "Payload", DataType::Any))
+        .output(PortSpec::new("true", "True", DataType::Any).control())
+        .output(PortSpec::new("false", "False", DataType::Any).control())
+}
+
+pub fn loop_gate_spec() -> NodeSpec {
+    NodeSpec::new("core.loop_gate", "Loop Gate", "Control")
+        .description("Drives a user-defined loop with an iteration and time budget.")
+        .control(ControlKind::LoopGate)
+        .input(PortSpec::new("start", "Start", DataType::Any).control())
+        .input(PortSpec::new("next", "Next", DataType::Any).control())
+        .input(PortSpec::new("stop", "Stop", DataType::Any).control())
+        .output(PortSpec::new("continue", "Continue", DataType::Any).control())
+        .output(PortSpec::new("exit", "Exit", DataType::Any).control())
+        .param(
+            ParamSpec::number("maxIterations", "Max iterations", 10.0)
+                .help("Hard iteration budget; the run fails when it is exhausted."),
+        )
+        .param(
+            ParamSpec::number("timeoutMs", "Timeout (ms)", 60_000.0)
+                .help("Hard wall-clock budget for the whole loop."),
+        )
+}
+
+pub fn counter_spec() -> NodeSpec {
+    NodeSpec::new("core.counter", "Counter", "Logic")
+        .description("Increments the incoming value and reports when a threshold is reached.")
+        .input(PortSpec::new("value", "Value", DataType::Number))
+        .output(PortSpec::new("number", "Number", DataType::Number))
+        .output(PortSpec::new("done", "Done", DataType::Boolean))
+        .param(ParamSpec::number("start", "Start", 0.0))
+        .param(ParamSpec::number("step", "Step", 1.0))
+        .param(ParamSpec::number("threshold", "Threshold", 3.0))
 }
 
 struct TextInput;
@@ -199,6 +258,94 @@ impl NodeExecutor for Approval {
                 "approval was rejected",
             )),
         }
+    }
+}
+
+struct BooleanInput;
+
+#[async_trait]
+impl NodeExecutor for BooleanInput {
+    async fn execute(&self, ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
+        ctx.check_cancelled()?;
+        let value = ctx.bool_param("value")?;
+        Ok(NodeOutput::new().with("boolean", Value::Bool(value)))
+    }
+}
+
+struct Condition;
+
+#[async_trait]
+impl NodeExecutor for Condition {
+    async fn execute(&self, ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
+        ctx.check_cancelled()?;
+        let condition = match ctx.input("condition") {
+            Some(Value::Bool(value)) => *value,
+            Some(other) => {
+                return Err(NodeError::new(
+                    error_codes::INVALID_INPUT,
+                    format!(
+                        "input \"condition\" expects boolean, got {}",
+                        crate::error::json_type_name(other)
+                    ),
+                ))
+            }
+            None => {
+                return Err(NodeError::new(
+                    error_codes::MISSING_INPUT,
+                    "input \"condition\" has no value",
+                ))
+            }
+        };
+        let payload = ctx.input("payload").cloned().unwrap_or(Value::Null);
+        let port = if condition { "true" } else { "false" };
+        Ok(NodeOutput::new().with(port, payload))
+    }
+}
+
+/// The engine intercepts this kind before executor lookup. Registering a
+/// placeholder keeps the registry contract uniform for every declared spec.
+struct LoopGatePlaceholder;
+
+#[async_trait]
+impl NodeExecutor for LoopGatePlaceholder {
+    async fn execute(&self, _ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
+        Err(NodeError::new(
+            error_codes::EXECUTOR_FAILED,
+            "loop gate must be driven by the engine loop controller",
+        ))
+    }
+}
+
+struct Counter;
+
+#[async_trait]
+impl NodeExecutor for Counter {
+    async fn execute(&self, ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
+        ctx.check_cancelled()?;
+        let current = match ctx.input("value") {
+            Some(Value::Number(number)) => number.as_f64().ok_or_else(|| {
+                NodeError::new(
+                    error_codes::INVALID_INPUT,
+                    "input \"value\" is not a number",
+                )
+            })?,
+            Some(other) => {
+                return Err(NodeError::new(
+                    error_codes::INVALID_INPUT,
+                    format!(
+                        "input \"value\" expects a number, got {}",
+                        crate::error::json_type_name(other)
+                    ),
+                ))
+            }
+            None => ctx.number_param("start")?,
+        };
+        let step = ctx.number_param("step")?;
+        let threshold = ctx.number_param("threshold")?;
+        let next = current + step;
+        Ok(NodeOutput::new()
+            .with("number", Value::from(next))
+            .with("done", Value::Bool(next >= threshold)))
     }
 }
 
