@@ -1,62 +1,33 @@
-# PolyForm Noncommercial License 1.0.0
+LingXi Frontend Source License 1.0 (LFSL-1.0)
+泠溪前端源码许可 1.0 — 待审核草案
 
-Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
+DRAFT FOR OWNER REVIEW — NOT APPROVED FOR PUBLIC RELEASE
+版权所有 (c) 2026 LingXiFox。保留所有未明确授予的权利。
 
-Applicable to:
-Every target and path marked `PolyForm Noncommercial 1.0.0` in
-`LICENSE-MATRIX.md` at the repository root. This file defines the license
-terms; the matrix defines the scope. `LicenseMatrixDriftTests` guards
-against the two drifting apart.
+一、许可对象
+本许可证仅适用于 LICENSE-MATRIX 中明确标注为 LFSL-1.0 的官方前端源码、样式与相关独立文件，不包含 Core、独立 MIT 公共接口、第三方组件、商标和独立标注版权的资源。
 
-Official text: https://polyformproject.org/licenses/noncommercial/1.0.0
+二、允许行为
+在满足本许可证条款的前提下，允许个人及组织出于非商业目的：
+1. 阅读、复制、研究、运行和修改前端源码。
+2. 以源码形式分发前端的原样副本或修改版本，并附完整许可证与必要版权声明。
+3. 随修改源码提供复现构建所需的脚本和说明，但不因此获得分发修改后二进制产物的权利。
+4. 非商业地原样转发 LingXiFox 正式发布的官方前端二进制产物，前提是转发不修改原文件、不混淆来源、保留许可证。
 
-1. Acceptance
-In order to receive any license under these terms, each recipient must accept them. By accessing, downloading, installing, using, modifying, or distributing the software, each recipient accepts these terms.
+三、限制
+除项目所有者另行书面许可外，不得：
+1. 以商业目的使用、销售、托管或分发本前端及修改版。
+2. 以任何形式向第三方分发修改版前端的编译产物，包括安装包、可执行文件、应用商店包及预构建容器镜像。
+3. 移除版权与必要许可声明，或者暗示修改版获得 LingXiFox 官方背书。
+4. 利用本许可证规避核心 LICENSE-CORE 的独立授权限制。
 
-2. Copyright License
-The licensor grants each recipient a copyright license to copy, create derivative works of, distribute, and run the software, solely for noncommercial purposes.
+四、再分发说明
+以源码形式分发修改版时，应明显注明修改情况、修改者、修改时间，并保留原版权声明和许可证文本。第三方库、图像、字体、图标及其他资源的权利由其各自许可证独立决定。
 
-3. Patent License
-The licensor grants each recipient a patent license to make, have made, use, sell, offer for sale, and import the software, solely for noncommercial purposes, under patent claims the licensor can license that are necessarily infringed by the software.
+五、终止与免责
+严重违反本许可证且在收到书面通知后 30 日内未纠正的，所获授权终止。软件按“现状”（AS IS）提供，在适用法律允许的最大范围内不提供担保或损害赔偿。
 
-4. Noncommercial Purposes
-Any use of the software is for noncommercial purposes if it is not primarily intended for or directed toward commercial advantage or monetary compensation.
-
-5. Notice
-Each recipient must ensure that everyone who receives a copy of any part of the software from them, or of any software that they compile from the software, also receives a copy of these terms, or a link to https://polyformproject.org/licenses/noncommercial/1.0.0, along with all copyright, patent, trademark, and attribution notices from the software.
-
-6. No Sublicensing
-These terms do not permit recipients to sublicense rights to the software to anyone else.
-
-7. No Other Rights
-These terms do not imply or grant any trademark license, or any other license not explicitly granted in these terms.
-
-8. Fair Use
-These terms do not limit any rights under copyright law.
-
-9. Defense of Claims
-If anyone makes a claim against the licensor for patent infringement based on the software, all patent licenses for the software under these terms end immediately.
-
-10. Disclaimer of Warranties
-As far as the law allows, the software comes as is, without any warranty or condition, and no contributor will be liable to anyone for any damages related to the software or these terms, under any kind of legal claim.
-
-================================================================================
-本 项 目 补 充 条 款 (LingXiAgent Project Additional Terms)
-================================================================================
-
-11. 第三方改版仅限源码形式分发 (Third-Party Modifications Distributed in Source Form Only)
-
-【中文条款（以中文文本为准）】
-对 PolyForm Noncommercial 1.0.0 第 2 条“著作权许可 (Copyright License)”之补充：
-第三方对本前端及其衍生组件（包括但不限于 Sources/LingXiTUI、Sources/LingXiTUIComponents、
-Sources/LingXiTUIApp、Sources/lingxiagent 表现层、Apps/* 各平台表现层）进行修改后分发衍生作品时，
-【只能以源代码 + 可复现构建脚本形式分发】，不得公开发布或二次分发：
-(1) 编译后的二进制产物（包括但不限于 .app bundle、.dmg、.pkg、AppImage、.deb、.rpm、.exe、.msi）；
-(2) 各大应用商店上架包（Mac App Store、Microsoft Store、Google Play 等）；
-(3) 预构建容器镜像（Docker、Podman、OCI Image 等）。
-
-官方 Release 二进制不受本条限制（官方由版权所有者发布之产物已获得原样转发授权）。
-本条旨在防止未经审核的第三方改版二进制以“LingXiAgent”名义传播造成用户混淆、安全漏洞或体验损害。
-
-[English Summary for Reference]
-Third parties who modify the frontend may distribute their derivatives ONLY in source code form together with reproducible build scripts. Compiled binaries, installer packages, app-store distributions, and container images of third-party modifications may NOT be distributed. Official release binaries published by the Copyright Holder are not subject to this restriction.
+六、特别说明
+1. 本文件是 LingXi 自定义许可，不是未经修改的 PolyForm Noncommercial 1.0.0，也不以 PolyForm 名称对外标示。
+2. 与 2.0 相比，前端非商业使用与“修改版只能分发源码”的限制意图保持一致，但范围按 3.0 的 Rust/Tauri/React 工程重新指定。
+3. 本许可证中文文本优先；正式采纳前须由 LingXiFox 审核。

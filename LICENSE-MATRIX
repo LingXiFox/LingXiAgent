@@ -1,0 +1,30 @@
+LingXiAgent 3.0 — License Scope Matrix
+LingXiAgent 3.0 — 授权范围矩阵（待审核）
+
+DRAFT FOR OWNER REVIEW — NOT APPROVED FOR PUBLIC RELEASE
+
+路径 / 文件范围                                适用许可
+--------------------------------------------------------------------------
+crates/lingxi-runtime/**                      LICENSE-CORE / LCSAL-2.0
+crates/lingxi-spec/**                         LICENSE-CORE / LCSAL-2.0 (暂定)
+apps/desktop/src-tauri/**                     LICENSE-CORE / LCSAL-2.0
+apps/desktop/src/**                           LICENSE-FRONTEND / LFSL-1.0
+apps/desktop/index.html                      LICENSE-FRONTEND / LFSL-1.0
+apps/desktop/package.json                    LICENSE-FRONTEND / LFSL-1.0
+apps/desktop/vite.config.*                   LICENSE-FRONTEND / LFSL-1.0
+apps/desktop/tsconfig*.json                  LICENSE-FRONTEND / LFSL-1.0
+Cargo.toml、Cargo.lock、Rust 构建配置         LICENSE-CORE / LCSAL-2.0
+Docs/**、README.md、AGENTS.md                 LICENSE-CORE / LCSAL-2.0 (暂定)
+未来独立发布并明确标记为公共 ABI/SDK 的路径       LICENSE-ABI / MIT (待实际创建和确认)
+LICENSE、LICENSE-CORE、LICENSE-FRONTEND、
+LICENSE-ABI、LICENSE-MATRIX                   许可证文件按复制告知义务随包提供
+独立第三方依赖和原有第三方素材                 原权利人各自许可证
+名称 / Logo / 商标 / 专用图标                 非软件授权范围；需另行取得许可
+
+规则：
+1. 本矩阵只用于界定适用范围，不得扩大或修改具体 LICENSE 文件授予的权利。
+2. `crates/lingxi-spec` 当前既含节点规范也含内部校验代码，因此暂不整体赋予 MIT。若需开放公共 Node SDK，优先拆分独立 crate，并由所有者批准归入 MIT 范围。
+3. `Docs/reference/2.0/` 中的历史文本仅供参考；历史授权和第三方内容不因复制到 3.0 仓库而被追溯改变。
+4. 新增路径必须在发布前归类；无法明确归类时不得自行套用 MIT。
+5. LICENSE-FRONTEND 禁止未经授权的修改版二进制分发，不能影响对官方发布产物明确授予的原样转发许可。
+6. 此矩阵无 .md 后缀，是纯文本授权范围声明文件。正式发布前应与 Cargo 工作区及打包内容逐项对照。

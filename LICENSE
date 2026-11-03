@@ -1,79 +1,19 @@
-# LingXiAgent Multi-Tiered Licensing Architecture
-# LingXiAgent 多轨分层许可体系
+LingXiAgent 3.0 — Multi-Tier License Notice
+LingXiAgent 3.0 — 分层授权总声明
 
-Copyright (c) 2026 LingXiFox (https://github.com/LingXiFox). All rights reserved.
+DRAFT FOR OWNER REVIEW — NOT APPROVED FOR PUBLIC RELEASE
+版权所有 (c) 2026 LingXiFox. 保留未明确授予的全部权利。
 
-本项目采用**多轨分层许可体系（Multi-Tiered Licensing Scheme）**：针对底座核心（Core）与上层表现客户端（Frontend）实施差异化授权策略。在保障个人开发者本地探索自由与前端生态开放的同时，保护底层核心知识产权。
+本文件说明仓库采用的分层授权结构，不取代各具体许可证的完整条款。
 
-【总则与语言优先级】
-本许可体系以【中文文本为准】。英文翻译仅供参考，若存在任何冲突，以中文文本为准。
-The Chinese text of this multi-tiered licensing scheme prevails over any translation.
+1. 核心执行层（Core）采用 LICENSE-CORE 中拟定的 LingXi Core Source-Available License 2.0 (LCSAL-2.0)。
+2. LingXiAgent 官方图形前端采用 LICENSE-FRONTEND 中拟定的 LingXi Frontend Source License 1.0 (LFSL-1.0)。
+3. 仅明确列入 LICENSE-MATRIX 的公共 ABI/SDK 文件采用 LICENSE-ABI 中的 MIT License。
+4. 模块、目录和例外以 LICENSE-MATRIX 为准；第三方依赖保留其原许可，不因包含在本仓库而自动改授上述许可。
+5. 仓库公开可读不等同于所有代码均采用 OSI 认可的开源许可证。LCSAL-2.0 与 LFSL-1.0 属于源码可用的受限许可。
+6. 项目名称、Logo、图标与商标，不因任何软件版权许可而获得商标使用权；第三方资源保留原权利。
+7. 版本适用：本草案仅拟适用于正式采纳之后发布的 3.0 版本；历史版本仍按当时已经授予的相应条款处理，不追溯撤销既有授权。
+8. 冲突时以所属模块的具体许可证为准；仅为说明用途的矩阵不得扩大授权。中英文不一致时，所涉自定义许可证以中文条款为准。
 
----
-
-## 🧭 模块与授权范围矩阵 (License Scope Matrix)
-
-各模块及 Target 的具体适用范围以仓库根目录下的 [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md) 权威清单为准。
-
-| 模块分类 (Domain) | 适用许可协议 (License) | 本地构建/自用 (Local Personal Use) | 二次分发与镜像 (Redistribution & Re-hosting) | 商业营利使用 (Commercial Exploitation) |
-| :--- | :--- | :---: | :---: | :---: |
-| **Core & Infrastructure 底座与核心**<br/>（范围以 `LICENSE-MATRIX.md` 为准） | **LingXi Core Source-Available License 1.1 (LCSAL-1.1)**<br/>*(源码可用 · 个人自用 · 官方二进制转发例外 · 禁商用)* | ✅ **允许**<br/>(免费下载、本地编译自用) | ❌ **严禁**<br/>(仅允许官方 release 产物非商用原样转发；禁自编译分发) | ❌ **严禁**<br/>(禁商业化、收费代理、SaaS托管或企业生产部署) |
-| **Frontend & Clients 表现层与客户端**<br/>（范围以 `LICENSE-MATRIX.md` 为准） | **PolyForm Noncommercial License 1.0.0 + 附加条款**<br/>*(非商用许可 · 第三方改版仅限源码分发 · 禁商用)* | ✅ **允许** | ⚠️ **受限**<br/>(第三方改版仅限以源码形式分发；官方 Release 提供二进制) | ❌ **严禁**<br/>(严禁用于任何营利或收费商业服务) |
-| **Public Developer SDKs 公共开发者 SDK**<br/>（`LingXiModelSDK`、`LingXiPluginSDK`，范围以 `LICENSE-MATRIX.md` 为准） | **MIT License**<br/>*(最宽松轨 · 面向第三方与商业集成)* | ✅ **允许** | ✅ **允许**<br/>(源码与二进制均可再分发，含修改后版本) | ✅ **允许**<br/>(可用于商业产品与闭源软件，唯一义务为保留版权与许可声明) |
-| **Third-Party Vendors 第三方依赖**<br/>（`Vendor/OpenTUI/` 等） | 各自独立开源协议 (GPLv3 / Ghostty / MIT 等) | 遵照原上游许可 | 遵照原上游许可 | 遵照原上游许可 |
-
----
-
-## Part 1: LingXi Core Source-Available License 1.1 (LCSAL-1.1)
-
-**适用范围**: 参见 [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md) 中标明为 `LCSAL-1.1` 的所有 Target 与路径。`LicenseMatrixDriftTests` 确保矩阵与工程定义严格同步。完整独立条款参见 [`LICENSE-CORE`](./LICENSE-CORE)。
-
-### 中文核心条款要点
-1. **授权范围**：授予个人在受控本地环境中阅读、学习、研究、编译及单机非商业运行之权利；
-2. **官方 Release 转发例外**：官方 Release 页面发布的二进制产物在未修改、附带许可、非商用、不混淆前提下允许原样转发/镜像；**自编译产物严禁再分发**；
-3. **Fork 政策**：官方仓库的 fork 仅用于向上游提交 PR，不得作为自建发行版或分发渠道；
-4. **贡献者 Relicense 授权**：提交 PR 即授予版权方在后续版本调整/升级许可证类型之权利，无需单独签署 CLA；
-5. **明确商用清单**：明确界定收费 API 中继、SaaS 托管、产品捆绑、有薪酬企业团队部署属于商用（严禁）；明确禁止 AI 训练数据集未经授权抓取；
-6. **免责声明**：软件按 AS IS 提供，不附带任何担保。
-
----
-
-## Part 2: PolyForm Noncommercial License 1.0.0 与附加条款
-
-**适用范围**: 参见 [`LICENSE-MATRIX.md`](./LICENSE-MATRIX.md) 中标明为 `PolyForm Noncommercial 1.0.0` 的所有 Target 与路径。完整独立条款参见 [`LICENSE-FRONTEND`](./LICENSE-FRONTEND)。
-
-### 核心要点与补充条款
-1. **非商业许可**：遵循 PolyForm Noncommercial 1.0.0，允许出于非商业目的的复制、修改和分发；
-2. **【附加条款】第三方改版仅限源码形式分发**：第三方修改本前端后分发时，**只能以源代码及可复现构建脚本形式分发**，严禁以编译后二进制、安装包、应用商店上架包或预构建容器镜像形式发布，以防止混淆与安全风险；
-3. **底层依赖提示**：前端如需与官方 LingXiCore 协同运行，底层核心仍受 LCSAL-1.1 约束。
-
----
-
-## Part 3: 公共开发者 SDK（已独立仓库，MIT）
-
-`LingXiModelSDK`（模型目录）与 `LingXiPluginSDK`（插件开发）不再属于本仓库的 target 或 product。
-它们各自是独立的公共 Swift Package，携带自己的 MIT `LICENSE`：
-
-- 模型目录 SDK：<https://github.com/LingXiFox/LingXiModelSDK>
-- 插件开发 SDK：<https://github.com/LingXiFox/LingXiPluginSDK>
-
-### 为什么把它们搬出去
-1. **第三方拿到的必须与 LingXiAgent 自己用的是同一份构件**：本仓库通过
-   `.package(url: "https://github.com/LingXiFox/LingXiModelSDK.git", from: "0.1.0")` 这类
-   公开入口消费两者（`PublicSDKConsumerGateTests` 强制），因此主仓库构建本身就是这条发布链路的持续验证。
-2. **不存在内部通道**：本仓库不留 SDK 源码副本，也不提交 `path:` 依赖；两处各一份必然版本漂移。
-3. **许可边界因此干净**：公共 SDK 为 MIT（可商用、可闭源插件/App、可再分发）；
-   运行时核心仍是 LCSAL-1.1，表现层仍是 PolyForm Noncommercial 1.0.0。
-   使用公共 SDK 不构成对本仓库受限运行时的任何授权。
-4. **需要新 API 时先发布再依赖**：新增 SDK 接口必须先出现在已发布版本里，再抬高本仓库的最低版本要求，
-   不允许先在主仓库私自实现一个未公开的"SDK API"。
-
----
-
-## Part 4: Contributing & Governance (代码贡献与合并管控)
-
-- **Issues 开放**：欢迎所有开发者在 GitHub Issues 中反馈漏洞、提出架构设计或功能建议；
-- **Pull Requests 严格管控**：
-  - 仓库开启 Pull Request 提交通道，欢迎社区协作；
-  - **合并权限限制**：所有分支均受保护，**禁止任何未经版权所有者（@LingXiFox）亲自代码审查（Code Owner Review Approval）的合并行为**；
-  - 贡献者就其贡献授予版权所有者后续版本统一管理与必要时变更许可之权利（详见 LCSAL-1.1 第 5 条）。
+注意：本文件及配套 LICENSE-CORE、LICENSE-FRONTEND、LICENSE-ABI、LICENSE-MATRIX
+目前均为待批准的发布草案。在项目所有者确认范围和授权政策之前，请勿覆盖仓库现行 LICENSE 文件。
