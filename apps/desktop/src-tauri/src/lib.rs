@@ -3,6 +3,7 @@ mod redact;
 mod runs;
 mod single_instance;
 mod store;
+mod templates;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -22,6 +23,7 @@ pub struct AppState {
     pub interactions: Arc<PendingInteractions>,
     pub runs: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
     pub store: store::WorkflowStore,
+    pub templates: templates::TemplateStore,
     pub db: Arc<RunDatabase>,
     // Held for the lifetime of the app; dropping it releases the OS lock.
     _instance_lock: InstanceLock,
@@ -49,6 +51,7 @@ impl AppState {
             interactions,
             runs: Arc::new(Mutex::new(HashMap::new())),
             store: store::WorkflowStore::new(data_dir.join("workflows")),
+            templates: templates::TemplateStore::new(data_dir.join("templates")),
             db,
             _instance_lock: instance_lock,
         })
@@ -90,6 +93,10 @@ pub fn run() {
             commands::save_workflow,
             commands::load_workflow,
             commands::delete_workflow,
+            commands::template_list,
+            commands::template_load,
+            commands::template_save,
+            commands::template_delete,
             commands::run_list,
             commands::run_detail,
             commands::run_events,

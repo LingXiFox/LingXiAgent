@@ -21,7 +21,7 @@ pub struct NodeContext<'a> {
     pub inputs: &'a BTreeMap<String, Value>,
     pub control: &'a RunControl,
     pub broker: &'a dyn InteractionBroker,
-    pub emitter: &'a EventEmitter<'a>,
+    pub emitter: EventEmitter<'a>,
 }
 
 impl<'a> NodeContext<'a> {
@@ -33,7 +33,7 @@ impl<'a> NodeContext<'a> {
         inputs: &'a BTreeMap<String, Value>,
         control: &'a RunControl,
         broker: &'a dyn InteractionBroker,
-        emitter: &'a EventEmitter<'a>,
+        emitter: &EventEmitter<'a>,
     ) -> Self {
         Self {
             run_id,
@@ -42,7 +42,7 @@ impl<'a> NodeContext<'a> {
             inputs,
             control,
             broker,
-            emitter,
+            emitter: emitter.fork(),
         }
     }
 
@@ -182,6 +182,7 @@ impl<'a> NodeContext<'a> {
             RunEvent::InteractionRequested {
                 run_id: self.run_id.to_string(),
                 seq,
+                scope: Vec::new(),
                 request_id: request_id.clone(),
                 node_id: self.node.id.clone(),
                 prompt: prompt.clone(),
@@ -217,6 +218,7 @@ impl<'a> NodeContext<'a> {
             self.emitter.emit(RunEvent::InteractionResolved {
                 run_id: self.run_id.to_string(),
                 seq: 0,
+                scope: Vec::new(),
                 request_id,
                 node_id: self.node.id.clone(),
                 decision: *decision,

@@ -106,6 +106,11 @@ pub fn redact_event(event: &RunEvent) -> RunEvent {
             }
         }
     }
+    if let Some(scope) = event.scope_mut() {
+        for frame in scope {
+            frame.label = redact_text(&frame.label);
+        }
+    }
     event
 }
 
@@ -320,6 +325,7 @@ mod tests {
         let log = redact_event(&RunEvent::Log {
             run_id: "run-1".into(),
             seq: 0,
+            scope: Vec::new(),
             at_ms: 1,
             level: LogLevel::Info,
             node_id: None,
@@ -333,6 +339,7 @@ mod tests {
         let finished = redact_event(&RunEvent::NodeFinished {
             run_id: "run-1".into(),
             seq: 1,
+            scope: Vec::new(),
             node_id: "n1".into(),
             kind: "core.log".into(),
             label: "token=label-secret".into(),
@@ -376,6 +383,7 @@ mod tests {
         let event = RunEvent::NodeFinished {
             run_id: "run-1".into(),
             seq: 0,
+            scope: Vec::new(),
             node_id: "n1".into(),
             kind: "core.log".into(),
             label: "token=label-secret".into(),

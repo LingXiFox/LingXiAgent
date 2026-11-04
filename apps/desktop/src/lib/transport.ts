@@ -5,6 +5,8 @@ import type {
   RunEvent,
   RunRecord,
   RunStartResponse,
+  TemplateBundle,
+  TemplateSummary,
   ValidationReport,
   WorkflowDoc,
   WorkflowSummary,
@@ -22,6 +24,10 @@ export interface Transport {
   saveWorkflow(name: string, workflow: WorkflowDoc): Promise<WorkflowSummary>;
   loadWorkflow(name: string): Promise<WorkflowDoc>;
   deleteWorkflow(name: string): Promise<boolean>;
+  templateList(): Promise<TemplateSummary[]>;
+  templateLoad(id: string): Promise<TemplateBundle>;
+  templateSave(name: string, bundle: TemplateBundle): Promise<TemplateSummary>;
+  templateDelete(id: string): Promise<boolean>;
   runList(limit?: number): Promise<RunRecord[]>;
   runDetail(runId: string): Promise<RunDetail | null>;
   runEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;

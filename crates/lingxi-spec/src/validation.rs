@@ -1,11 +1,13 @@
 //! Structural validation of a workflow document. Validation is pure: it never
 //! executes nodes and it never mutates the document.
 
-use crate::model::{EdgeKind, Workflow, SCHEMA_VERSION};
+use crate::model::{
+    EdgeKind, Subgraph, Workflow, WorkflowNode, COMPOSITE_NODE_KIND, SUPPORTED_SCHEMA_VERSIONS,
+};
 use crate::node::{ControlKind, NodeSpec, ParamKind, ParamSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 /// Stable machine-readable issue codes. The frontend may map them to localized
 /// copy; the wire contract is the code, never the message text.
@@ -36,6 +38,14 @@ pub mod codes {
     pub const LOOP_NO_EXIT_PATH: &str = "loop.no_exit_path";
     pub const LOOP_MISSING_TRIGGER: &str = "loop.missing_trigger";
     pub const LOOP_INVALID_BUDGET: &str = "loop.invalid_budget";
+    pub const SUBGRAPH_DUPLICATE_ID: &str = "subgraph.duplicate_id";
+    pub const SUBGRAPH_UNKNOWN_REFERENCE: &str = "subgraph.unknown_reference";
+    pub const SUBGRAPH_INVALID_PORT: &str = "subgraph.invalid_port";
+    pub const SUBGRAPH_INVALID_BINDING: &str = "subgraph.invalid_binding";
+    pub const SUBGRAPH_UNSUPPORTED_VERSION: &str = "subgraph.unsupported_version";
+    pub const SUBGRAPH_RECURSIVE_REFERENCE: &str = "subgraph.recursive_reference";
+    pub const SUBGRAPH_NESTED_DEFINITIONS: &str = "subgraph.nested_definitions";
+    pub const SUBGRAPH_NESTED_LOOP_UNSUPPORTED: &str = "subgraph.nested_loop_unsupported";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,16 +120,92 @@ pub trait NodeKindResolver {
     fn node_spec(&self, kind: &str) -> Option<&NodeSpec>;
 }
 
+/// Validation entry point. `1.0` documents load with empty subgraph maps;
+/// `core.composite` nodes derive their ports from the root definitions.
 pub fn validate(workflow: &Workflow, resolver: &dyn NodeKindResolver) -> ValidationReport {
     let mut issues = Vec::new();
+    let specs = composite_specs(workflow);
+    let context = ValidationContext {
+        resolver,
+        subgraphs: &workflow.subgraphs,
+        specs,
+    };
 
-    if workflow.schema_version != SCHEMA_VERSION {
+    validate_workflow(workflow, &context, "", &HashSet::new(), &mut issues);
+    validate_subgraphs(workflow, &context, &mut issues);
+    validate_recursive_references(workflow, &mut issues);
+
+    ValidationReport::new(workflow, issues)
+}
+
+struct ValidationContext<'a> {
+    resolver: &'a dyn NodeKindResolver,
+    subgraphs: &'a BTreeMap<String, Subgraph>,
+    /// Keyed by the root map key, which is what `subgraphId` resolves against.
+    specs: BTreeMap<String, NodeSpec>,
+}
+
+impl ValidationContext<'_> {
+    fn spec(&self, node: &WorkflowNode) -> Option<&NodeSpec> {
+        if node.kind == COMPOSITE_NODE_KIND {
+            let id = node.subgraph_id.as_deref()?;
+            self.specs.get(id)
+        } else {
+            self.resolver.node_spec(&node.kind)
+        }
+    }
+}
+
+/// Builds the dynamic node specs for every root subgraph definition. The
+/// runtime uses the same function so validation and execution cannot drift.
+pub fn composite_specs(workflow: &Workflow) -> BTreeMap<String, NodeSpec> {
+    workflow
+        .subgraphs
+        .iter()
+        .map(|(key, subgraph)| {
+            let mut spec = NodeSpec::new(COMPOSITE_NODE_KIND, &subgraph.name, "Composite");
+            spec.description = format!(
+                "Composite of {} node(s), defined by subgraph {:?}",
+                subgraph.workflow.nodes.len(),
+                subgraph.id
+            );
+            spec.inputs = subgraph
+                .inputs
+                .iter()
+                .map(|input| input.port.clone())
+                .collect();
+            spec.outputs = subgraph
+                .outputs
+                .iter()
+                .map(|output| output.port.clone())
+                .collect();
+            (key.clone(), spec)
+        })
+        .collect()
+}
+
+fn join_path(prefix: &str, suffix: &str) -> String {
+    if prefix.is_empty() {
+        suffix.to_string()
+    } else {
+        format!("{prefix}.{suffix}")
+    }
+}
+
+fn validate_workflow(
+    workflow: &Workflow,
+    context: &ValidationContext<'_>,
+    prefix: &str,
+    provided: &HashSet<(&str, &str)>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if !SUPPORTED_SCHEMA_VERSIONS.contains(&workflow.schema_version.as_str()) {
         issues.push(ValidationIssue::error(
             codes::UNSUPPORTED_SCHEMA,
-            "schemaVersion",
+            join_path(prefix, "schemaVersion"),
             format!(
-                "unsupported schema version {:?}, expected {:?}",
-                workflow.schema_version, SCHEMA_VERSION
+                "unsupported schema version {:?}, expected one of {:?}",
+                workflow.schema_version, SUPPORTED_SCHEMA_VERSIONS
             ),
         ));
     }
@@ -127,14 +213,14 @@ pub fn validate(workflow: &Workflow, resolver: &dyn NodeKindResolver) -> Validat
     if workflow.nodes.is_empty() {
         issues.push(ValidationIssue::warning(
             codes::EMPTY_WORKFLOW,
-            "nodes",
+            join_path(prefix, "nodes"),
             "workflow has no nodes",
         ));
     }
 
     let mut seen_ids: HashSet<&str> = HashSet::new();
     for (index, node) in workflow.nodes.iter().enumerate() {
-        let path = format!("nodes[{index}]");
+        let path = join_path(prefix, &format!("nodes[{index}]"));
         if node.id.trim().is_empty() {
             issues.push(ValidationIssue::error(
                 codes::EMPTY_NODE_ID,
@@ -157,25 +243,378 @@ pub fn validate(workflow: &Workflow, resolver: &dyn NodeKindResolver) -> Validat
             ));
         }
 
-        match resolver.node_spec(&node.kind) {
+        if node.kind == COMPOSITE_NODE_KIND {
+            match node.subgraph_id.as_deref() {
+                Some(id) if context.subgraphs.contains_key(id) => {}
+                Some(id) => issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_UNKNOWN_REFERENCE,
+                    format!("{path}.subgraphId"),
+                    format!("composite node references unknown subgraph {id:?}"),
+                )),
+                None => issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_UNKNOWN_REFERENCE,
+                    format!("{path}.subgraphId"),
+                    "composite node must set subgraphId",
+                )),
+            }
+            continue;
+        }
+
+        match context.spec(node) {
             None => issues.push(ValidationIssue::error(
                 codes::UNKNOWN_KIND,
                 format!("{path}.kind"),
                 format!("unknown node kind {:?}", node.kind),
             )),
             Some(spec) => {
-                validate_params(node, spec, &path, &mut issues);
+                validate_params(node, spec, &path, issues);
                 if spec.control == ControlKind::LoopGate {
-                    validate_gate_budget(node, index, &mut issues);
+                    validate_gate_budget(node, index, &path, issues);
                 }
             }
         }
     }
 
-    validate_edges(workflow, resolver, &mut issues);
-    validate_control_flow(workflow, resolver, &mut issues);
+    validate_edges(workflow, context, prefix, provided, issues);
+    validate_control_flow(workflow, context, prefix, provided, issues);
+}
 
-    ValidationReport::new(workflow, issues)
+fn validate_subgraphs(
+    root: &Workflow,
+    context: &ValidationContext<'_>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let mut seen_ids: HashMap<&str, &str> = HashMap::new();
+    for (key, subgraph) in &root.subgraphs {
+        let base = format!("subgraphs.{key}");
+        if subgraph.id.trim().is_empty() || subgraph.id != *key {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_DUPLICATE_ID,
+                format!("{base}.id"),
+                format!(
+                    "subgraph map key {key:?} must equal a non-empty definition id, got {:?}",
+                    subgraph.id
+                ),
+            ));
+        }
+        if let Some(previous) = seen_ids.insert(subgraph.id.as_str(), key.as_str()) {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_DUPLICATE_ID,
+                format!("{base}.id"),
+                format!(
+                    "subgraph id {:?} is already defined by map key {previous:?}",
+                    subgraph.id
+                ),
+            ));
+        }
+        if subgraph.version != crate::model::SUBGRAPH_VERSION {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_UNSUPPORTED_VERSION,
+                format!("{base}.version"),
+                format!(
+                    "unsupported subgraph version {}, expected {}",
+                    subgraph.version,
+                    crate::model::SUBGRAPH_VERSION
+                ),
+            ));
+        }
+        if !subgraph.workflow.subgraphs.is_empty() {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_NESTED_DEFINITIONS,
+                format!("{base}.workflow.subgraphs"),
+                "subgraph definitions must live on the root workflow",
+            ));
+        }
+
+        let provided: HashSet<(&str, &str)> = subgraph
+            .inputs
+            .iter()
+            .flat_map(|input| input.targets.iter())
+            .map(|binding| (binding.node_id.as_str(), binding.port.as_str()))
+            .collect();
+        validate_workflow(
+            &subgraph.workflow,
+            context,
+            &format!("{base}.workflow"),
+            &provided,
+            issues,
+        );
+        validate_subgraph_ports(subgraph, &base, issues);
+        validate_subgraph_bindings(subgraph, context, &base, issues);
+    }
+}
+
+fn validate_subgraph_ports(subgraph: &Subgraph, base: &str, issues: &mut Vec<ValidationIssue>) {
+    let mut input_names: HashSet<&str> = HashSet::new();
+    for (index, input) in subgraph.inputs.iter().enumerate() {
+        let path = format!("{base}.inputs[{index}].port");
+        if input.port.name.trim().is_empty() {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.name"),
+                "subgraph input port name must not be empty",
+            ));
+        } else if !input_names.insert(input.port.name.as_str()) {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.name"),
+                format!("duplicate subgraph input port {:?}", input.port.name),
+            ));
+        }
+        if input.port.required && input.targets.is_empty() {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_BINDING,
+                format!("{base}.inputs[{index}].targets"),
+                format!(
+                    "required subgraph input {:?} has no internal target",
+                    input.port.name
+                ),
+            ));
+        }
+    }
+
+    let mut output_names: HashSet<&str> = HashSet::new();
+    for (index, output) in subgraph.outputs.iter().enumerate() {
+        let path = format!("{base}.outputs[{index}].port");
+        if output.port.name.trim().is_empty() {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.name"),
+                "subgraph output port name must not be empty",
+            ));
+        } else if !output_names.insert(output.port.name.as_str()) {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.name"),
+                format!("duplicate subgraph output port {:?}", output.port.name),
+            ));
+        }
+    }
+}
+
+fn validate_subgraph_bindings(
+    subgraph: &Subgraph,
+    context: &ValidationContext<'_>,
+    base: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let mut targets: HashSet<(&str, &str)> = HashSet::new();
+    for (index, input) in subgraph.inputs.iter().enumerate() {
+        for (target_index, binding) in input.targets.iter().enumerate() {
+            let path = format!("{base}.inputs[{index}].targets[{target_index}]");
+            let Some(node) = subgraph.workflow.node(&binding.node_id) else {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_BINDING,
+                    format!("{path}.nodeId"),
+                    format!(
+                        "subgraph input {:?} targets missing internal node {:?}",
+                        input.port.name, binding.node_id
+                    ),
+                ));
+                continue;
+            };
+            let Some(spec) = context.spec(node) else {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_BINDING,
+                    format!("{path}.nodeId"),
+                    format!(
+                        "subgraph input {:?} targets node {:?} with no resolvable spec",
+                        input.port.name, binding.node_id
+                    ),
+                ));
+                continue;
+            };
+            let Some(port) = spec.input_port(&binding.port) else {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_BINDING,
+                    format!("{path}.port"),
+                    format!(
+                        "internal node {:?} has no input port {:?}",
+                        binding.node_id, binding.port
+                    ),
+                ));
+                continue;
+            };
+            if port.control != input.port.control {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_PORT,
+                    format!("{path}.port"),
+                    format!(
+                        "subgraph input {:?} control={} does not match internal port control={}",
+                        input.port.name, input.port.control, port.control
+                    ),
+                ));
+            }
+            if !port.data_type.accepts(input.port.data_type) {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_PORT,
+                    format!("{path}.port"),
+                    format!(
+                        "internal port {:?} expects {}, but subgraph input {:?} provides {}",
+                        binding.port, port.data_type, input.port.name, input.port.data_type
+                    ),
+                ));
+            }
+            if subgraph
+                .workflow
+                .edges
+                .iter()
+                .any(|edge| edge.target == binding.node_id && edge.target_port == binding.port)
+            {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_BINDING,
+                    path.clone(),
+                    format!(
+                        "internal input {:?}.{:?} already has an internal edge; external input cannot also drive it",
+                        binding.node_id, binding.port
+                    ),
+                ));
+            }
+            if !targets.insert((binding.node_id.as_str(), binding.port.as_str())) {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_INVALID_BINDING,
+                    path,
+                    format!(
+                        "internal input {:?}.{:?} is bound more than once",
+                        binding.node_id, binding.port
+                    ),
+                ));
+            }
+        }
+    }
+
+    for (index, output) in subgraph.outputs.iter().enumerate() {
+        let path = format!("{base}.outputs[{index}].source");
+        let Some(node) = subgraph.workflow.node(&output.source.node_id) else {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_BINDING,
+                format!("{path}.nodeId"),
+                format!(
+                    "subgraph output {:?} sources missing internal node {:?}",
+                    output.port.name, output.source.node_id
+                ),
+            ));
+            continue;
+        };
+        let Some(spec) = context.spec(node) else {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_BINDING,
+                format!("{path}.nodeId"),
+                format!(
+                    "subgraph output {:?} sources node {:?} with no resolvable spec",
+                    output.port.name, output.source.node_id
+                ),
+            ));
+            continue;
+        };
+        let Some(port) = spec.output_port(&output.source.port) else {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_BINDING,
+                format!("{path}.port"),
+                format!(
+                    "internal node {:?} has no output port {:?}",
+                    output.source.node_id, output.source.port
+                ),
+            ));
+            continue;
+        };
+        if port.control != output.port.control {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.port"),
+                format!(
+                    "subgraph output {:?} control={} does not match internal port control={}",
+                    output.port.name, output.port.control, port.control
+                ),
+            ));
+        }
+        if !output.port.data_type.accepts(port.data_type) {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_INVALID_PORT,
+                format!("{path}.port"),
+                format!(
+                    "subgraph output {:?} expects {}, but internal port {:?} emits {}",
+                    output.port.name, output.port.data_type, output.source.port, port.data_type
+                ),
+            ));
+        }
+    }
+}
+
+fn validate_recursive_references(root: &Workflow, issues: &mut Vec<ValidationIssue>) {
+    let mut reported: HashSet<String> = HashSet::new();
+    for key in root.subgraphs.keys() {
+        let mut path = vec![key.clone()];
+        walk_recursive_references(root, key, &mut path, &mut reported, issues);
+    }
+}
+
+fn walk_recursive_references(
+    root: &Workflow,
+    key: &str,
+    path: &mut Vec<String>,
+    reported: &mut HashSet<String>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(subgraph) = root.subgraphs.get(key) else {
+        return;
+    };
+    for (index, node) in subgraph.workflow.nodes.iter().enumerate() {
+        if node.kind != COMPOSITE_NODE_KIND {
+            continue;
+        }
+        let Some(reference) = node.subgraph_id.as_deref() else {
+            continue;
+        };
+        if path.iter().any(|existing| existing == reference) {
+            let marker = format!("{key}->{reference}");
+            if reported.insert(marker) {
+                issues.push(ValidationIssue::error(
+                    codes::SUBGRAPH_RECURSIVE_REFERENCE,
+                    format!("subgraphs.{key}.workflow.nodes[{index}].subgraphId"),
+                    format!("subgraph {key:?} recursively references {reference:?}"),
+                ));
+            }
+            continue;
+        }
+        if root.subgraphs.contains_key(reference) {
+            path.push(reference.to_string());
+            walk_recursive_references(root, reference, path, reported, issues);
+            path.pop();
+        }
+    }
+}
+
+fn subgraph_has_loop_gate(
+    context: &ValidationContext<'_>,
+    id: &str,
+    visiting: &mut HashSet<String>,
+) -> bool {
+    let Some(subgraph) = context.subgraphs.get(id) else {
+        return false;
+    };
+    if !visiting.insert(id.to_string()) {
+        return false;
+    }
+    let mut found = false;
+    for node in &subgraph.workflow.nodes {
+        if node.kind == COMPOSITE_NODE_KIND {
+            if let Some(nested) = node.subgraph_id.as_deref() {
+                if subgraph_has_loop_gate(context, nested, visiting) {
+                    found = true;
+                    break;
+                }
+            }
+        } else if context
+            .spec(node)
+            .is_some_and(|spec| spec.control == ControlKind::LoopGate)
+        {
+            found = true;
+            break;
+        }
+    }
+    visiting.remove(id);
+    found
 }
 
 fn validate_params(
@@ -272,7 +711,9 @@ fn json_type_name(value: &Value) -> &'static str {
 
 fn validate_edges(
     workflow: &Workflow,
-    resolver: &dyn NodeKindResolver,
+    context: &ValidationContext<'_>,
+    prefix: &str,
+    provided: &HashSet<(&str, &str)>,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let mut edge_ids: HashSet<&str> = HashSet::new();
@@ -280,7 +721,7 @@ fn validate_edges(
     let mut edge_keys: HashSet<(&str, &str, &str, &str)> = HashSet::new();
 
     for (index, edge) in workflow.edges.iter().enumerate() {
-        let path = format!("edges[{index}]");
+        let path = join_path(prefix, &format!("edges[{index}]"));
         if !edge_ids.insert(edge.id.as_str()) {
             issues.push(ValidationIssue::error(
                 codes::DUPLICATE_EDGE_ID,
@@ -333,8 +774,8 @@ fn validate_edges(
         let (Some(source_node), Some(target_node)) = (source_node, target_node) else {
             continue;
         };
-        let source_spec = resolver.node_spec(&source_node.kind);
-        let target_spec = resolver.node_spec(&target_node.kind);
+        let source_spec = context.spec(source_node);
+        let target_spec = context.spec(target_node);
 
         if let Some(spec) = source_spec {
             if spec.output_port(&edge.source_port).is_none() {
@@ -394,28 +835,29 @@ fn validate_edges(
         if count > 1 {
             issues.push(ValidationIssue::error(
                 codes::INPUT_CONFLICT,
-                format!("nodes[?].inputs.{port}"),
+                join_path(prefix, &format!("nodes[?].inputs.{port}")),
                 format!("input port {port:?} of node {target:?} accepts a single connection"),
             ));
         }
     }
 
     for (index, node) in workflow.nodes.iter().enumerate() {
-        let Some(spec) = resolver.node_spec(&node.kind) else {
+        let Some(spec) = context.spec(node) else {
             continue;
         };
         for port in &spec.inputs {
             if !port.required {
                 continue;
             }
-            let connected = workflow
-                .edges
-                .iter()
-                .any(|edge| edge.target == node.id && edge.target_port == port.name);
+            let connected = provided.contains(&(node.id.as_str(), port.name.as_str()))
+                || workflow
+                    .edges
+                    .iter()
+                    .any(|edge| edge.target == node.id && edge.target_port == port.name);
             if !connected {
                 issues.push(ValidationIssue::error(
                     codes::UNCONNECTED_INPUT,
-                    format!("nodes[{index}].inputs.{}", port.name),
+                    join_path(prefix, &format!("nodes[{index}].inputs.{}", port.name)),
                     format!("required input port {:?} is not connected", port.name),
                 ));
             }
@@ -425,7 +867,9 @@ fn validate_edges(
 
 fn validate_control_flow(
     workflow: &Workflow,
-    resolver: &dyn NodeKindResolver,
+    context: &ValidationContext<'_>,
+    prefix: &str,
+    provided: &HashSet<(&str, &str)>,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let count = workflow.nodes.len();
@@ -461,12 +905,35 @@ fn validate_control_flow(
             continue;
         }
 
+        let nested_loops: Vec<&str> = component
+            .iter()
+            .filter_map(|&node| {
+                let candidate = &workflow.nodes[node];
+                if candidate.kind != COMPOSITE_NODE_KIND {
+                    return None;
+                }
+                let id = candidate.subgraph_id.as_deref()?;
+                subgraph_has_loop_gate(context, id, &mut HashSet::new())
+                    .then_some(candidate.id.as_str())
+            })
+            .collect();
+        if !nested_loops.is_empty() {
+            issues.push(ValidationIssue::error(
+                codes::SUBGRAPH_NESTED_LOOP_UNSUPPORTED,
+                join_path(prefix, "edges"),
+                format!(
+                    "cycle contains composite node(s) whose definitions contain a loop gate: {}",
+                    nested_loops.join(", ")
+                ),
+            ));
+        }
+
         let gates: Vec<usize> = component
             .iter()
             .copied()
             .filter(|&node| {
-                resolver
-                    .node_spec(&workflow.nodes[node].kind)
+                context
+                    .spec(&workflow.nodes[node])
                     .is_some_and(|spec| spec.control == ControlKind::LoopGate)
             })
             .collect();
@@ -478,7 +945,7 @@ fn validate_control_flow(
                 .collect();
             issues.push(ValidationIssue::error(
                 codes::CYCLE,
-                "edges",
+                join_path(prefix, "edges"),
                 format!(
                     "graph contains an uncontrolled cycle involving nodes: {}",
                     names.into_iter().collect::<Vec<_>>().join(", ")
@@ -493,7 +960,7 @@ fn validate_control_flow(
                 .collect();
             issues.push(ValidationIssue::error(
                 codes::LOOP_MULTIPLE_GATES,
-                "edges",
+                join_path(prefix, "edges"),
                 format!(
                     "cycle contains more than one loop gate: {}",
                     names.into_iter().collect::<Vec<_>>().join(", ")
@@ -507,7 +974,7 @@ fn validate_control_flow(
         if has_cycle_without(component, gate, &adjacency) {
             issues.push(ValidationIssue::error(
                 codes::LOOP_UNCONTROLLED_CYCLE,
-                format!("nodes[{gate}].kind"),
+                join_path(prefix, &format!("nodes[{gate}].kind")),
                 format!(
                     "cycle still contains a feedback path after removing loop gate {:?}",
                     gate_node.id
@@ -524,7 +991,7 @@ fn validate_control_flow(
         if !has_exit {
             issues.push(ValidationIssue::error(
                 codes::LOOP_NO_EXIT_PATH,
-                format!("nodes[{gate}].outputs.exit"),
+                join_path(prefix, &format!("nodes[{gate}].outputs.exit")),
                 format!(
                     "loop gate {:?} has no exit edge leaving the cycle",
                     gate_node.id
@@ -532,9 +999,10 @@ fn validate_control_flow(
             ));
         }
 
-        let has_start = workflow
-            .incoming(&gate_node.id)
-            .any(|edge| edge.target_port == "start");
+        let has_start = provided.contains(&(gate_node.id.as_str(), "start"))
+            || workflow
+                .incoming(&gate_node.id)
+                .any(|edge| edge.target_port == "start");
         let has_next = workflow
             .incoming(&gate_node.id)
             .any(|edge| edge.target_port == "next");
@@ -547,7 +1015,7 @@ fn validate_control_flow(
             };
             issues.push(ValidationIssue::error(
                 codes::LOOP_MISSING_TRIGGER,
-                format!("nodes[{gate}].inputs"),
+                join_path(prefix, &format!("nodes[{gate}].inputs")),
                 format!(
                     "loop gate {:?} is missing the {missing} trigger",
                     gate_node.id
@@ -560,6 +1028,7 @@ fn validate_control_flow(
 fn validate_gate_budget(
     node: &crate::model::WorkflowNode,
     index: usize,
+    prefix: &str,
     issues: &mut Vec<ValidationIssue>,
 ) {
     for (name, maximum) in [
@@ -575,7 +1044,7 @@ fn validate_gate_budget(
         if !valid {
             issues.push(ValidationIssue::error(
                 codes::LOOP_INVALID_BUDGET,
-                format!("nodes[{index}].params.{name}"),
+                join_path(prefix, &format!("nodes[{index}].params.{name}")),
                 format!(
                     "loop gate parameter {name:?} must be set to an integer between 1 and {maximum}"
                 ),

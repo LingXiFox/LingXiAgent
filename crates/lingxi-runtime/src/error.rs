@@ -15,6 +15,7 @@ pub mod error_codes {
     pub const LOOP_INVALID_BUDGET: &str = "loop.invalid_budget";
     pub const LOOP_MISSING_TRIGGER: &str = "loop.missing_trigger";
     pub const LOOP_INVALID_STATE: &str = "loop.invalid_state";
+    pub const SUBGRAPH_UNKNOWN_REFERENCE: &str = "subgraph.unknown_reference";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

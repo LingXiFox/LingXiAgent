@@ -10,6 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::redact::redact_event;
 use crate::runs::{now_ms, RunDatabase, RunDetail, RunRecord};
 use crate::store::WorkflowSummary;
+use crate::templates::{TemplateBundle, TemplateSummary};
 use crate::AppState;
 
 pub const RUN_EVENT: &str = "lingxi:run-event";
@@ -203,6 +204,30 @@ pub fn load_workflow(name: String, state: State<'_, AppState>) -> Result<Workflo
 #[tauri::command]
 pub fn delete_workflow(name: String, state: State<'_, AppState>) -> Result<bool, String> {
     state.store.delete(&name)
+}
+
+#[tauri::command]
+pub fn template_list(state: State<'_, AppState>) -> Result<Vec<TemplateSummary>, String> {
+    state.templates.list()
+}
+
+#[tauri::command]
+pub fn template_load(id: String, state: State<'_, AppState>) -> Result<TemplateBundle, String> {
+    state.templates.load(&id)
+}
+
+#[tauri::command]
+pub fn template_save(
+    name: String,
+    bundle: TemplateBundle,
+    state: State<'_, AppState>,
+) -> Result<TemplateSummary, String> {
+    state.templates.save(&name, &bundle)
+}
+
+#[tauri::command]
+pub fn template_delete(id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    state.templates.delete(&id)
 }
 
 #[tauri::command]

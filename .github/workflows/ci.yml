@@ -94,3 +94,7 @@ jobs:
       - name: Event replay tests
         working-directory: apps/desktop
         run: pnpm test:events
+
+      - name: Composite helper tests
+        working-directory: apps/desktop
+        run: pnpm test:composite

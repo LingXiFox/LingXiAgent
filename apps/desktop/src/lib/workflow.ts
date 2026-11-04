@@ -8,7 +8,7 @@ import type {
   WorkflowNodeDoc,
 } from "./types";
 
-export const SCHEMA_VERSION = "1.0";
+export const SCHEMA_VERSION = "1.1";
 
 export type WorkflowMeta = Pick<
   WorkflowDoc,
@@ -25,6 +25,7 @@ export function newWorkflow(name = "untitled"): WorkflowDoc {
     edges: [],
     viewport: { x: 0, y: 0, zoom: 1 },
     metadata: {},
+    subgraphs: {},
   };
 }
 

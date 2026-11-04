@@ -58,6 +58,8 @@ export interface WorkflowNodeDoc {
   position: PositionDoc;
   params: Record<string, unknown>;
   enabled: boolean;
+  /** Present only on composite instances; points at a root subgraph definition. */
+  subgraphId?: string;
 }
 
 export interface EdgeDoc {
@@ -84,6 +86,34 @@ export interface WorkflowDoc {
   edges: EdgeDoc[];
   viewport?: ViewportDoc | null;
   metadata: Record<string, unknown>;
+  /** Root-only definitions; a definition's own workflow never nests definitions. */
+  subgraphs?: Record<string, Subgraph>;
+}
+
+export interface PortBindingDoc {
+  nodeId: string;
+  port: string;
+  edgeId?: string;
+}
+
+export interface SubgraphInputDoc {
+  port: PortSpec;
+  targets: PortBindingDoc[];
+}
+
+export interface SubgraphOutputDoc {
+  port: PortSpec;
+  source: PortBindingDoc;
+}
+
+export interface Subgraph {
+  id: string;
+  version: number;
+  name: string;
+  description?: string | null;
+  workflow: WorkflowDoc;
+  inputs: SubgraphInputDoc[];
+  outputs: SubgraphOutputDoc[];
 }
 
 export type Severity = "error" | "warning";
@@ -111,6 +141,20 @@ export interface WorkflowSummary {
   updatedAtMs: number;
 }
 
+export interface TemplateSummary {
+  id: string;
+  name: string;
+  nodeCount: number;
+  inputCount: number;
+  outputCount: number;
+  updatedAtMs: number;
+}
+
+export interface TemplateBundle {
+  rootId: string;
+  subgraphs: Record<string, Subgraph>;
+}
+
 export interface RunStartResponse {
   started: boolean;
   runId: string | null;
@@ -128,10 +172,18 @@ export interface InteractionOption {
   label: string;
 }
 
+export interface ScopeFrame {
+  instanceId: string;
+  subgraphId: string;
+  label: string;
+}
+
 interface RunEventBase {
   runId: string;
   /** Monotonic within a run; used for replay deduplication and gap recovery. */
   seq: number;
+  /** Composite nesting stack, outermost first. Empty on top-level events. */
+  scope?: ScopeFrame[];
 }
 
 export type RunEvent =

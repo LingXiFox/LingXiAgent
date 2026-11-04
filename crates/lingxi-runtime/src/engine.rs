@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use lingxi_spec::{validate, Severity, Workflow};
+use lingxi_spec::{validate, Severity, Workflow, COMPOSITE_NODE_KIND};
 use serde::Serialize;
 
 use crate::context::NodeContext;
@@ -193,6 +193,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -213,6 +214,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeSkipped {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -233,6 +235,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeSkipped {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -248,6 +251,7 @@ impl Engine {
             emitter.emit(RunEvent::NodeStarted {
                 run_id: run_id.to_string(),
                 seq: 0,
+                scope: Vec::new(),
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 label: label.clone(),
@@ -279,6 +283,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -310,6 +315,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -328,6 +334,7 @@ impl Engine {
                 emitter.emit(RunEvent::NodeFailed {
                     run_id: run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -363,6 +370,7 @@ impl Engine {
                     emitter.emit(RunEvent::NodeCancelled {
                         run_id: run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -378,6 +386,7 @@ impl Engine {
                     emitter.emit(RunEvent::NodeFinished {
                         run_id: run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -393,6 +402,7 @@ impl Engine {
                     emitter.emit(RunEvent::NodeFailed {
                         run_id: run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label,
@@ -470,9 +480,10 @@ fn requires_control_flow(workflow: &Workflow, registry: &NodeRegistry) -> bool {
         .iter()
         .any(|edge| edge.kind == lingxi_spec::EdgeKind::Control)
         || workflow.nodes.iter().any(|node| {
-            registry
-                .spec(&node.kind)
-                .is_some_and(|spec| spec.control != lingxi_spec::ControlKind::Normal)
+            node.kind == COMPOSITE_NODE_KIND
+                || registry
+                    .spec(&node.kind)
+                    .is_some_and(|spec| spec.control != lingxi_spec::ControlKind::Normal)
         })
 }
 

@@ -8,15 +8,31 @@ import {
 } from "@xyflow/react";
 
 import { Canvas } from "./components/Canvas";
+import { CanvasBar } from "./components/CanvasBar";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { InteractionDialog, type InteractionRequest } from "./components/InteractionDialog";
 import { LogPanel } from "./components/LogPanel";
 import { NodeLibrary } from "./components/NodeLibrary";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { RunHistoryDialog } from "./components/RunHistoryDialog";
+import { TemplateDialog } from "./components/TemplateDialog";
 import { Toolbar } from "./components/Toolbar";
 import { WorkflowDialog } from "./components/WorkflowDialog";
 import { api, isPreview } from "./lib/api";
+import type { ScopeFrame } from "./lib/types";
+import {
+  duplicateSelection,
+  groupSelection,
+  instantiateTemplate,
+  layerViewport,
+  layerWorkflow,
+  nodeSpec,
+  subgraphsOf,
+  templateBundle,
+  ungroupComposite,
+  type LayerPath,
+  writeLayer,
+} from "./lib/composite";
 import { drainEventQueue, enqueueRunEvent } from "./lib/eventReplay";
 import type { LogEntry, LogLevel, UiRunStatus } from "./lib/log";
 import type { LingXiNode } from "./lib/nodeData";
@@ -33,7 +49,10 @@ import type {
   PositionDoc,
   RunEvent,
   RunStatus,
+  Subgraph,
+  TemplateSummary,
   ValidationReport,
+  ViewportDoc,
   WorkflowDoc,
   WorkflowNodeDoc,
   WorkflowSummary,
@@ -108,6 +127,8 @@ function buildNode(
   enabled: boolean,
   onParamChange: LingXiNode["data"]["onParamChange"],
   onToggleEnabled: LingXiNode["data"]["onToggleEnabled"],
+  subgraphId?: string,
+  innerNodeCount?: number,
 ): LingXiNode {
   return {
     id,
@@ -119,10 +140,46 @@ function buildNode(
       params,
       enabled,
       spec,
+      subgraphId,
+      innerNodeCount,
       onParamChange,
       onToggleEnabled,
     },
   };
+}
+
+function visibleNodeId(
+  scope: ScopeFrame[],
+  nodeId: string,
+  instancePath: string[],
+): string | null {
+  if (scope.length === 0) {
+    return instancePath.length === 0 ? nodeId : null;
+  }
+  if (scope.length > instancePath.length) return null;
+  for (let index = 0; index < scope.length; index += 1) {
+    if (scope[index].instanceId !== instancePath[index]) return null;
+  }
+  if (scope.length === instancePath.length) return nodeId;
+  if (scope.length === instancePath.length - 1) return instancePath[scope.length];
+  return null;
+}
+
+function scopePrefix(scope: ScopeFrame[]): string {
+  if (scope.length === 0) return "";
+  return "[" + scope.map((frame) => frame.label).join(" / ") + "] ";
+}
+
+function flowEdges(document: WorkflowDoc): Edge[] {
+  return document.edges.map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    sourceHandle: edge.sourcePort,
+    target: edge.target,
+    targetHandle: edge.targetPort,
+    type: "smart",
+    data: { control: edge.kind === "control" },
+  }));
 }
 
 export default function App() {
@@ -157,6 +214,21 @@ export default function App() {
   const [recovering, setRecovering] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
+  const [subgraphs, setSubgraphsState] = useState<Record<string, Subgraph>>({});
+  const [layerPath, setLayerPathState] = useState<LayerPath>([]);
+  const [instancePath, setInstancePathState] = useState<string[]>([]);
+  const [activeViewport, setActiveViewport] = useState<ViewportDoc>({
+    x: 0,
+    y: 0,
+    zoom: 1,
+  });
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
+  const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const [templateRootId, setTemplateRootId] = useState<string | null>(null);
   // Terminal events can arrive before runWorkflow resolves; remember them so the
   // late `setStatus("running")` does not overwrite the real outcome.
   const finishedRunsRef = useRef(new Map<string, RunStatus>());
@@ -166,6 +238,13 @@ export default function App() {
   const edgesRef = useRef(edges);
   const metaRef = useRef(meta);
   const statusRef = useRef(status);
+  const subgraphsRef = useRef(subgraphs);
+  // The canonical root document. Every layer is stored here, so leaving a
+  // composite cannot drop the parent canvas that is not currently rendered.
+  const documentRef = useRef<WorkflowDoc | null>(null);
+  const layerPathRef = useRef<LayerPath>(layerPath);
+  const instancePathRef = useRef<string[]>(instancePath);
+  const activeViewportRef = useRef(activeViewport);
   const runIdRef = useRef<string | null>(null);
   const logSeq = useRef(0);
   const toastTimer = useRef<number | null>(null);
@@ -183,6 +262,10 @@ export default function App() {
   edgesRef.current = edges;
   metaRef.current = meta;
   statusRef.current = status;
+  subgraphsRef.current = subgraphs;
+  layerPathRef.current = layerPath;
+  instancePathRef.current = instancePath;
+  activeViewportRef.current = activeViewport;
 
   const pushLog = useCallback((level: LogLevel, text: string, at = Date.now()) => {
     setLogs((previous) => {
@@ -313,21 +396,71 @@ export default function App() {
     [flash, setEdges],
   );
 
+  const buildFlowNodes = useCallback(
+    (document: WorkflowDoc, path: LayerPath): LingXiNode[] => {
+      const layer = layerWorkflow(document, path);
+      if (!layer) return [];
+      const definitions = subgraphsOf(document);
+      const missing: string[] = [];
+      const nextNodes = layer.nodes.map((node) => {
+        const spec = nodeSpec(node, specMap, definitions);
+        if (!spec) missing.push(node.kind);
+        const definition = node.subgraphId ? definitions[node.subgraphId] : undefined;
+        return buildNode(
+          node.id,
+          spec ?? UNKNOWN_SPEC(node.kind),
+          { x: node.position.x, y: node.position.y },
+          node.params ?? {},
+          node.label ?? null,
+          node.enabled ?? true,
+          handleParamChange,
+          handleToggleEnabled,
+          node.subgraphId,
+          definition?.workflow.nodes.length,
+        );
+      });
+      if (missing.length > 0) {
+        pushLog("warn", "loaded workflow references unregistered kinds: " + missing.join(", "));
+      }
+      return nextNodes;
+    },
+    [handleParamChange, handleToggleEnabled, pushLog, specMap],
+  );
+
   const buildDoc = useCallback((): WorkflowDoc => {
-    return {
-      schemaVersion: SCHEMA_VERSION,
-      id: metaRef.current.id,
-      name: metaRef.current.name,
-      description: metaRef.current.description,
-      nodes: nodesRef.current.map<WorkflowNodeDoc>((node) => ({
+    const base: WorkflowDoc = documentRef.current
+      ? structuredClone(documentRef.current)
+      : {
+          schemaVersion: SCHEMA_VERSION,
+          id: metaRef.current.id,
+          name: metaRef.current.name,
+          description: metaRef.current.description,
+          nodes: [],
+          edges: [],
+          viewport: metaRef.current.viewport,
+          metadata: metaRef.current.metadata,
+          subgraphs: subgraphsRef.current,
+        };
+    base.schemaVersion = SCHEMA_VERSION;
+    base.id = metaRef.current.id;
+    base.name = metaRef.current.name;
+    base.description = metaRef.current.description;
+    base.metadata = metaRef.current.metadata;
+    base.viewport = metaRef.current.viewport;
+    base.subgraphs = subgraphsRef.current;
+    const next = writeLayer(
+      base,
+      layerPathRef.current,
+      nodesRef.current.map<WorkflowNodeDoc>((node) => ({
         id: node.id,
         kind: node.data.kind,
         label: node.data.label,
         position: { x: node.position.x, y: node.position.y },
         params: node.data.params,
         enabled: node.data.enabled,
+        subgraphId: node.data.subgraphId,
       })),
-      edges: edgesRef.current.map((edge) => ({
+      edgesRef.current.map((edge) => ({
         id: edge.id,
         source: edge.source,
         sourcePort: edge.sourceHandle ?? "",
@@ -335,61 +468,66 @@ export default function App() {
         targetPort: edge.targetHandle ?? "",
         kind: edgeIsControl(edge) ? "control" : "data",
       })),
-      viewport: metaRef.current.viewport,
-      metadata: metaRef.current.metadata,
-    };
+      activeViewportRef.current,
+    );
+    documentRef.current = next;
+    return next;
   }, []);
+
+  const adoptLayer = useCallback(
+    (document: WorkflowDoc, path: LayerPath) => {
+      documentRef.current = document;
+      const definitions = subgraphsOf(document);
+      subgraphsRef.current = definitions;
+      setSubgraphsState(definitions);
+      const layer = layerWorkflow(document, path);
+      setNodes(buildFlowNodes(document, path));
+      setEdges(layer ? flowEdges(layer) : []);
+      const viewport = layerViewport(document, path) ?? { x: 0, y: 0, zoom: 1 };
+      activeViewportRef.current = viewport;
+      setActiveViewport(viewport);
+      if (path.length === 0) {
+        setMeta((current) => ({ ...current, viewport }));
+      }
+      setViewportKey((key) => key + 1);
+      setSelectedNodeIds([]);
+      setReport(null);
+      setProblemsOpen(false);
+    },
+    [buildFlowNodes, setEdges, setNodes],
+  );
 
   const applyDoc = useCallback(
     (document: WorkflowDoc) => {
-      const missing: string[] = [];
-      const nextNodes = document.nodes.map((node) => {
-        const known = specMap.get(node.kind);
-        if (!known) missing.push(node.kind);
-        return buildNode(
-          node.id,
-          known ?? UNKNOWN_SPEC(node.kind),
-          { x: node.position.x, y: node.position.y },
-          node.params ?? {},
-          node.label ?? null,
-          node.enabled ?? true,
-          handleParamChange,
-          handleToggleEnabled,
-        );
-      });
-      setNodes(nextNodes);
-      setEdges(
-        document.edges.map((edge) => {
-          const control = edge.kind === "control";
-          return {
-            id: edge.id,
-            source: edge.source,
-            sourceHandle: edge.sourcePort,
-            target: edge.target,
-            targetHandle: edge.targetPort,
-            type: "smart",
-            data: { control },
-          };
-        }),
-      );
+      documentRef.current = structuredClone(document);
+      const definitions = subgraphsOf(document);
+      subgraphsRef.current = definitions;
+      setSubgraphsState(definitions);
+      layerPathRef.current = [];
+      setLayerPathState([]);
+      instancePathRef.current = [];
+      setInstancePathState([]);
+      setNodes(buildFlowNodes(document, []));
+      setEdges(flowEdges(document));
+      const viewport = document.viewport ?? { x: 0, y: 0, zoom: 1 };
+      activeViewportRef.current = viewport;
+      setActiveViewport(viewport);
       setMeta({
         id: document.id,
         name: document.name,
         description: document.description ?? "",
         metadata: document.metadata ?? {},
-        viewport: document.viewport ?? { x: 0, y: 0, zoom: 1 },
+        viewport,
       });
       setReport(null);
       setProblemsOpen(false);
       setViewportKey((key) => key + 1);
+      setSelectedNodeIds([]);
       setPending(null);
       runIdRef.current = null;
       setStatus("idle");
-      if (missing.length > 0) {
-        pushLog("warn", "loaded workflow references unregistered kinds: " + missing.join(", "));
-      }
     },
-    [handleParamChange, handleToggleEnabled, pushLog, setEdges, setNodes, specMap],
+    [buildFlowNodes, setEdges, setNodes],
   );
 
   const applyEvent = useCallback(
@@ -404,6 +542,9 @@ export default function App() {
       ) {
         return;
       }
+      const scope = event.scope ?? [];
+      const prefix = scopePrefix(scope);
+      const visible = (nodeId: string) => visibleNodeId(scope, nodeId, instancePathRef.current);
       switch (event.type) {
         case "run.started":
           runIdRef.current = event.runId;
@@ -415,61 +556,84 @@ export default function App() {
           );
           setStatus("running");
           break;
-        case "node.started":
-          pushLog("info", "▶ " + event.label + " · " + event.kind);
-          setNodeRun(event.nodeId, {
-            state: "running",
-            activation: event.activation,
-            iteration: event.iteration,
-          });
+        case "node.started": {
+          pushLog("info", prefix + "▶ " + event.label + " · " + event.kind);
+          const target = visible(event.nodeId);
+          if (target) {
+            setNodeRun(target, {
+              state: "running",
+              activation: event.activation,
+              iteration: event.iteration,
+            });
+          }
           break;
+        }
         case "node.finished": {
           const names = Object.keys(event.outputs);
           const detail = names.length > 0 ? " · " + JSON.stringify(event.outputs) : "";
-          pushLog("success", "✓ " + event.label + " · " + event.durationMs + "ms" + detail);
-          setNodeRun(event.nodeId, {
-            state: "completed",
-            activation: event.activation,
-            iteration: event.iteration,
-          });
+          pushLog("success", prefix + "✓ " + event.label + " · " + event.durationMs + "ms" + detail);
+          const target = visible(event.nodeId);
+          if (target) {
+            setNodeRun(target, {
+              state: "completed",
+              activation: event.activation,
+              iteration: event.iteration,
+            });
+          }
           break;
         }
-        case "node.failed":
-          pushLog("error", "✕ " + event.label + " · " + event.code + ": " + event.message);
+        case "node.failed": {
+          pushLog("error", prefix + "✕ " + event.label + " · " + event.code + ": " + event.message);
           if (event.code === "loop.budget_exhausted") flash("循环预算耗尽，运行失败");
           if (event.code === "loop.timeout") flash("循环超时，运行已终止");
-          setNodeRun(event.nodeId, {
-            state: "failed",
-            activation: event.activation,
-            iteration: event.iteration,
-          });
+          const target = visible(event.nodeId);
+          if (target) {
+            setNodeRun(target, {
+              state: "failed",
+              activation: event.activation,
+              iteration: event.iteration,
+            });
+          }
           break;
-        case "node.skipped":
-          pushLog("warn", "⤼ " + event.label + " skipped · " + event.reason);
-          setNodeRun(event.nodeId, {
-            state: "skipped",
-            activation: event.activation,
-            iteration: event.iteration,
-          });
+        }
+        case "node.skipped": {
+          pushLog("warn", prefix + "⤼ " + event.label + " skipped · " + event.reason);
+          const target = visible(event.nodeId);
+          if (target) {
+            setNodeRun(target, {
+              state: "skipped",
+              activation: event.activation,
+              iteration: event.iteration,
+            });
+          }
           break;
-        case "node.cancelled":
-          pushLog("warn", "⏹ " + event.label + " cancelled");
-          setNodeRun(event.nodeId, {
-            state: "cancelled",
-            activation: event.activation,
-            iteration: event.iteration,
-          });
+        }
+        case "node.cancelled": {
+          pushLog("warn", prefix + "⏹ " + event.label + " cancelled");
+          const target = visible(event.nodeId);
+          if (target) {
+            setNodeRun(target, {
+              state: "cancelled",
+              activation: event.activation,
+              iteration: event.iteration,
+            });
+          }
           break;
+        }
         case "log":
-          pushLog(event.level === "debug" ? "info" : event.level, event.message, event.atMs);
+          pushLog(
+            event.level === "debug" ? "info" : event.level,
+            prefix + event.message,
+            event.atMs,
+          );
           break;
         case "interaction.requested":
-          pushLog("warn", "⏸ waiting for approval · " + event.prompt);
+          pushLog("warn", prefix + "⏸ waiting for approval · " + event.prompt);
           setPending({ requestId: event.requestId, nodeId: event.nodeId, prompt: event.prompt });
           setLogOpen(true);
           break;
         case "interaction.resolved":
-          pushLog("info", "interaction " + event.decision + " · " + event.nodeId);
+          pushLog("info", prefix + "interaction " + event.decision + " · " + event.nodeId);
           setPending((current) =>
             current && current.requestId === event.requestId ? null : current,
           );
@@ -571,6 +735,18 @@ export default function App() {
       .finally(() => setCatalogReady(true));
   }, [pushLog]);
 
+  const refreshTemplates = useCallback(async () => {
+    try {
+      setTemplates(await api.templateList());
+    } catch (error) {
+      pushLog("warn", "failed to load composite templates: " + String(error));
+    }
+  }, [pushLog]);
+
+  useEffect(() => {
+    void refreshTemplates();
+  }, [refreshTemplates]);
+
   useEffect(() => {
     if (!catalogReady || !bridgeReady) return;
     let cancelled = false;
@@ -627,6 +803,17 @@ export default function App() {
       metadata: workflow.metadata,
       viewport: workflow.viewport,
     });
+    documentRef.current = structuredClone(workflow);
+    subgraphsRef.current = {};
+    setSubgraphsState({});
+    layerPathRef.current = [];
+    setLayerPathState([]);
+    instancePathRef.current = [];
+    setInstancePathState([]);
+    const viewport = workflow.viewport ?? { x: 0, y: 0, zoom: 1 };
+    activeViewportRef.current = viewport;
+    setActiveViewport(viewport);
+    setSelectedNodeIds([]);
     setViewportKey((key) => key + 1);
     setPending(null);
     runIdRef.current = null;
@@ -665,6 +852,187 @@ export default function App() {
       pushLog("info", "loaded demo workflow · counter → condition → loop gate");
     }
   }, [applyDoc, confirmAction, pushLog, resetCanvas]);
+
+  const enterComposite = useCallback(
+    (nodeId: string) => {
+      if (statusRef.current === "running" || recoveringRef.current) {
+        flash("运行或恢复期间不能进入组合内部");
+        return;
+      }
+      const node = nodesRef.current.find((item) => item.id === nodeId);
+      const subgraphId = node?.data.subgraphId;
+      if (!node || !subgraphId) return;
+      const document = buildDoc();
+      const path = [...layerPathRef.current, subgraphId];
+      layerPathRef.current = path;
+      setLayerPathState(path);
+      const instances = [...instancePathRef.current, nodeId];
+      instancePathRef.current = instances;
+      setInstancePathState(instances);
+      adoptLayer(document, path);
+      pushLog("info", "entered composite · " + (node.data.label?.trim() || node.data.spec.title));
+    },
+    [adoptLayer, buildDoc, flash, pushLog],
+  );
+
+  const navigateTo = useCallback(
+    (depth: number) => {
+      const current = layerPathRef.current;
+      const target = Math.max(0, Math.min(depth, current.length));
+      if (target === current.length) return;
+      const document = buildDoc();
+      const path = current.slice(0, target);
+      layerPathRef.current = path;
+      setLayerPathState(path);
+      const instances = instancePathRef.current.slice(0, target);
+      instancePathRef.current = instances;
+      setInstancePathState(instances);
+      adoptLayer(document, path);
+    },
+    [adoptLayer, buildDoc],
+  );
+
+  const groupSelected = useCallback(() => {
+    const ids = selectedNodeIds;
+    if (ids.length < 2) {
+      flash("至少选择两个节点才能组合");
+      return;
+    }
+    try {
+      const document = buildDoc();
+      const definitions = subgraphsOf(document);
+      const specFor = (node: WorkflowNodeDoc) =>
+        nodeSpec(node, specMap, definitions) ?? UNKNOWN_SPEC(node.kind);
+      const result = groupSelection(document, layerPathRef.current, ids, specFor);
+      adoptLayer(result.doc, layerPathRef.current);
+      flash("已组合为 " + (result.doc.subgraphs?.[result.subgraphId]?.name ?? "组合节点"));
+      pushLog("success", "grouped " + ids.length + " nodes · " + result.subgraphId);
+    } catch (error) {
+      pushLog("error", "group failed: " + String(error));
+      flash("组合失败");
+    }
+  }, [adoptLayer, buildDoc, flash, pushLog, selectedNodeIds, specMap]);
+
+  const ungroupSelected = useCallback(() => {
+    const selected = nodesRef.current.filter(
+      (node) => selectedNodeIds.includes(node.id) && node.data.subgraphId,
+    );
+    if (selected.length !== 1) {
+      flash("请选择一个组合节点");
+      return;
+    }
+    try {
+      const result = ungroupComposite(buildDoc(), layerPathRef.current, selected[0].id);
+      adoptLayer(result.doc, layerPathRef.current);
+      flash("已解组 · 恢复 " + result.restoredNodeIds.length + " 个节点");
+      pushLog("success", "ungrouped " + selected[0].id);
+    } catch (error) {
+      pushLog("error", "ungroup failed: " + String(error));
+      flash("解组失败");
+    }
+  }, [adoptLayer, buildDoc, flash, pushLog, selectedNodeIds]);
+
+  const duplicateSelected = useCallback(() => {
+    if (selectedNodeIds.length === 0) return;
+    try {
+      const document = duplicateSelection(
+        buildDoc(),
+        layerPathRef.current,
+        selectedNodeIds,
+      );
+      adoptLayer(document, layerPathRef.current);
+      flash("已复制 " + selectedNodeIds.length + " 个节点");
+    } catch (error) {
+      pushLog("error", "duplicate failed: " + String(error));
+      flash("复制失败");
+    }
+  }, [adoptLayer, buildDoc, flash, pushLog, selectedNodeIds]);
+
+  const openTemplateDialog = useCallback(() => {
+    const selected = nodesRef.current.filter(
+      (node) => selectedNodeIds.includes(node.id) && node.data.subgraphId,
+    );
+    if (selected.length !== 1) {
+      flash("请选择一个组合节点");
+      return;
+    }
+    const node = selected[0];
+    setTemplateRootId(node.data.subgraphId ?? null);
+    setTemplateName(node.data.label?.trim() || node.data.spec.title);
+    setTemplateError(null);
+    setTemplateDialogOpen(true);
+  }, [flash, selectedNodeIds]);
+
+  const saveTemplate = useCallback(
+    async (name: string) => {
+      if (!templateRootId) return;
+      setTemplateBusy(true);
+      setTemplateError(null);
+      try {
+        const bundle = templateBundle(buildDoc(), templateRootId);
+        const summary = await api.templateSave(name, bundle);
+        setTemplateDialogOpen(false);
+        await refreshTemplates();
+        flash("模板已保存 · " + summary.name);
+        pushLog("success", "saved composite template · " + summary.name);
+      } catch (error) {
+        setTemplateError(String(error));
+      } finally {
+        setTemplateBusy(false);
+      }
+    },
+    [buildDoc, flash, pushLog, refreshTemplates, templateRootId],
+  );
+
+  const addTemplate = useCallback(
+    async (id: string, position?: PositionDoc) => {
+      const index = nodesRef.current.length;
+      const at = position ?? {
+        x: 160 + (index % 4) * 60,
+        y: 120 + (index % 5) * 50,
+      };
+      setBusy(true);
+      try {
+        const bundle = await api.templateLoad(id);
+        const document = buildDoc();
+        const instantiated = instantiateTemplate(bundle, at);
+        const next: WorkflowDoc = {
+          ...document,
+          subgraphs: {
+            ...subgraphsOf(document),
+            ...instantiated.subgraphs,
+          },
+        };
+        const path = layerPathRef.current;
+        const layer = layerWorkflow(next, path);
+        if (!layer) throw new Error("unknown layer");
+        const written = writeLayer(
+          next,
+          path,
+          [...layer.nodes, instantiated.node],
+          layer.edges,
+          layerViewport(next, path),
+        );
+        adoptLayer(written, path);
+        flash("已插入模板 · " + id);
+        pushLog("success", "instantiated composite template · " + id);
+      } catch (error) {
+        pushLog("error", "template insert failed: " + String(error));
+        flash("模板插入失败");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [adoptLayer, buildDoc, flash, pushLog],
+  );
+
+  const handleViewportChange = useCallback((viewport: ViewportDoc) => {
+    activeViewportRef.current = viewport;
+    setActiveViewport(viewport);
+    if (layerPathRef.current.length === 0) {
+      setMeta((current) => ({ ...current, viewport }));
+    }
+  }, []);
 
   const handleSave = useCallback(async () => {
     const name = metaRef.current.name.trim();
@@ -812,11 +1180,20 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
+  const selectedSingle = selectedNodeIds.length === 1
+    ? nodes.find((node) => node.id === selectedNodeIds[0])
+    : undefined;
+  const canUngroup = Boolean(selectedSingle?.data.subgraphId);
+  const canTemplate = canUngroup;
+  const breadcrumbLabels = ["顶层", ...layerPath.map((id) => subgraphs[id]?.name ?? id)];
+
   return (
     <div className="app">
       <NodeLibrary
         specs={specs}
+        templates={templates}
         onAdd={addFromLibrary}
+        onAddTemplate={(id) => void addTemplate(id)}
         disabled={status === "running" || recovering}
       />
 
@@ -827,6 +1204,9 @@ export default function App() {
         edgeCount={edges.length}
         busy={busy || recovering}
         preview={isPreview}
+        selectionCount={selectedNodeIds.length}
+        canUngroup={canUngroup}
+        canTemplate={canTemplate}
         onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
         onNew={handleNew}
         onDemo={handleDemo}
@@ -836,26 +1216,34 @@ export default function App() {
         onHistory={() => setHistoryOpen(true)}
         onRun={() => void handleRun()}
         onStop={() => void handleStop()}
+        onGroup={groupSelected}
+        onUngroup={ungroupSelected}
+        onDuplicate={duplicateSelected}
+        onSaveTemplate={openTemplateDialog}
       />
 
       <main className="stage">
+        <CanvasBar
+          labels={breadcrumbLabels}
+          depth={layerPath.length}
+          selectedCount={selectedNodeIds.length}
+          onNavigate={navigateTo}
+        />
         <ReactFlowProvider>
           <Canvas
             nodes={nodes}
             edges={edges}
             running={status === "running"}
-            viewport={meta.viewport}
+            viewport={activeViewport}
             viewportKey={viewportKey}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onDropNode={addNode}
-            onViewportChange={(viewport) =>
-              setMeta((current) => ({
-                ...current,
-                viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
-              }))
-            }
+            onDropTemplate={(id, position) => void addTemplate(id, position)}
+            onNodeDoubleClick={enterComposite}
+            onSelectionChange={setSelectedNodeIds}
+            onViewportChange={handleViewportChange}
           />
         </ReactFlowProvider>
         {problemsOpen && report ? (
@@ -884,6 +1272,15 @@ export default function App() {
       <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
 
       <RunHistoryDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />
+
+      <TemplateDialog
+        open={templateDialogOpen}
+        initialName={templateName}
+        busy={templateBusy}
+        error={templateError}
+        onCancel={() => setTemplateDialogOpen(false)}
+        onSave={(name) => void saveTemplate(name)}
+      />
 
       <ConfirmDialog
         open={confirmAction !== null}

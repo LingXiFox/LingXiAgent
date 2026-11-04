@@ -120,6 +120,8 @@ function categoryClass(category: string): string {
       return "green";
     case "control":
       return "violet";
+    case "composite":
+      return "violet";
     default:
       return "slate";
   }
@@ -165,6 +167,13 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
           {enabled ? "on" : "off"}
         </button>
       </header>
+
+      {data.subgraphId ? (
+        <div className="node__composite">
+          <span className="node__composite-tag">组合</span>
+          <span>{data.innerNodeCount ?? 0} 个内部节点 · 双击展开</span>
+        </div>
+      ) : null}
 
       <div className="node__ports">
         <div className="node__col">

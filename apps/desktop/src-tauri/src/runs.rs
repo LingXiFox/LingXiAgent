@@ -536,6 +536,7 @@ mod tests {
         db.append_event(&RunEvent::Log {
             run_id: "run-1".into(),
             seq: 1,
+            scope: Vec::new(),
             at_ms: 110,
             level: lingxi_runtime::LogLevel::Info,
             node_id: None,
@@ -651,6 +652,7 @@ mod tests {
         let event = RunEvent::NodeFinished {
             run_id: "run-1".into(),
             seq: 0,
+            scope: Vec::new(),
             node_id: "n1".into(),
             kind: "core.log".into(),
             label: "safe label".into(),
@@ -721,6 +723,7 @@ mod tests {
         db.append_event(&RunEvent::Log {
             run_id: "run-1".into(),
             seq: 0,
+            scope: Vec::new(),
             at_ms: 110,
             level: lingxi_runtime::LogLevel::Info,
             node_id: None,

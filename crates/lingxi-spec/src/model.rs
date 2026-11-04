@@ -1,12 +1,19 @@
 //! Serializable workflow document. The frontend and the runtime exchange only
 //! this JSON shape; no editor-specific structure may leak into it.
 
+use crate::node::PortSpec;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-/// Version of the workflow document schema understood by this build.
-pub const SCHEMA_VERSION: &str = "1.0";
+/// Version written by this build. Documents at older supported versions still load.
+pub const SCHEMA_VERSION: &str = "1.1";
+
+/// Versions this build accepts. Adding optional fields is the only 1.0 -> 1.1 change.
+pub const SUPPORTED_SCHEMA_VERSIONS: &[&str] = &["1.0", "1.1"];
+
+/// The only node kind whose ports come from a `Subgraph` definition.
+pub const COMPOSITE_NODE_KIND: &str = "core.composite";
 
 fn default_schema_version() -> String {
     SCHEMA_VERSION.to_string()
@@ -35,6 +42,10 @@ pub struct Workflow {
     pub viewport: Option<Viewport>,
     #[serde(default)]
     pub metadata: BTreeMap<String, Value>,
+    /// Composite definitions live only on the root document. Internal workflows
+    /// must keep this empty; nested composites reference this same map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub subgraphs: BTreeMap<String, Subgraph>,
 }
 
 impl Workflow {
@@ -48,6 +59,7 @@ impl Workflow {
             edges: Vec::new(),
             viewport: None,
             metadata: BTreeMap::new(),
+            subgraphs: BTreeMap::new(),
         }
     }
 
@@ -90,6 +102,9 @@ pub struct WorkflowNode {
     pub params: BTreeMap<String, Value>,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Set on `core.composite` nodes; resolves through the root `subgraphs` map.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgraph_id: Option<String>,
 }
 
 impl WorkflowNode {
@@ -101,6 +116,7 @@ impl WorkflowNode {
             position,
             params: BTreeMap::new(),
             enabled: true,
+            subgraph_id: None,
         }
     }
 
@@ -202,5 +218,84 @@ impl Default for Viewport {
             y: 0.0,
             zoom: 1.0,
         }
+    }
+}
+
+/// A composite definition. Internal node ids are scoped to `workflow`; the
+/// definition id is global to the root document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subgraph {
+    pub id: String,
+    #[serde(default = "default_subgraph_version")]
+    pub version: u32,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub workflow: Workflow,
+    #[serde(default)]
+    pub inputs: Vec<SubgraphInput>,
+    #[serde(default)]
+    pub outputs: Vec<SubgraphOutput>,
+}
+
+pub const SUBGRAPH_VERSION: u32 = 1;
+
+fn default_subgraph_version() -> u32 {
+    SUBGRAPH_VERSION
+}
+
+impl Subgraph {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, workflow: Workflow) -> Self {
+        Self {
+            id: id.into(),
+            version: SUBGRAPH_VERSION,
+            name: name.into(),
+            description: None,
+            workflow,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
+}
+
+/// One external input port can feed several internal input ports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubgraphInput {
+    pub port: PortSpec,
+    #[serde(default)]
+    pub targets: Vec<PortBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubgraphOutput {
+    pub port: PortSpec,
+    pub source: PortBinding,
+}
+
+/// A concrete internal endpoint plus the outer edge id it came from, when known.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortBinding {
+    pub node_id: String,
+    pub port: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_id: Option<String>,
+}
+
+impl PortBinding {
+    pub fn new(node_id: impl Into<String>, port: impl Into<String>) -> Self {
+        Self {
+            node_id: node_id.into(),
+            port: port.into(),
+            edge_id: None,
+        }
+    }
+
+    pub fn with_edge_id(mut self, edge_id: impl Into<String>) -> Self {
+        self.edge_id = Some(edge_id.into());
+        self
     }
 }

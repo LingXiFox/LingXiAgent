@@ -1,19 +1,36 @@
 import { useMemo, useState, type DragEvent } from "react";
 
-import type { NodeSpec } from "../lib/types";
+import type { NodeSpec, TemplateSummary } from "../lib/types";
 
 export const NODE_DRAG_TYPE = "application/lingxi-node";
+export const TEMPLATE_DRAG_TYPE = "application/lingxi-template";
 
 interface NodeLibraryProps {
   specs: NodeSpec[];
+  templates: TemplateSummary[];
   onAdd: (kind: string) => void;
+  onAddTemplate: (id: string) => void;
   disabled: boolean;
 }
 
 const CATEGORY_ORDER = ["Input", "Text", "Number", "Control", "Output"];
 
-export function NodeLibrary({ specs, onAdd, disabled }: NodeLibraryProps) {
+export function NodeLibrary({
+  specs,
+  templates,
+  onAdd,
+  onAddTemplate,
+  disabled,
+}: NodeLibraryProps) {
   const [query, setQuery] = useState("");
+
+  const visibleTemplates = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return templates;
+    return templates.filter((template) =>
+      (template.name + " composite template").toLowerCase().includes(needle),
+    );
+  }, [query, templates]);
 
   const groups = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -45,6 +62,15 @@ export function NodeLibrary({ specs, onAdd, disabled }: NodeLibraryProps) {
     event.dataTransfer.effectAllowed = "copy";
   };
 
+  const onTemplateDragStart = (event: DragEvent<HTMLDivElement>, id: string) => {
+    if (disabled) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData(TEMPLATE_DRAG_TYPE, id);
+    event.dataTransfer.effectAllowed = "copy";
+  };
+
   const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>, kind: string) => {
     if (disabled) return;
     if (event.key === "Enter" || event.key === " ") {
@@ -73,7 +99,48 @@ export function NodeLibrary({ specs, onAdd, disabled }: NodeLibraryProps) {
       </div>
 
       <div className="library__scroll">
-        {groups.length === 0 ? <p className="library__empty">没有匹配的节点</p> : null}
+        {visibleTemplates.length > 0 ? (
+          <section className="library__group">
+            <h2 className="library__group-title">我的组合</h2>
+            {visibleTemplates.map((template) => (
+              <div
+                key={template.id}
+                role="button"
+                tabIndex={disabled ? -1 : 0}
+                aria-disabled={disabled}
+                className={
+                  "library__item library__item--template" +
+                  (disabled ? " library__item--disabled" : "")
+                }
+                title={
+                  "组合模板 · " +
+                  template.nodeCount +
+                  " 个内部节点 · 拖入画布创建独立实例"
+                }
+                draggable={!disabled}
+                onDragStart={(event) => onTemplateDragStart(event, template.id)}
+                onClick={() => {
+                  if (!disabled) onAddTemplate(template.id);
+                }}
+                onKeyDown={(event) => {
+                  if (disabled) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onAddTemplate(template.id);
+                  }
+                }}
+              >
+                <span className="library__item-title">{template.name}</span>
+                <span className="library__item-meta">
+                  {template.nodeCount} nodes · {template.inputCount} in · {template.outputCount} out
+                </span>
+              </div>
+            ))}
+          </section>
+        ) : null}
+        {groups.length === 0 && visibleTemplates.length === 0 ? (
+          <p className="library__empty">没有匹配的节点</p>
+        ) : null}
         {groups.map(([category, items]) => (
           <section className="library__group" key={category}>
             <h2 className="library__group-title">{category}</h2>

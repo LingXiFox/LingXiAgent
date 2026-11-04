@@ -123,31 +123,31 @@ impl WorkflowStore {
 
     fn path_for(&self, name: &str) -> Result<PathBuf, String> {
         let trimmed = name.trim();
-        validate_name(trimmed)?;
+        validate_entry_name(trimmed)?;
         Ok(self.root.join(format!("{trimmed}.json")))
     }
 }
 
-/// Rejects anything that could escape the workflow directory or produce an
+/// Rejects anything that could escape a store directory or produce an
 /// unopenable file. Unicode letters are allowed, path separators are not.
-fn validate_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_entry_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
-        return Err("workflow name must not be empty".to_string());
+        return Err("name must not be empty".to_string());
     }
     if name.chars().count() > 64 {
-        return Err("workflow name must not exceed 64 characters".to_string());
+        return Err("name must not exceed 64 characters".to_string());
     }
     if name.starts_with('.') {
-        return Err("workflow name must not start with a dot".to_string());
+        return Err("name must not start with a dot".to_string());
     }
     if name.ends_with('.') || name.ends_with(' ') {
-        return Err("workflow name must not end with a dot or a space".to_string());
+        return Err("name must not end with a dot or a space".to_string());
     }
     for character in name.chars() {
         let allowed = character.is_alphanumeric() || matches!(character, ' ' | '-' | '_' | '.');
         if !allowed {
             return Err(format!(
-                "workflow name contains an unsupported character: {character:?}"
+                "name contains an unsupported character: {character:?}"
             ));
         }
     }

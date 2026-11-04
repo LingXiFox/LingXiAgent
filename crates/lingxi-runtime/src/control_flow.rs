@@ -6,14 +6,16 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lingxi_spec::{ControlKind, EdgeKind, NodeSpec, Workflow};
+use lingxi_spec::{
+    composite_specs, ControlKind, EdgeKind, NodeSpec, Subgraph, Workflow, COMPOSITE_NODE_KIND,
+};
 use serde_json::Value;
 
 use crate::context::NodeContext;
 use crate::control::RunControl;
 use crate::engine::{elapsed_ms, CapabilityRequest, Engine, RunSummary};
 use crate::error::{error_codes, NodeError};
-use crate::event::{EventEmitter, LogLevel, RunCause, RunEvent, RunStatus};
+use crate::event::{EventEmitter, LogLevel, RunCause, RunEvent, RunStatus, ScopeFrame};
 use crate::registry::NodeOutput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +37,11 @@ struct Scheduler<'a> {
     workflow: &'a Workflow,
     run_id: &'a str,
     control: &'a RunControl,
-    emitter: &'a EventEmitter<'a>,
+    emitter: EventEmitter<'a>,
+    subgraphs: &'a BTreeMap<String, Subgraph>,
+    composite_specs: Arc<BTreeMap<String, NodeSpec>>,
+    parent_deadline: Option<Instant>,
+    seeds: BTreeMap<(String, String), Value>,
     index: HashMap<String, usize>,
     incoming: Vec<Vec<usize>>,
     outgoing: Vec<Vec<usize>>,
@@ -49,7 +55,9 @@ struct Scheduler<'a> {
     latest_outputs: HashMap<String, BTreeMap<String, Value>>,
     failed: Vec<String>,
     skipped: Vec<String>,
+    first_failure: Option<NodeError>,
     cancelled: bool,
+    timed_out: bool,
     loop_state: Option<LoopState>,
     current_iteration: Option<u32>,
 }
@@ -73,19 +81,33 @@ pub(crate) async fn execute(
         ),
     );
 
-    let mut scheduler = Scheduler::new(engine, workflow, run_id, control.as_ref(), emitter);
+    let composite_specs = Arc::new(composite_specs(workflow));
+    let mut scheduler = Scheduler::new(
+        engine,
+        workflow,
+        run_id,
+        control.as_ref(),
+        emitter.fork(),
+        &workflow.subgraphs,
+        composite_specs,
+        None,
+    );
     scheduler.prepare();
     scheduler.run().await;
     scheduler.finish(started)
 }
 
 impl<'a> Scheduler<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         engine: &'a Engine,
         workflow: &'a Workflow,
         run_id: &'a str,
         control: &'a RunControl,
-        emitter: &'a EventEmitter<'a>,
+        emitter: EventEmitter<'a>,
+        subgraphs: &'a BTreeMap<String, Subgraph>,
+        composite_specs: Arc<BTreeMap<String, NodeSpec>>,
+        parent_deadline: Option<Instant>,
     ) -> Self {
         let mut index = HashMap::with_capacity(workflow.nodes.len());
         for (position, node) in workflow.nodes.iter().enumerate() {
@@ -107,6 +129,10 @@ impl<'a> Scheduler<'a> {
             run_id,
             control,
             emitter,
+            subgraphs,
+            composite_specs,
+            parent_deadline,
+            seeds: BTreeMap::new(),
             index,
             incoming,
             outgoing,
@@ -120,7 +146,9 @@ impl<'a> Scheduler<'a> {
             latest_outputs: HashMap::new(),
             failed: Vec::new(),
             skipped: Vec::new(),
+            first_failure: None,
             cancelled: false,
+            timed_out: false,
             loop_state: None,
             current_iteration: None,
         }
@@ -141,7 +169,11 @@ impl<'a> Scheduler<'a> {
                 break;
             }
             if self.loop_expired() {
-                self.fail_loop_timeout();
+                if self.loop_state.is_some() {
+                    self.fail_loop_timeout();
+                } else {
+                    self.timed_out = true;
+                }
                 break;
             }
 
@@ -166,6 +198,8 @@ impl<'a> Scheduler<'a> {
             let role = self.role(index);
             let keep_going = if role == ControlKind::LoopGate {
                 self.handle_gate(index, inputs)
+            } else if self.is_composite(index) {
+                self.run_composite(index, inputs).await
             } else {
                 self.run_node(index, inputs).await
             };
@@ -232,7 +266,29 @@ impl<'a> Scheduler<'a> {
     }
 
     fn spec(&self, index: usize) -> Option<&NodeSpec> {
-        self.engine.registry.spec(&self.workflow.nodes[index].kind)
+        let node = &self.workflow.nodes[index];
+        if node.kind == COMPOSITE_NODE_KIND {
+            node.subgraph_id
+                .as_deref()
+                .and_then(|id| self.composite_specs.get(id))
+        } else {
+            self.engine.registry.spec(&node.kind)
+        }
+    }
+
+    fn is_composite(&self, index: usize) -> bool {
+        self.workflow.nodes[index].kind == COMPOSITE_NODE_KIND
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        match (
+            self.loop_state.map(|state| state.deadline),
+            self.parent_deadline,
+        ) {
+            (Some(inner), Some(outer)) => Some(inner.min(outer)),
+            (Some(inner), None) => Some(inner),
+            (None, outer) => outer,
+        }
     }
 
     fn label(&self, index: usize) -> String {
@@ -253,7 +309,14 @@ impl<'a> Scheduler<'a> {
                     self.queued.insert(index);
                     self.queue.push_back(index);
                 }
-                Ready::Blocked => self.skip_node(index, "no active input path"),
+                // A node that already ran at least once is dormant, not
+                // unreachable: a loop gate can still reopen one of its inputs
+                // in a later iteration. Skipping it here would deactivate the
+                // output edges it just produced.
+                Ready::Blocked if self.activations[index] == 0 => {
+                    self.skip_node(index, "no active input path")
+                }
+                Ready::Blocked => {}
                 Ready::Wait => {}
             }
         }
@@ -270,6 +333,7 @@ impl<'a> Scheduler<'a> {
         }
 
         let spec = self.spec(index);
+        let node_id = &self.workflow.nodes[index].id;
         let mut has_control = false;
         let mut control_token = false;
         let mut any_token = false;
@@ -278,27 +342,41 @@ impl<'a> Scheduler<'a> {
 
         for &edge_index in incoming {
             let edge = &self.workflow.edges[edge_index];
-            let token = self.tokens.get(&edge.id);
             let inactive = self.inactive.contains(&edge.id);
+            // A subgraph input binding feeds an internal port without an
+            // internal edge. Treat that seed exactly like a delivered token.
+            let seeded = self
+                .seeds
+                .keys()
+                .any(|(target, port)| target == node_id && port == &edge.target_port);
+            let token = self.tokens.contains_key(&edge.id) || seeded;
             if edge.kind == EdgeKind::Control {
                 has_control = true;
-                control_token |= token.is_some();
+                control_token |= token;
             }
-            any_token |= token.is_some();
+            any_token |= token;
             if edge.kind == EdgeKind::Data {
                 let required = spec
                     .and_then(|spec| spec.input_port(&edge.target_port))
                     .is_some_and(|port| port.required);
                 required_data_inactive |= required && inactive;
-                data_pending |= token.is_none() && !inactive;
+                data_pending |= !token && !inactive;
             }
         }
+
+        let seeded_control = self.seeds.keys().any(|(target, port)| {
+            target == node_id
+                && spec
+                    .and_then(|spec| spec.input_port(port))
+                    .is_some_and(|port| port.control)
+        });
+        let seeded_any = self.seeds.keys().any(|(target, _)| target == node_id);
 
         if required_data_inactive {
             return Ready::Blocked;
         }
         if has_control {
-            if control_token {
+            if control_token || seeded_control {
                 if data_pending {
                     Ready::Wait
                 } else {
@@ -312,7 +390,7 @@ impl<'a> Scheduler<'a> {
             } else {
                 Ready::Wait
             }
-        } else if any_token && !data_pending {
+        } else if (any_token || seeded_any) && !data_pending {
             Ready::Go
         } else {
             Ready::Wait
@@ -325,6 +403,18 @@ impl<'a> Scheduler<'a> {
             let edge = &self.workflow.edges[edge_index];
             if let Some(value) = self.tokens.remove(&edge.id) {
                 inputs.insert(edge.target_port.clone(), value);
+            }
+        }
+        let node_id = self.workflow.nodes[index].id.clone();
+        let seed_keys: Vec<_> = self
+            .seeds
+            .keys()
+            .filter(|(target, _)| target == &node_id)
+            .cloned()
+            .collect();
+        for key in seed_keys {
+            if let Some(value) = self.seeds.remove(&key) {
+                inputs.insert(key.1, value);
             }
         }
         inputs
@@ -359,7 +449,10 @@ impl<'a> Scheduler<'a> {
         let target = self.index.get(&edge.target).copied();
         if self.inactive.insert(id) {
             if let Some(target) = target {
-                if !self.settled.contains(&target) && self.evaluate(target) == Ready::Blocked {
+                if !self.settled.contains(&target)
+                    && self.activations[target] == 0
+                    && self.evaluate(target) == Ready::Blocked
+                {
                     self.skip_node(target, "no active input path");
                 }
             }
@@ -374,6 +467,7 @@ impl<'a> Scheduler<'a> {
         self.emitter.emit(RunEvent::NodeSkipped {
             run_id: self.run_id.to_string(),
             seq: 0,
+            scope: Vec::new(),
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: self.label(index),
@@ -386,6 +480,176 @@ impl<'a> Scheduler<'a> {
             self.skipped.push(id);
         }
         self.deactivate_outgoing(index);
+    }
+
+    async fn run_composite(&mut self, index: usize, inputs: BTreeMap<String, Value>) -> bool {
+        let node_id = self.workflow.nodes[index].id.clone();
+        let kind = self.workflow.nodes[index].kind.clone();
+        self.activations[index] += 1;
+        let activation = self.activations[index];
+        let iteration = self.iteration();
+        if self.incoming[index].is_empty() {
+            self.fired_sources.insert(index);
+        }
+
+        let Some(spec) = self.spec(index).cloned() else {
+            let id = self.workflow.nodes[index]
+                .subgraph_id
+                .clone()
+                .unwrap_or_default();
+            self.fail_started(
+                index,
+                activation,
+                iteration,
+                NodeError::new(
+                    error_codes::SUBGRAPH_UNKNOWN_REFERENCE,
+                    format!("composite node references unknown subgraph {id:?}"),
+                ),
+                0,
+            );
+            return true;
+        };
+        let Some(subgraph_id) = self.workflow.nodes[index].subgraph_id.clone() else {
+            self.fail_started(
+                index,
+                activation,
+                iteration,
+                NodeError::new(
+                    error_codes::SUBGRAPH_UNKNOWN_REFERENCE,
+                    "composite node has no subgraphId",
+                ),
+                0,
+            );
+            return true;
+        };
+        let Some(subgraph) = self.subgraphs.get(&subgraph_id).cloned() else {
+            self.fail_started(
+                index,
+                activation,
+                iteration,
+                NodeError::new(
+                    error_codes::SUBGRAPH_UNKNOWN_REFERENCE,
+                    format!("composite node references unknown subgraph {subgraph_id:?}"),
+                ),
+                0,
+            );
+            return true;
+        };
+
+        let label = self.workflow.nodes[index].display_name(Some(&spec));
+        self.emitter.emit(RunEvent::NodeStarted {
+            run_id: self.run_id.to_string(),
+            seq: 0,
+            scope: Vec::new(),
+            node_id: node_id.clone(),
+            kind,
+            label: label.clone(),
+            activation,
+            iteration,
+        });
+
+        for input in &subgraph.inputs {
+            if input.port.required && !inputs.contains_key(&input.port.name) {
+                self.fail_started(
+                    index,
+                    activation,
+                    iteration,
+                    NodeError::new(
+                        error_codes::MISSING_INPUT,
+                        format!(
+                            "composite input {:?} is required but no value was provided",
+                            input.port.name
+                        ),
+                    ),
+                    0,
+                );
+                return true;
+            }
+        }
+
+        let mut seeds = BTreeMap::new();
+        for input in &subgraph.inputs {
+            let Some(value) = inputs.get(&input.port.name) else {
+                continue;
+            };
+            for target in &input.targets {
+                seeds.insert((target.node_id.clone(), target.port.clone()), value.clone());
+            }
+        }
+
+        let frame = ScopeFrame {
+            instance_id: node_id.clone(),
+            subgraph_id,
+            label: label.clone(),
+        };
+        let scoped = self.emitter.scoped(frame);
+        let started = Instant::now();
+        let mut inner = Scheduler::new(
+            self.engine,
+            &subgraph.workflow,
+            self.run_id,
+            self.control,
+            scoped,
+            self.subgraphs,
+            Arc::clone(&self.composite_specs),
+            self.deadline(),
+        );
+        inner.seeds = seeds;
+        inner.prepare();
+        Box::pin(inner.run()).await;
+        let duration_ms = elapsed_ms(started);
+
+        if inner.cancelled || self.control.is_cancelled() {
+            self.emitter.emit(RunEvent::NodeCancelled {
+                run_id: self.run_id.to_string(),
+                seq: 0,
+                scope: Vec::new(),
+                node_id,
+                kind: self.workflow.nodes[index].kind.clone(),
+                label,
+                activation,
+                iteration,
+            });
+            self.cancelled = true;
+            return false;
+        }
+
+        if inner.timed_out || !inner.failed.is_empty() {
+            let error = inner.first_failure.clone().unwrap_or_else(|| {
+                NodeError::new(
+                    error_codes::LOOP_TIMEOUT,
+                    "composite execution exceeded its deadline",
+                )
+            });
+            self.fail_started(index, activation, iteration, error, duration_ms);
+            return true;
+        }
+
+        let mut outputs = BTreeMap::new();
+        for output in &subgraph.outputs {
+            if let Some(value) = inner
+                .latest_outputs
+                .get(&output.source.node_id)
+                .and_then(|produced| produced.get(&output.source.port))
+            {
+                outputs.insert(output.port.name.clone(), value.clone());
+            }
+        }
+        self.emitter.emit(RunEvent::NodeFinished {
+            run_id: self.run_id.to_string(),
+            seq: 0,
+            scope: Vec::new(),
+            node_id: node_id.clone(),
+            kind: self.workflow.nodes[index].kind.clone(),
+            label,
+            outputs: outputs.clone(),
+            duration_ms,
+            activation,
+            iteration,
+        });
+        self.latest_outputs.insert(node_id, outputs.clone());
+        self.propagate_outputs(index, &outputs);
+        true
     }
 
     async fn run_node(&mut self, index: usize, inputs: BTreeMap<String, Value>) -> bool {
@@ -414,6 +678,7 @@ impl<'a> Scheduler<'a> {
         self.emitter.emit(RunEvent::NodeStarted {
             run_id: self.run_id.to_string(),
             seq: 0,
+            scope: Vec::new(),
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: label.clone(),
@@ -455,9 +720,9 @@ impl<'a> Scheduler<'a> {
             &inputs,
             self.control,
             self.engine.interactions.as_ref(),
-            self.emitter,
+            &self.emitter,
         );
-        let deadline = self.loop_state.map(|state| state.deadline);
+        let deadline = self.deadline();
         let node_started = Instant::now();
 
         enum Outcome {
@@ -486,6 +751,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeCancelled {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -515,6 +781,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label,
@@ -549,10 +816,14 @@ impl<'a> Scheduler<'a> {
         error: NodeError,
         duration_ms: u64,
     ) {
+        if self.first_failure.is_none() {
+            self.first_failure = Some(error.clone());
+        }
         let node = &self.workflow.nodes[index];
         self.emitter.emit(RunEvent::NodeFailed {
             run_id: self.run_id.to_string(),
             seq: 0,
+            scope: Vec::new(),
             node_id: node.id.clone(),
             kind: node.kind.clone(),
             label: self.label(index),
@@ -591,6 +862,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -617,6 +889,7 @@ impl<'a> Scheduler<'a> {
             self.emitter.emit(RunEvent::NodeStarted {
                 run_id: self.run_id.to_string(),
                 seq: 0,
+                scope: Vec::new(),
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
                 label: self.label(index),
@@ -640,6 +913,7 @@ impl<'a> Scheduler<'a> {
                     self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -669,6 +943,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -679,6 +954,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -704,6 +980,7 @@ impl<'a> Scheduler<'a> {
                     self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -731,6 +1008,7 @@ impl<'a> Scheduler<'a> {
                     self.emitter.emit(RunEvent::NodeStarted {
                         run_id: self.run_id.to_string(),
                         seq: 0,
+                        scope: Vec::new(),
                         node_id: node.id.clone(),
                         kind: node.kind.clone(),
                         label: self.label(index),
@@ -759,6 +1037,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -769,6 +1048,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -791,6 +1071,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeStarted {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -801,6 +1082,7 @@ impl<'a> Scheduler<'a> {
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
+                    scope: Vec::new(),
                     node_id: node.id.clone(),
                     kind: node.kind.clone(),
                     label: self.label(index),
@@ -828,6 +1110,7 @@ impl<'a> Scheduler<'a> {
         self.emitter.emit(RunEvent::NodeStarted {
             run_id: self.run_id.to_string(),
             seq: 0,
+            scope: Vec::new(),
             node_id: self.workflow.nodes[index].id.clone(),
             kind: self.workflow.nodes[index].kind.clone(),
             label: self.label(index),
@@ -849,8 +1132,8 @@ impl<'a> Scheduler<'a> {
     }
 
     fn loop_expired(&self) -> bool {
-        self.loop_state
-            .is_some_and(|state| Instant::now() >= state.deadline)
+        self.deadline()
+            .is_some_and(|deadline| Instant::now() >= deadline)
     }
 
     fn fail_loop_timeout(&mut self) {

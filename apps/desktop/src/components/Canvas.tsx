@@ -13,6 +13,7 @@ import {
   type NodeTypes,
   type OnEdgesChange,
   type OnNodesChange,
+  type OnSelectionChangeParams,
   type Viewport,
 } from "@xyflow/react";
 
@@ -20,7 +21,7 @@ import { nodeObstacles, ObstacleIndex } from "../lib/edgeGeometry";
 import type { LingXiNode } from "../lib/nodeData";
 import type { ViewportDoc } from "../lib/types";
 import { LingXiNode as LingXiNodeView } from "./LingXiNode";
-import { NODE_DRAG_TYPE } from "./NodeLibrary";
+import { NODE_DRAG_TYPE, TEMPLATE_DRAG_TYPE } from "./NodeLibrary";
 import { EdgeRoutingProvider, SmartEdge } from "./SmartEdge";
 
 const nodeTypes: NodeTypes = { lingxi: LingXiNodeView };
@@ -36,6 +37,9 @@ interface CanvasProps {
   onEdgesChange: OnEdgesChange;
   onConnect: (connection: Connection) => void;
   onDropNode: (kind: string, position: { x: number; y: number }) => void;
+  onDropTemplate: (id: string, position: { x: number; y: number }) => void;
+  onNodeDoubleClick: (nodeId: string) => void;
+  onSelectionChange: (nodeIds: string[]) => void;
   onViewportChange: (viewport: Viewport) => void;
 }
 
@@ -49,6 +53,9 @@ export function Canvas({
   onEdgesChange,
   onConnect,
   onDropNode,
+  onDropTemplate,
+  onNodeDoubleClick,
+  onSelectionChange,
   onViewportChange,
 }: CanvasProps) {
   const { screenToFlowPosition, setViewport } = useReactFlow();
@@ -74,12 +81,15 @@ export function Canvas({
   const onDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
+      const templateId = event.dataTransfer.getData(TEMPLATE_DRAG_TYPE);
       const kind = event.dataTransfer.getData(NODE_DRAG_TYPE);
-      if (!kind) return;
+      if (!templateId && !kind) return;
       const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      onDropNode(kind, { x: position.x - 130, y: position.y - 30 });
+      const drop = { x: position.x - 130, y: position.y - 30 };
+      if (templateId) onDropTemplate(templateId, drop);
+      else onDropNode(kind, drop);
     },
-    [onDropNode, screenToFlowPosition],
+    [onDropNode, onDropTemplate, screenToFlowPosition],
   );
 
   return (
@@ -96,6 +106,10 @@ export function Canvas({
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onMoveEnd={(_event, viewport) => onViewportChange(viewport)}
+          onNodeDoubleClick={(_event, node) => onNodeDoubleClick(node.id)}
+          onSelectionChange={(selection: OnSelectionChangeParams) =>
+            onSelectionChange(selection.nodes.map((node) => node.id))
+          }
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           defaultEdgeOptions={{ type: "smart" }}

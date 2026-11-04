@@ -7,6 +7,9 @@ interface ToolbarProps {
   edgeCount: number;
   busy: boolean;
   preview: boolean;
+  selectionCount: number;
+  canUngroup: boolean;
+  canTemplate: boolean;
   onNameChange: (name: string) => void;
   onNew: () => void;
   onDemo: () => void;
@@ -16,6 +19,10 @@ interface ToolbarProps {
   onHistory: () => void;
   onRun: () => void;
   onStop: () => void;
+  onGroup: () => void;
+  onUngroup: () => void;
+  onDuplicate: () => void;
+  onSaveTemplate: () => void;
 }
 
 export function Toolbar({
@@ -25,6 +32,9 @@ export function Toolbar({
   edgeCount,
   busy,
   preview,
+  selectionCount,
+  canUngroup,
+  canTemplate,
   onNameChange,
   onNew,
   onDemo,
@@ -34,8 +44,13 @@ export function Toolbar({
   onHistory,
   onRun,
   onStop,
+  onGroup,
+  onUngroup,
+  onDuplicate,
+  onSaveTemplate,
 }: ToolbarProps) {
   const running = status === "running";
+  const structuralLock = running || busy;
 
   return (
     <header className="toolbar">
@@ -59,6 +74,47 @@ export function Toolbar({
       </div>
 
       <div className="toolbar__right">
+        {selectionCount > 0 ? (
+          <span className="toolbar__selection">
+            <button
+              type="button"
+              className="btn btn--ghost btn--compact"
+              onClick={onGroup}
+              disabled={selectionCount < 2 || structuralLock}
+              title="把选中的节点组合为可展开的组合节点"
+            >
+              组合
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost btn--compact"
+              onClick={onUngroup}
+              disabled={!canUngroup || structuralLock}
+              title="解组并把内部节点还原到当前画布"
+            >
+              解组
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost btn--compact"
+              onClick={onDuplicate}
+              disabled={structuralLock}
+              title="复制选中节点及其内部连线"
+            >
+              复制
+            </button>
+            <button
+              type="button"
+              className="btn btn--ghost btn--compact"
+              onClick={onSaveTemplate}
+              disabled={!canTemplate || structuralLock}
+              title="把选中的组合存为本地模板"
+            >
+              存为模板
+            </button>
+            <span className="toolbar__divider" />
+          </span>
+        ) : null}
         <button type="button" className="btn btn--ghost" onClick={onNew} disabled={running}>
           新建
         </button>

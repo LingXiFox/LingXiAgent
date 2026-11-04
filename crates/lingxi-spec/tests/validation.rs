@@ -61,7 +61,7 @@ fn workflow_round_trips_through_json_with_camel_case_keys() {
     workflow.edges.push(Edge::new("t1", "text", "add", "a"));
 
     let json = serde_json::to_value(&workflow).expect("serialize");
-    assert_eq!(json["schemaVersion"], "1.0");
+    assert_eq!(json["schemaVersion"], "1.1");
     assert_eq!(json["nodes"][0]["id"], "t1");
     assert_eq!(json["edges"][0]["sourcePort"], "text");
     assert_eq!(json["edges"][0]["targetPort"], "a");
@@ -84,6 +84,22 @@ fn unknown_fields_in_a_document_are_ignored() {
     assert_eq!(workflow.nodes.len(), 1);
     assert!(workflow.edges.is_empty());
     assert!(workflow.viewport.is_none());
+}
+
+#[test]
+fn schema_1_0_documents_still_load_and_validate() {
+    let document = json!({
+        "schemaVersion": "1.0",
+        "id": "legacy",
+        "name": "legacy",
+        "nodes": [{ "id": "t1", "kind": "test.text", "position": { "x": 0.0, "y": 0.0 } }],
+        "edges": []
+    });
+    let workflow: Workflow = serde_json::from_value(document).expect("deserialize 1.0");
+    assert!(workflow.subgraphs.is_empty());
+    assert!(workflow.nodes[0].subgraph_id.is_none());
+    let report = validate(&workflow, &catalog());
+    assert!(report.ok, "{:?}", report.issues);
 }
 
 #[test]

@@ -314,6 +314,24 @@ textarea {
   white-space: nowrap;
 }
 
+.toolbar__selection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar__divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 2px;
+}
+
+.btn--compact {
+  padding: 5px 8px;
+  font-size: 11.5px;
+}
+
 .toolbar__badge {
   padding: 2px 8px;
   border-radius: 999px;
@@ -321,6 +339,69 @@ textarea {
   font-size: 10.5px;
   color: var(--text-dim);
   white-space: nowrap;
+}
+
+/* ---------- canvas breadcrumb ---------- */
+
+.canvasbar {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: calc(100% - 24px);
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(13, 17, 22, 0.86);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+
+.canvasbar__crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.canvasbar__crumb-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.canvasbar__sep {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.canvasbar__crumb {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.canvasbar__crumb:hover:not(:disabled) {
+  background: #1b212a;
+  color: var(--text);
+}
+
+.canvasbar__crumb--current {
+  color: var(--amber-soft);
+  cursor: default;
+}
+
+.canvasbar__hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
 }
 
 /* ---------- buttons ---------- */
@@ -610,6 +691,27 @@ textarea {
   border-color: var(--line);
   background: transparent;
   color: var(--text-faint);
+}
+
+.node__composite {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-dim);
+  font-size: 10.5px;
+  background: rgba(185, 140, 255, 0.05);
+}
+
+.node__composite-tag {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid rgba(185, 140, 255, 0.45);
+  color: var(--violet);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
 }
 
 .node__ports {
@@ -1258,6 +1360,30 @@ textarea {
   padding: 0 2px;
 }
 
+/* ---------- template dialog ---------- */
+
+.template-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.template-field input {
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #0d1116;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.template-field input:focus {
+  border-color: #c2842f;
+}
+
 /* ---------- toast ---------- */
 
 .toast {
@@ -1287,16 +1413,42 @@ textarea {
   }
 }
 
+@media (max-width: 1100px) {
+  .toolbar__selection {
+    gap: 4px;
+  }
+
+  .btn--compact {
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+}
+
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 208px minmax(0, 1fr);
+  }
+
+  .toolbar {
+    gap: 6px;
+    padding: 0 8px;
   }
 
   .toolbar__name {
     width: 132px;
   }
 
-  .toolbar__counts {
+  .toolbar__counts,
+  .toolbar__badge {
+    display: none;
+  }
+
+  .toolbar__right {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .toolbar__right::-webkit-scrollbar {
     display: none;
   }
 }

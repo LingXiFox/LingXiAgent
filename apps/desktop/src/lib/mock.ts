@@ -8,6 +8,8 @@ import type {
   RunDetail,
   RunEvent,
   RunStartResponse,
+  TemplateBundle,
+  TemplateSummary,
   ValidationIssue,
   ValidationReport,
   WorkflowDoc,
@@ -259,8 +261,16 @@ function inputOf(
   return outputs.get(edge.source)?.[edge.sourcePort];
 }
 
+const TEMPLATE_PREFIX = "lingxi.templates.";
+
+interface MockTemplateFile {
+  name: string;
+  bundle: TemplateBundle;
+}
+
 export function createMockTransport(): Transport {
   const files = new Map<string, WorkflowDoc>();
+  const templateFiles = new Map<string, MockTemplateFile>();
   const listeners = new Set<(event: RunEvent) => void>();
   const pending = new Map<string, (approved: boolean) => void>();
   const runs = new Map<string, RunDetail>();
@@ -271,6 +281,39 @@ export function createMockTransport(): Transport {
   };
 
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const templateSummary = (id: string, name: string, bundle: TemplateBundle): TemplateSummary => {
+    const root = bundle.subgraphs[bundle.rootId];
+    return {
+      id,
+      name,
+      nodeCount: root?.workflow.nodes.length ?? 0,
+      inputCount: root?.inputs.length ?? 0,
+      outputCount: root?.outputs.length ?? 0,
+      updatedAtMs: Date.now(),
+    };
+  };
+
+  const templateKey = (id: string) => TEMPLATE_PREFIX + id;
+
+  const saveMockTemplate = (name: string, bundle: TemplateBundle): TemplateSummary => {
+    const id = name.trim();
+    if (!id) throw new Error("template name must not be empty");
+    const file = { name: id, bundle };
+    localStorage.setItem(templateKey(id), JSON.stringify(file));
+    templateFiles.set(id, file);
+    return templateSummary(id, id, bundle);
+  };
+
+  const readMockTemplate = (id: string): TemplateBundle => {
+    const cached = templateFiles.get(id);
+    if (cached) return cached.bundle;
+    const raw = localStorage.getItem(templateKey(id));
+    if (!raw) throw new Error("template not found: " + id);
+    const file = JSON.parse(raw) as MockTemplateFile;
+    templateFiles.set(id, file);
+    return file.bundle;
+  };
 
   return {
     async listNodeSpecs() {
@@ -517,6 +560,36 @@ export function createMockTransport(): Transport {
 
     async deleteWorkflow(name) {
       return files.delete(name);
+    },
+
+    async templateList() {
+      const summaries: TemplateSummary[] = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (!key?.startsWith(TEMPLATE_PREFIX)) continue;
+        try {
+          const file = JSON.parse(localStorage.getItem(key) ?? "") as MockTemplateFile;
+          summaries.push(templateSummary(key.slice(TEMPLATE_PREFIX.length), file.name, file.bundle));
+        } catch {
+          // Ignore corrupt browser-preview entries.
+        }
+      }
+      return summaries.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    },
+
+    async templateLoad(id) {
+      return readMockTemplate(id);
+    },
+
+    async templateSave(name, bundle) {
+      return saveMockTemplate(name, bundle);
+    },
+
+    async templateDelete(id) {
+      templateFiles.delete(id);
+      const existed = localStorage.getItem(templateKey(id)) !== null;
+      localStorage.removeItem(templateKey(id));
+      return existed;
     },
 
     async runList(limit) {

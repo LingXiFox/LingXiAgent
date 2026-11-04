@@ -17,6 +17,9 @@ export interface LingXiNodeData extends Record<string, unknown> {
   enabled: boolean;
   spec: NodeSpec;
   run?: NodeRunInfo;
+  /** Composite instance metadata; undefined for ordinary nodes. */
+  subgraphId?: string;
+  innerNodeCount?: number;
   onParamChange: (nodeId: string, name: string, value: unknown) => void;
   onToggleEnabled: (nodeId: string) => void;
 }

@@ -2,6 +2,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+/// One level of composite nesting on an event. The stack is ordered outermost
+/// first; inner node ids stay local to their definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopeFrame {
+    pub instance_id: String,
+    pub subgraph_id: String,
+    pub label: String,
+}
 
 use crate::interaction::{InteractionDecision, InteractionOption};
 
@@ -51,6 +62,8 @@ pub enum RunEvent {
     NodeStarted {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         node_id: String,
         kind: String,
         label: String,
@@ -63,6 +76,8 @@ pub enum RunEvent {
     NodeFinished {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         node_id: String,
         kind: String,
         label: String,
@@ -77,6 +92,8 @@ pub enum RunEvent {
     NodeFailed {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         node_id: String,
         kind: String,
         label: String,
@@ -92,6 +109,8 @@ pub enum RunEvent {
     NodeSkipped {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         node_id: String,
         kind: String,
         label: String,
@@ -105,6 +124,8 @@ pub enum RunEvent {
     NodeCancelled {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         node_id: String,
         kind: String,
         label: String,
@@ -117,6 +138,8 @@ pub enum RunEvent {
     Log {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         at_ms: u64,
         level: LogLevel,
         node_id: Option<String>,
@@ -126,6 +149,8 @@ pub enum RunEvent {
     InteractionRequested {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         request_id: String,
         node_id: String,
         prompt: String,
@@ -135,6 +160,8 @@ pub enum RunEvent {
     InteractionResolved {
         run_id: String,
         seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
         request_id: String,
         node_id: String,
         decision: InteractionDecision,
@@ -197,22 +224,94 @@ impl RunEvent {
             | RunEvent::RunFinished { seq, .. } => *seq = value,
         }
     }
+
+    /// The scope stack for correlation. Top-level events return an empty slice.
+    pub fn scope(&self) -> &[ScopeFrame] {
+        match self {
+            RunEvent::RunStarted { .. } | RunEvent::RunFinished { .. } => &[],
+            RunEvent::NodeStarted { scope, .. }
+            | RunEvent::NodeFinished { scope, .. }
+            | RunEvent::NodeFailed { scope, .. }
+            | RunEvent::NodeSkipped { scope, .. }
+            | RunEvent::NodeCancelled { scope, .. }
+            | RunEvent::Log { scope, .. }
+            | RunEvent::InteractionRequested { scope, .. }
+            | RunEvent::InteractionResolved { scope, .. } => scope,
+        }
+    }
+
+    pub fn scope_mut(&mut self) -> Option<&mut Vec<ScopeFrame>> {
+        match self {
+            RunEvent::RunStarted { .. } | RunEvent::RunFinished { .. } => None,
+            RunEvent::NodeStarted { scope, .. }
+            | RunEvent::NodeFinished { scope, .. }
+            | RunEvent::NodeFailed { scope, .. }
+            | RunEvent::NodeSkipped { scope, .. }
+            | RunEvent::NodeCancelled { scope, .. }
+            | RunEvent::Log { scope, .. }
+            | RunEvent::InteractionRequested { scope, .. }
+            | RunEvent::InteractionResolved { scope, .. } => Some(scope),
+        }
+    }
+
+    fn set_scope(&mut self, frames: Vec<ScopeFrame>) {
+        match self {
+            RunEvent::RunStarted { .. } | RunEvent::RunFinished { .. } => {}
+            RunEvent::NodeStarted { scope, .. }
+            | RunEvent::NodeFinished { scope, .. }
+            | RunEvent::NodeFailed { scope, .. }
+            | RunEvent::NodeSkipped { scope, .. }
+            | RunEvent::NodeCancelled { scope, .. }
+            | RunEvent::Log { scope, .. }
+            | RunEvent::InteractionRequested { scope, .. }
+            | RunEvent::InteractionResolved { scope, .. } => *scope = frames,
+        }
+    }
 }
 
 /// Assigns the per-run sequence number exactly once, immediately before the
 /// sink sees the event. Every event emitted by the runtime goes through this
 /// type; sinks therefore never need to invent sequence numbers.
+///
+/// A scoped emitter shares the parent's sequence counter, so events from inside
+/// a composite stay on the single run stream and keep exact ordering.
 pub struct EventEmitter<'a> {
     sink: &'a dyn EventSink,
-    next_seq: AtomicU64,
+    next_seq: Arc<AtomicU64>,
+    scope: Vec<ScopeFrame>,
 }
 
 impl<'a> EventEmitter<'a> {
     pub fn new(sink: &'a dyn EventSink) -> Self {
         Self {
             sink,
-            next_seq: AtomicU64::new(0),
+            next_seq: Arc::new(AtomicU64::new(0)),
+            scope: Vec::new(),
         }
+    }
+
+    /// Creates an emitter for one composite activation. The returned emitter
+    /// shares the run's sequence counter and appends one scope frame.
+    pub fn fork(&self) -> Self {
+        Self {
+            sink: self.sink,
+            next_seq: Arc::clone(&self.next_seq),
+            scope: self.scope.clone(),
+        }
+    }
+
+    pub fn scoped(&self, frame: ScopeFrame) -> Self {
+        let mut scope = self.scope.clone();
+        scope.push(frame);
+        Self {
+            sink: self.sink,
+            next_seq: Arc::clone(&self.next_seq),
+            scope,
+        }
+    }
+
+    pub fn scope(&self) -> &[ScopeFrame] {
+        &self.scope
     }
 
     pub fn allocate_seq(&self) -> u64 {
@@ -222,6 +321,7 @@ impl<'a> EventEmitter<'a> {
     pub fn emit(&self, mut event: RunEvent) -> u64 {
         let seq = self.allocate_seq();
         event.set_seq(seq);
+        event.set_scope(self.scope.clone());
         self.sink.emit(event);
         seq
     }
@@ -230,6 +330,7 @@ impl<'a> EventEmitter<'a> {
     /// when the event payload, such as an interaction request id, embeds seq).
     pub fn emit_with_seq(&self, mut event: RunEvent, seq: u64) {
         event.set_seq(seq);
+        event.set_scope(self.scope.clone());
         self.sink.emit(event);
     }
 
@@ -243,6 +344,7 @@ impl<'a> EventEmitter<'a> {
         self.emit(RunEvent::Log {
             run_id: run_id.to_string(),
             seq: 0,
+            scope: Vec::new(),
             at_ms: unix_millis(),
             level,
             node_id,
