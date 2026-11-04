@@ -6,7 +6,7 @@
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
 - 阶段：Phase 1.5 — 多协议、多模态与中文可折叠节点库
-- 验收：macOS 真实 Tauri 通过（原生 WDIO 7 项）；Windows / Linux 由本次提交后的 CI 验证编译、clippy、单测，运行行为**未验收**
+- 验收：macOS 真实 Tauri 通过（原生 WDIO 7 项）；Windows / Linux 的 CI 编译、clippy、单测通过（run 41846253370），运行行为**未验收**
 - 测试：`cargo test --workspace` 121 passed；Playwright 19 passed（5 项回归 + 14 项本阶段）；原生 Tauri WDIO 7 passed；前端单测 6 + 13 + 8 passed
 
 ## 技术栈

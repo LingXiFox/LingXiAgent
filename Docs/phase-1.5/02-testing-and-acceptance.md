@@ -1,6 +1,6 @@
 # Phase 1.5 测试与验收
 
-状态：代码与自动化验收完成；跨平台结果以提交后的 CI 为准
+状态：代码与自动化验收完成；CI run [41846253370](https://github.com/LingXiFox/LingXiAgent/actions/runs/41846253370) 四个 job 全部通过
 分支：`rewrite/3.0`
 
 ## 1. 验收环境
@@ -131,10 +131,10 @@ Playwright 使用前端 mock transport，只证明编辑器、节点库、预览
 | 平台 | 编译 / 静态检查 / 单测 | 真实桌面运行 |
 | --- | --- | --- |
 | macOS | 本地通过 | **通过**（原生 WDIO 7 项，真实窗口与 IPC） |
-| Windows | 由提交后 CI 验证 | **未验收** |
-| Linux | 由提交后 CI 验证 | **未验收** |
+| Windows | **CI 通过**（format、clippy、121 单测） | **未验收** |
+| Linux | **CI 通过**（format、clippy、121 单测） | **未验收** |
 
-CI 在 macOS、Ubuntu 24.04、Windows 上执行 clippy、`cargo test --workspace`，前端 job 执行构建、三组单元测试、Playwright Chromium 安装与 19 项浏览器 E2E。CI 编译通过不等同于 Windows/Linux 实机运行验收。
+CI run 41846253370 的四个 job 全部通过：macOS、Ubuntu 24.04、Windows 的 Rust job 执行 format、clippy、`cargo test --workspace`；前端 job 执行构建、三组单元测试、Playwright Chromium 安装与 19 项浏览器 E2E。CI 编译通过不等同于 Windows/Linux 实机运行验收。
 
 ## 6. 已知问题与边界
 
@@ -174,5 +174,6 @@ pnpm -C apps/desktop test:e2e:tauri
 | 前端单元测试 | events 6、routing 13、composite 8，全部通过 |
 | Playwright 浏览器 E2E | **19 passed**（5 回归 + 14 Phase 1.5，40.0s） |
 | 原生 Tauri WDIO | **7 passed**（runtime 4 + multimodal 3，真实窗口与 IPC） |
+| GitHub Actions CI | run 41846253370 四个 job 全部通过 |
 
 本机 Google Chrome 156 比 Playwright 1.56.1 固定的 Chromium 141 更新，直接使用系统 Chrome 会出现 CDP `guid handle ... was not bound` 等随机错误；因此本地门禁显式使用 `PLAYWRIGHT_CHANNEL=chromium`，CI 使用官方固定 Chromium。这不是产品断言失败。
