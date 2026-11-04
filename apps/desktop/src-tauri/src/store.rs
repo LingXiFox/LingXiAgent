@@ -46,7 +46,7 @@ impl WorkflowStore {
             .map_err(|error| format!("cannot serialize workflow: {error}"))?;
         let temp_path = path.with_extension("json.tmp");
         fs::write(&temp_path, &json).map_err(|error| format!("cannot write workflow: {error}"))?;
-        fs::rename(&temp_path, &path)
+        crate::fsutil::replace_file(&temp_path, &path)
             .map_err(|error| format!("cannot commit workflow: {error}"))?;
 
         Ok(WorkflowSummary {
@@ -199,6 +199,25 @@ mod tests {
 
         assert!(store.delete("我的流程").unwrap());
         assert!(store.list().unwrap().is_empty());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn saving_twice_replaces_the_existing_document() {
+        let (store, root) = temp_store();
+        store.save("replace", &sample_workflow()).unwrap();
+
+        let mut updated = sample_workflow();
+        updated.nodes.push(WorkflowNode::new(
+            "n2",
+            "core.log",
+            Position { x: 30.0, y: 40.0 },
+        ));
+        store.save("replace", &updated).unwrap();
+
+        let loaded = store.load("replace").unwrap();
+        assert_eq!(loaded.nodes.len(), 2);
+        assert_eq!(loaded.nodes[1].kind, "core.log");
         fs::remove_dir_all(root).ok();
     }
 

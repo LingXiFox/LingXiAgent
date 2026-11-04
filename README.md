@@ -7,7 +7,7 @@
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
 - 阶段：Phase 1.4 — 首个完整文本 Agent 闭环（Provider / Model / Tool / MCP / Skills / 权限审批）
 - 验收：macOS 真实 Tauri 全项通过；Windows / Linux 由本次提交后的 CI 验证编译、clippy、单测，运行行为**未验收**
-- 测试：`cargo test --workspace` 96 passed；Playwright 5 passed；原生 Tauri WDIO 4 passed；前端单测 6 + 13 + 8 passed
+- 测试：`cargo test --workspace` 97 passed；Playwright 5 passed；原生 Tauri WDIO 4 passed；前端单测 6 + 13 + 8 passed
 
 ## 技术栈
 

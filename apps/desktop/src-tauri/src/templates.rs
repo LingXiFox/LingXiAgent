@@ -68,7 +68,7 @@ impl TemplateStore {
             .map_err(|error| format!("cannot serialize template: {error}"))?;
         let temp_path = path.with_extension("json.tmp");
         fs::write(&temp_path, &json).map_err(|error| format!("cannot write template: {error}"))?;
-        fs::rename(&temp_path, &path)
+        crate::fsutil::replace_file(&temp_path, &path)
             .map_err(|error| format!("cannot commit template: {error}"))?;
         Ok(summary(trimmed, trimmed, bundle, now_ms()))
     }

@@ -21,11 +21,11 @@
 
 ### 2.1 Rust
 
-`cargo test --workspace`：exit 0，**96 passed / 0 failed / 0 ignored**。
+`cargo test --workspace`：exit 0，**97 passed / 0 failed / 0 ignored**。
 
 | 测试二进制 | 数量 | 覆盖 |
 | --- | ---: | --- |
-| desktop unit tests | 22 | SQLite 事件、脱敏、工作流/模板存储、单实例、运行恢复 |
+| desktop unit tests | 23 | SQLite 事件、脱敏、工作流/模板存储、覆盖保存、单实例、运行恢复 |
 | `agent_end_to_end.rs` | 13 | ReAct 工具闭环、Provider 错误、预算、取消、MCP 工具、Skill、多实例隔离 |
 | `agent_template.rs` | 1 | 标准 Agent 模板静态校验 |
 | `composite.rs` | 10 | 组合执行、作用域事件、内部失败/取消/能力拒绝 |
@@ -121,3 +121,4 @@ CI 在 macOS、Ubuntu 24.04、Windows 上执行格式化（Linux）、clippy 与
 - **Context 预算为估算**：token 以字符数近似，不等同于 Provider 精确计费；极端长上下文仍可能出现服务端超限。
 - **未做安装包、签名与公证**：验收使用 debug binary 与 embedded WebDriver，不覆盖发布分发链路。
 - **UI 保持最小**：没有常驻聊天区、右侧属性栏或仪表盘；模型/工具状态通过节点与底部日志呈现。
+- **Windows 覆盖保存不是原子替换**：Unix 使用原子 `rename`；Windows 目标已存在时先删除再 `rename`，极端崩溃窗口内可能丢失旧文件。后续可改用 `ReplaceFileW`。

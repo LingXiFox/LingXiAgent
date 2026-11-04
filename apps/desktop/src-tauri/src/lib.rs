@@ -1,4 +1,5 @@
 mod commands;
+mod fsutil;
 mod policy;
 mod redact;
 mod runs;
