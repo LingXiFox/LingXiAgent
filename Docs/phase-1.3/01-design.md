@@ -200,7 +200,7 @@ pub struct ScopeFrame {
 
 ## 七、测试与验收
 
-Rust 自动化至少覆盖：
+自动化与实机验收至少覆盖：
 
 1. 普通 DAG 封装前后运行结果一致；
 2. 多输入/多输出映射；
@@ -217,7 +217,7 @@ Rust 自动化至少覆盖：
 
 另有：外层循环经过含 Gate 的组合节点被拒绝；组合输入目标已有内部入边被拒绝；未知引用/非法端口映射被拒绝；旧 `schemaVersion = "1.0"` 文档仍可校验和加载。
 
-演示：把 Phase 1.1 的 Counter Loop 封装为顶层唯一组合节点；内部保留 seed → Loop Gate → Counter → Condition 闭环和内部 Log。运行后日志仍出现 `count: 3.0`，顶层只显示组合节点及其运行状态。
+演示：把 Phase 1.1 的 Counter Loop 中 4 个循环节点封装为一个组合节点，外部保留 Number Input 并连接到组合的 `start` 输入；内部保持 Loop Gate → Counter → Condition 闭环和内部 Log。运行后日志仍出现 `count: 3.0`，顶层显示 Number Input 与组合节点及其运行状态。
 
 ## 八、已知边界
 
