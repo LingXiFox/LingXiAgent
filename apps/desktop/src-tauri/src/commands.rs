@@ -256,3 +256,116 @@ pub fn active_run(state: State<'_, AppState>) -> Result<Option<RunDetail>, Strin
 
 #[allow(dead_code)]
 fn _assert_send_sync(_: Arc<RunControl>) {}
+fn node_error(error: lingxi_runtime::NodeError) -> String {
+    format!("{}: {}", error.code, error.message)
+}
+
+fn keyring_name(reference: &str) -> Result<String, String> {
+    let name = reference
+        .strip_prefix("keyring:")
+        .unwrap_or(reference)
+        .trim();
+    if name.is_empty() {
+        return Err("credential name must not be empty".to_string());
+    }
+    if name.starts_with("env:") {
+        return Err("environment references cannot be stored in the OS keychain".to_string());
+    }
+    Ok(name.to_string())
+}
+
+/// Whether a credential reference can be resolved without exposing the value.
+#[tauri::command]
+pub async fn credential_status(
+    reference: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    state
+        .credentials
+        .status(&reference)
+        .await
+        .map_err(node_error)
+}
+
+/// Stores a secret in the operating system keychain and returns its reference.
+/// The secret is never written to SQLite, workflow JSON or logs.
+#[tauri::command]
+pub async fn credential_set(
+    name: String,
+    secret: String,
+    _state: State<'_, AppState>,
+) -> Result<String, String> {
+    let name = keyring_name(&name)?;
+    lingxi_runtime::credentials::set_keyring_secret(&name, &secret)
+        .await
+        .map_err(node_error)?;
+    Ok(format!("keyring:{name}"))
+}
+
+#[tauri::command]
+pub async fn credential_delete(name: String, _state: State<'_, AppState>) -> Result<bool, String> {
+    let name = keyring_name(&name)?;
+    lingxi_runtime::credentials::delete_keyring_secret(&name)
+        .await
+        .map_err(node_error)?;
+    Ok(true)
+}
+
+/// Lists models from an OpenAI-compatible provider. The credential is resolved
+/// by reference in the host, so it never travels through the webview.
+#[tauri::command]
+pub async fn provider_models(
+    base_url: String,
+    credential_ref: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    let config = lingxi_runtime::ProviderConfig {
+        provider_id: "openai".to_string(),
+        base_url,
+        credential_ref: credential_ref.clone(),
+        organization: String::new(),
+        supports_reasoning: true,
+    };
+    let secret = if credential_ref.trim().is_empty() {
+        None
+    } else {
+        Some(
+            state
+                .credentials
+                .resolve(&credential_ref)
+                .await
+                .map_err(node_error)?,
+        )
+    };
+    use lingxi_runtime::{OpenAiFactory, ProviderFactory};
+    let provider = OpenAiFactory::default()
+        .create(&config, secret)
+        .await
+        .map_err(node_error)?;
+    provider.list_models().await.map_err(node_error)
+}
+
+#[tauri::command]
+pub fn skill_list(state: State<'_, AppState>) -> Result<Vec<lingxi_runtime::SkillSummary>, String> {
+    let Some(root) = &state.skills_root else {
+        return Ok(Vec::new());
+    };
+    lingxi_runtime::SkillLibrary::new(root)
+        .discover()
+        .map_err(node_error)
+}
+
+/// The built-in ReAct agent is sourced from the Rust runtime, not duplicated in
+/// the frontend. Users can insert it and expand every node for editing.
+#[tauri::command]
+pub fn agent_template() -> TemplateBundle {
+    let mut subgraphs = std::collections::BTreeMap::new();
+    subgraphs.insert(
+        lingxi_runtime::agent_template::AGENT_SUBGRAPH_ID.to_string(),
+        lingxi_runtime::agent_template::standard_agent(),
+    );
+    TemplateBundle {
+        root_id: lingxi_runtime::agent_template::AGENT_SUBGRAPH_ID.to_string(),
+        subgraphs,
+    }
+}

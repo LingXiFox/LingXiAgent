@@ -1,4 +1,5 @@
 mod commands;
+mod policy;
 mod redact;
 mod runs;
 mod single_instance;
@@ -9,8 +10,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use lingxi_runtime::{
-    AllowAllPolicy, CapabilityPolicy, Engine, InteractionBroker, NodeRegistry, PendingInteractions,
-    RunControl,
+    CapabilityPolicy, CredentialResolver, Engine, InteractionBroker, NodeRegistry,
+    PendingInteractions, RunControl, ServiceConfig,
 };
 use tauri::Manager;
 
@@ -21,6 +22,8 @@ pub struct AppState {
     pub registry: Arc<NodeRegistry>,
     pub engine: Arc<Engine>,
     pub interactions: Arc<PendingInteractions>,
+    pub credentials: Arc<dyn CredentialResolver>,
+    pub skills_root: Option<std::path::PathBuf>,
     pub runs: Arc<Mutex<HashMap<String, Arc<RunControl>>>>,
     pub store: store::WorkflowStore,
     pub templates: templates::TemplateStore,
@@ -43,12 +46,30 @@ impl AppState {
         let registry = Arc::new(NodeRegistry::builtin());
         let interactions = Arc::new(PendingInteractions::new());
         let broker: Arc<dyn InteractionBroker> = interactions.clone();
-        let policy: Arc<dyn CapabilityPolicy> = Arc::new(AllowAllPolicy);
-        let engine = Arc::new(Engine::new(registry.clone(), policy, broker));
+        let policy: Arc<dyn CapabilityPolicy> = Arc::new(policy::DeclaredCapabilityPolicy);
+        let credentials: Arc<dyn CredentialResolver> =
+            Arc::new(lingxi_runtime::credentials::BuiltinCredentials);
+        let skills_root = lingxi_runtime::SkillLibrary::from_environment()
+            .map(|library| library.root().to_path_buf())
+            .or_else(|| {
+                let path = data_dir.join("skills");
+                path.is_dir().then_some(path)
+            });
+        let engine = Arc::new(Engine::with_services(
+            registry.clone(),
+            policy,
+            broker,
+            ServiceConfig {
+                credentials: credentials.clone(),
+                skills_root: skills_root.clone(),
+            },
+        ));
         Ok(Self {
             registry,
             engine,
             interactions,
+            credentials,
+            skills_root,
             runs: Arc::new(Mutex::new(HashMap::new())),
             store: store::WorkflowStore::new(data_dir.join("workflows")),
             templates: templates::TemplateStore::new(data_dir.join("templates")),
@@ -59,16 +80,31 @@ impl AppState {
 }
 
 pub fn run() {
-    let result = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+
+    // The automation bridge is compiled only for E2E builds. Production
+    // binaries must never expose the WebDriver command surface.
+    #[cfg(feature = "e2e")]
+    {
+        builder = builder
+            .plugin(tauri_plugin_wdio::init())
+            .plugin(tauri_plugin_wdio_webdriver::init());
+    }
+
+    let result = builder
         .setup(|app| {
-            let data_dir = match app.path().app_data_dir() {
-                Ok(path) => path,
-                Err(error) => {
-                    eprintln!(
-                        "LingXiAgent cannot start: cannot resolve app data directory: {error}"
-                    );
-                    std::process::exit(1);
-                }
+            let data_dir = match std::env::var_os("LINGXI_DATA_DIR") {
+                Some(path) if !path.is_empty() => std::path::PathBuf::from(path),
+                _ => match app.path().app_data_dir() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        eprintln!(
+                            "LingXiAgent cannot start: cannot resolve app data directory: {error}"
+                        );
+                        std::process::exit(1);
+                    }
+                },
             };
             let state = match AppState::new(data_dir) {
                 Ok(state) => state,
@@ -101,6 +137,12 @@ pub fn run() {
             commands::run_detail,
             commands::run_events,
             commands::active_run,
+            commands::credential_status,
+            commands::credential_set,
+            commands::credential_delete,
+            commands::provider_models,
+            commands::skill_list,
+            commands::agent_template,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

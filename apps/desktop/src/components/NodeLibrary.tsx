@@ -13,7 +13,7 @@ interface NodeLibraryProps {
   disabled: boolean;
 }
 
-const CATEGORY_ORDER = ["Input", "Text", "Number", "Control", "Output"];
+const CATEGORY_ORDER = ["Input", "Agent", "Tools", "Text", "Number", "Logic", "Control", "Output"];
 
 export function NodeLibrary({
   specs,
@@ -92,6 +92,7 @@ export function NodeLibrary({
       <div className="library__search">
         <input
           type="search"
+          data-testid="library-search"
           placeholder="搜索节点 / Search nodes"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
@@ -105,6 +106,7 @@ export function NodeLibrary({
             {visibleTemplates.map((template) => (
               <div
                 key={template.id}
+                data-testid={"library-template-" + template.id}
                 role="button"
                 tabIndex={disabled ? -1 : 0}
                 aria-disabled={disabled}
@@ -150,6 +152,7 @@ export function NodeLibrary({
               // place a node.
               <div
                 key={spec.kind}
+                data-testid={"library-item-" + spec.kind}
                 role="button"
                 tabIndex={disabled ? -1 : 0}
                 aria-disabled={disabled}

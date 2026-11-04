@@ -1,6 +1,6 @@
 # Phase 1.4 设计：首个完整文本 Agent 闭环
 
-状态：设计冻结，进入实现（2026-11-04）
+状态：已实现并通过 macOS 真实 Tauri 验收（2026-11-04）
 基线：`rewrite/3.0` @ 68c6657
 
 ## 1. 范围与不变量
@@ -61,14 +61,14 @@ Loop Gate、Condition、Composite 的预算/取消/失败传播沿用 Phase 1.1�
 
 | kind | 控制 | 数据输入 | 数据输出 | 关键参数 |
 | --- | --- | --- | --- | --- |
-| `core.provider` | run → done | — | provider(json) | providerId, baseUrl, credentialRef, organization, timeoutMs |
-| `core.model` | run | provider, context, contextUpdate?, tools | text, toolCalls, hasToolCalls, messages, usage | model, temperature, maxTokens, reasoningEffort, stream, timeoutMs, maxCalls, maxTotalTokens |
-| `core.prompt` | run → done | input(any) | messages(json), system(text), user(text) | system, user, variables(json) |
-| `core.context` | run → done | messages, toolResults, context? | context, messages, count | operation(init/update/snapshot), maxMessages, maxTokens, overflow(trim_oldest/error) |
-| `core.tool_set` | run → done | mcp(json)? | toolset, definitions | builtins |
-| `core.tool_dispatch` | run → done | toolset, toolCalls | results, count | timeoutMs |
-| `core.mcp_server` | run → done | — | tools, server | transport(stdio/http), command, args, url, credentialRef, namespace, timeoutMs |
-| `core.skill` | run → done | — | instructions, metadata | skill, resources |
+| `core.provider` | — | — | provider(text), config(json) | providerId, baseUrl, credentialRef, organization, supportsReasoning |
+| `core.model` | run → done | provider(text), context(json), messages(json), toolset(text) | text, toolCalls(json), hasToolCalls(bool), assistant(json), usage(json) | model, temperature, maxTokens, reasoningEffort(none/low/medium/high), stream, timeoutMs, maxCalls, maxTotalTokens |
+| `core.prompt` | run → done | input(any), skill(text) | system(text), user(text), messages(json) | system, user, variables(json) |
+| `core.context` | run → done | messages(json), assistant(json), toolResults(json) | context(json), handle(text), messages(json), trimmed(number) | maxMessages, maxTokens, overflow(trim_oldest/error) |
+| `core.tool_set` | — | mcp(json) | toolset(text), tools(json), names(json) | builtins |
+| `core.tool_dispatch` | run → done | toolset(text), calls(json) | results(json), summary(text), failed(bool) | — |
+| `core.mcp_server` | run → done | — | mcp(json), tools(json), handle(text), toolCount(number) | transport(stdio/http), namespace, command, args, url, credentialRef |
+| `core.skill` | run → done | input(any) | skill(text), messages(json), resources(json) | skillId |
 | `core.log` | run | value | text | prefix |
 
 隐藏运行对象（Context 内容、ToolSet 执行器、MCP 连接）只以不透明 handle 在 data 边传递，不写入工作流 JSON。Provider 节点只保存 `credentialRef`，不保存密钥。
@@ -80,10 +80,18 @@ Provider 适配器是独立 Rust trait：
 ```rust
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
-    async fn complete(&self, request: ChatRequest, delta: DeltaSink, cancel: Arc<RunControl>)
-        -> Result<ChatResponse, RuntimeError>;
+    async fn complete(
+        &self,
+        request: ChatRequest,
+        cancel: &RunControl,
+        delta: &mut (dyn FnMut(String) + Send),
+    ) -> Result<ChatResponse, NodeError>;
+
+    async fn list_models(&self) -> Result<Vec<String>, NodeError>;
 }
 ```
+
+`ChatResponse` 包含 `text`、`tool_calls`、`finish_reason` 和 `usage`。
 
 默认实现为 OpenAI-compatible `POST {baseUrl}/chat/completions`，支持自定义 Base URL、模型 ID、SSE streaming、tool_calls、usage、reasoning_effort（仅当配置非空时发送）。HTTP 状态映射稳定错误码：401/403 → `provider.auth`，429 → `provider.rate_limited`，5xx → `provider.http`，超时 → `provider.timeout`，连接失败 → `provider.network`，非法 JSON/流 → `provider.invalid_response`。
 
@@ -95,9 +103,8 @@ Streaming：Provider 产生文本增量，Model 执行器最多每 250ms 发一�
 
 Context 消息结构包含 role（system/user/assistant/tool）、content、tool_calls、tool_call_id、name。运行期 `ContextStore` 以 `(run_id, handle)` 隔离。
 
-- `init`：从 Prompt 的 messages 创建上下文，返回 handle。
-- `update`：追加 assistant 消息与 tool 结果；工具结果按 ToolCall ID 回填。
-- `snapshot`：输出当前消息，不修改。
+Context 没有 `operation` 参数；每次激活按有值输入合并：`messages` 初始化或替换消息，`assistant` 追加助手消息，`toolResults` 按 ToolCall ID 回填工具结果，并输出 context handle 与当前消息快照。
+
 - 超限策略：`trim_oldest` 保留 system 消息、丢弃最旧消息并记录 warning；`error` 返回 `context.overflow`。token 以字符数/4 估算，属于预算控制而非精确计费。
 
 ## 7. Tool / 权限 / 凭据
@@ -112,7 +119,7 @@ Dispatcher 校验参数 JSON（必填、类型、未知字段），逐个执行�
 
 权限：
 
-- Engine 的 `DeclaredCapabilityPolicy` 只允许已声明的基础 capability（compute/interaction/network）；未知 capability 返回 `capability.unsupported`。
+- 桌面宿主的 `DeclaredCapabilityPolicy` 只放行已支持且已声明的 capability（interaction/network/filesystem/process/credential/mcp）；未知 capability 返回 `capability.unsupported`。
 - 网络、MCP 进程/URL、工具执行在 RunServices 的 `PermissionManager` 中按目标请求用户授权，结果按 run+target 缓存。
 - 拒绝返回 `capability.denied`，取消返回 `node.cancelled`。Composite 内部使用同一 RunServices，无法绕过。
 - 审批复用 InteractionBroker 与现有 UI 审批对话框。
@@ -125,7 +132,7 @@ MCP Client 实现 JSON-RPC 2.0：
 
 - stdio：换行分隔消息，spawn 前授权 command+args；initialize → notifications/initialized → tools/list → tools/call；超时、进程退出、取消均返回稳定错误。
 - Streamable HTTP：POST JSON-RPC，Accept application/json + text/event-stream，保存 Mcp-Session-Id；同样完成 initialize/tools/list/tools/call。
-- 工具名统一为 `mcp:<namespace>:<tool>`，命名空间冲突拒绝；所有 MCP 工具默认不可信，进入 ToolSet 后仍经过 CapabilityPolicy 与目标审批。
+- 工具名统一为 `mcp__<namespace>__<tool>`，命名空间字符做安全清洗，冲突拒绝；所有 MCP 工具默认不可信，进入 ToolSet 后仍经过 CapabilityPolicy 与目标审批。
 - 提供本地测试 MCP Server（Rust 示例），通过真实 stdio 协议完成端到端调用。
 - OAuth 远程服务本轮不宣称支持；只支持无认证或静态 Bearer（通过 credentialRef）。
 
@@ -141,13 +148,21 @@ Skills：
 
 ```text
 Agent.start → Prompt.run
-Prompt.done → Provider.run → ToolSet.run → InitContext.run → Gate.start
+Prompt.done → Gate.start
 Gate.continue → Model.run
 Model.hasToolCalls → Condition.condition
-Condition.true → Dispatcher.run → LoopContext.run → Gate.next
+Condition.true → Dispatcher.run → Context.run → Gate.next
 Condition.false → Gate.stop
 Gate.exit → Log.run
-Model.text → Log.value / Condition.payload
+
+Provider.provider → Model.provider
+ToolSet.toolset → Model.toolset / Dispatcher.toolset
+Prompt.messages → Model.messages / Context.messages
+Model.assistant → Context.assistant
+Model.toolCalls → Dispatcher.calls
+Dispatcher.results → Context.toolResults
+Context.context → Gate.value → Model.context
+Model.text → Condition.payload / Log.value
 ```
 
 数据边把 Provider 配置、ToolSet 定义、Context handle、Model 消息/工具调用保持给下一轮。模板参数暴露 system/user prompt、provider、model、temperature、max tokens、max iterations、timeout、tools；展开后均可编辑。默认 Agent 不包含 MCP；MCP 场景通过展开加入 MCP 节点并接入 ToolSet。

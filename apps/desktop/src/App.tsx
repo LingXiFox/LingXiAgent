@@ -15,6 +15,7 @@ import { LogPanel } from "./components/LogPanel";
 import { NodeLibrary } from "./components/NodeLibrary";
 import { ProblemsPanel } from "./components/ProblemsPanel";
 import { RunHistoryDialog } from "./components/RunHistoryDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { TemplateDialog } from "./components/TemplateDialog";
 import { Toolbar } from "./components/Toolbar";
 import { WorkflowDialog } from "./components/WorkflowDialog";
@@ -229,6 +230,7 @@ export default function App() {
   const [templateBusy, setTemplateBusy] = useState(false);
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [templateRootId, setTemplateRootId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Terminal events can arrive before runWorkflow resolves; remember them so the
   // late `setStatus("running")` does not overwrite the real outcome.
   const finishedRunsRef = useRef(new Map<string, RunStatus>());
@@ -638,6 +640,31 @@ export default function App() {
             current && current.requestId === event.requestId ? null : current,
           );
           break;
+        case "model.delta":
+          if (event.delta.trim().length > 0) {
+            pushLog("info", prefix + "model · " + event.delta);
+          }
+          break;
+        case "tool.started":
+          pushLog(
+            "info",
+            prefix + "tool ▶ " + event.toolName + " · " + event.arguments,
+          );
+          break;
+        case "tool.finished":
+          pushLog(
+            event.ok ? "success" : "error",
+            prefix +
+              "tool " +
+              (event.ok ? "✓ " : "✕ ") +
+              event.toolName +
+              " · " +
+              event.durationMs +
+              "ms" +
+              (event.error ? " · " + event.error : "") +
+              (event.result ? " · " + event.result : ""),
+          );
+          break;
         case "run.finished":
           pushLog(
             event.status === "completed" ? "success" : event.status === "cancelled" ? "warn" : "error",
@@ -673,6 +700,13 @@ export default function App() {
       );
     } finally {
       drainingRef.current = false;
+      // Events can arrive in the same tick after the drain loop found the queue
+      // empty; schedule one more pass so a burst never leaves rows stuck.
+      if (eventQueueRef.current.length > 0) {
+        void Promise.resolve().then(() => {
+          if (!drainingRef.current && !recoveringRef.current) void drainEvents();
+        });
+      }
     }
   }, [pushLog]);
 
@@ -1026,6 +1060,45 @@ export default function App() {
     [adoptLayer, buildDoc, flash, pushLog],
   );
 
+  const handleAgent = useCallback(async () => {
+    const index = nodesRef.current.length;
+    const at = {
+      x: 160 + (index % 4) * 60,
+      y: 120 + (index % 5) * 50,
+    };
+    setBusy(true);
+    try {
+      const bundle = await api.agentTemplate();
+      const document = buildDoc();
+      const instantiated = instantiateTemplate(bundle, at);
+      const next: WorkflowDoc = {
+        ...document,
+        subgraphs: {
+          ...subgraphsOf(document),
+          ...instantiated.subgraphs,
+        },
+      };
+      const path = layerPathRef.current;
+      const layer = layerWorkflow(next, path);
+      if (!layer) throw new Error("unknown layer");
+      const written = writeLayer(
+        next,
+        path,
+        [...layer.nodes, instantiated.node],
+        layer.edges,
+        layerViewport(next, path),
+      );
+      adoptLayer(written, path);
+      flash("已插入标准 Agent 模板");
+      pushLog("success", "instantiated standard agent template · " + bundle.rootId);
+    } catch (error) {
+      pushLog("error", "agent template insert failed: " + String(error));
+      flash("Agent 模板插入失败");
+    } finally {
+      setBusy(false);
+    }
+  }, [adoptLayer, buildDoc, flash, pushLog]);
+
   const handleViewportChange = useCallback((viewport: ViewportDoc) => {
     activeViewportRef.current = viewport;
     setActiveViewport(viewport);
@@ -1210,6 +1283,8 @@ export default function App() {
         onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
         onNew={handleNew}
         onDemo={handleDemo}
+        onAgent={() => void handleAgent()}
+        onSettings={() => setSettingsOpen(true)}
         onOpen={() => void openDialog()}
         onSave={() => void handleSave()}
         onValidate={() => void handleValidate()}
@@ -1272,6 +1347,12 @@ export default function App() {
       <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
 
       <RunHistoryDialog open={historyOpen} onClose={() => setHistoryOpen(false)} />
+
+      <SettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onLog={pushLog}
+      />
 
       <TemplateDialog
         open={templateDialogOpen}

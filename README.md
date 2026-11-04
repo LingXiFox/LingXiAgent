@@ -1,15 +1,13 @@
 # 泠溪 · LingXiAgent 3.0
 
-跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连；Phase 1.2.1 补上单实例保护与实时/持久化事件的统一脱敏；Phase 1.3 加入可展开、可编辑、可复用、由 Rust 分层执行的组合节点与本地模板。工作流是可序列化 JSON，执行全部在 Rust 侧。
-
-![Phase 1.3 组合节点运行](Docs/phase-1.3/assets/phase-1.3-composite-run.png)
+跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连；Phase 1.2.1 补上单实例保护与实时/持久化事件的统一脱敏；Phase 1.3 加入可展开、可编辑、可复用、由 Rust 分层执行的组合节点与本地模板；Phase 1.4 完成首个真实文本 Agent 闭环：Provider、Model、Prompt、Context、Tool、MCP、Skills、权限审批与端到端测试。工作流是可序列化 JSON，执行全部在 Rust 侧。
 
 ## 当前状态
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
-- 阶段：Phase 1.3 — Composite Node / Subgraph，不含真实 LLM 推理
-- 验收：macOS 全项通过；Windows / Linux CI 编译与单测通过，运行行为**未验收**
-- 测试：`cargo test --workspace` 77 passed；前端 `tsc` + `vite build` 通过；事件重放 6 passed；路由 13 passed；组合 8 passed
+- 阶段：Phase 1.4 — 首个完整文本 Agent 闭环（Provider / Model / Tool / MCP / Skills / 权限审批）
+- 验收：macOS 真实 Tauri 全项通过；Windows / Linux 由本次提交后的 CI 验证编译、clippy、单测，运行行为**未验收**
+- 测试：`cargo test --workspace` 96 passed；Playwright 5 passed；原生 Tauri WDIO 4 passed；前端单测 6 + 13 + 8 passed
 
 ## 技术栈
 
@@ -28,13 +26,14 @@ crates/lingxi-spec/      工作流模型、节点规格、校验（纯数据，�
 crates/lingxi-runtime/   执行引擎、控制调度器、内置节点、事件、能力策略、交互总线
 apps/desktop/            React UI + Tauri 壳
   src/                   画布、节点库、日志、对话框、transport
-  src-tauri/             17 个 command、工作流存储、SQLite 运行库、事件桥
+  src-tauri/             23 个 command、工作流存储、SQLite 运行库、事件桥、能力策略
 Docs/phase-0/            基础架构、节点规格、接口、测试、已知问题
 Docs/phase-1.1/          控制流设计、测试与验收记录
 Docs/phase-1.1.1/        智能连线设计、测试与验收记录
 Docs/phase-1.2/          运行持久化设计、测试与验收记录
 Docs/phase-1.2.1/        单实例保护与脱敏一致性设计、测试与验收记录
 Docs/phase-1.3/          组合节点、子图协议、分层执行与模板设计/验收
+Docs/phase-1.4/          文本 Agent 闭环、Provider/工具/MCP/Skills 设计与验收
 Docs/reference/2.0/      2.0 历史文档（只读参考）
 ```
 
@@ -79,10 +78,16 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - 应用异常退出后，未完成运行标记为 `interrupted`，不伪装完成、不自动重跑；支持运行列表、详情与历史事件
 - 单实例保护：同一数据目录只允许一个桌面进程，第二个实例在打开运行库前安静退出，不破坏第一个实例的运行记录
 - 实时与持久化事件共用同一脱敏函数，顶层与嵌套输出一致；重复脱敏幂等；数据库写入失败显式告警并取消运行
-- 11 个内置节点：Boolean Input、Condition、Loop Gate、Counter、Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log
+- 19 个可执行节点 + Composite：基础节点（Boolean Input、Condition、Loop Gate、Counter、Text Input、Number Input、Uppercase、Concat、Add、Approval Gate、Log）与 Agent 节点（Provider、Model、Prompt、Context、Tool Set、Tool Dispatch、MCP Server、Skill）
 - 组合节点（Composite）：多选封装/解组、自动端口映射、控制边、双击展开与面包屑、可编辑内部画布，运行时按实例分层执行
 - 组合模板：本地保存/插入/删除，实例化重映射全部节点与定义 ID；复制组合时深拷贝定义闭包，编辑副本不影响原定义
 - 子图静态校验：检查端口绑定、递归、内部循环、控制边穿越与嵌套循环限制；非法结构在运行前拒绝
+- OpenAI-compatible Provider：自定义 Base URL、SSE 流式输出、tool_calls、usage、reasoning_effort；401/403、429、5xx、超时、断流映射为稳定错误码
+- 标准 ReAct Agent 组合模板：Prompt → Loop Gate → Model → Condition → Tool Dispatch / Context 回环，最终输出到 Log；Provider 与 ToolSet 作为数据输入，没有硬编码 Agent Loop
+- 工具闭环：calculator、text_transform、json_query 内置工具，参数校验、超时、取消、ToolCall ID 对齐与结构化错误
+- MCP：真实 stdio 与 Streamable HTTP JSON-RPC 客户端，工具名 `mcp__<namespace>__<tool>`；Skills：发现 `SKILL.md` 并注入系统上下文，不执行 Skill 脚本
+- 权限与凭据：`DeclaredCapabilityPolicy` 拒绝未声明能力；网络/进程/文件/工具目标在运行时逐目标审批并缓存到本次运行；`env:`/`keyring:` 凭据引用，明文不进入工作流、日志或 SQLite
+- 运行可靠性：流中断、MCP 崩溃、审批拒绝、取消、预算耗尽均有稳定错误码和回归测试；WebView 刷新后从 `active_run` 恢复事件流
 
 ## 文档
 
@@ -100,6 +105,8 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - [Phase 1.2.1 测试与验收](Docs/phase-1.2.1/02-testing-and-acceptance.md)
 - [Phase 1.3 组合节点设计](Docs/phase-1.3/01-design.md)
 - [Phase 1.3 测试与验收](Docs/phase-1.3/02-testing-and-acceptance.md)
+- [Phase 1.4 文本 Agent 设计](Docs/phase-1.4/01-design.md)
+- [Phase 1.4 测试与验收](Docs/phase-1.4/02-testing-and-acceptance.md)
 - [Phase 0 测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
 - [Phase 0 已知问题](Docs/phase-0/05-known-issues.md)
 
@@ -109,7 +116,7 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - 前端不执行工作流，只编辑与提交命令
 - 拖动/缩放等高频交互不调用 Rust
 - 核心不依赖 macOS 专属能力
-- 普通节点必须经过 `CapabilityPolicy`，当前生产策略为 `AllowAll`，权限 UI 尚未实现
+- 普通节点必须经过 `DeclaredCapabilityPolicy`；网络、进程、文件与工具目标再由运行时 `PermissionManager` 逐目标审批，Composite 内部不能绕过
 - 不直接移植 2.0 Swift 代码；只复用协议与概念，见审计文档
 
 ## 许可证

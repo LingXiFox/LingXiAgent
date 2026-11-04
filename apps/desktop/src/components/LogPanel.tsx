@@ -24,9 +24,9 @@ export function LogPanel({ entries, open, status, onToggle, onClear }: LogPanelP
   }, [entries.length, open]);
 
   return (
-    <section className={"logpanel" + (open ? " logpanel--open" : "")}>
+    <section className={"logpanel" + (open ? " logpanel--open" : "")} data-testid="log-panel">
       <div className="logpanel__bar">
-        <button type="button" className="logpanel__toggle" onClick={onToggle}>
+        <button type="button" className="logpanel__toggle" data-testid="log-toggle" onClick={onToggle}>
           <span className={"logpanel__chevron" + (open ? " logpanel__chevron--open" : "")}>▸</span>
           运行日志
           <span className="logpanel__count">{entries.length}</span>
@@ -47,7 +47,7 @@ export function LogPanel({ entries, open, status, onToggle, onClear }: LogPanelP
             <p className="logpanel__empty">暂无事件。点击运行后，Rust 运行时的事件会实时显示在这里。</p>
           ) : (
             entries.map((entry) => (
-              <div className={"logline logline--" + entry.level} key={entry.id}>
+              <div className={"logline logline--" + entry.level} data-testid="log-line" key={entry.id}>
                 <span className="logline__time">{formatTime(entry.at)}</span>
                 <span className="logline__level">{entry.level}</span>
                 <span className="logline__text">{entry.text}</span>

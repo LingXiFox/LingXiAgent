@@ -9,14 +9,14 @@
 - **技术栈**：Rust workspace + Tauri 2 + React/TypeScript + `@xyflow/react`。`crates/lingxi-spec` 定义文档与节点契约；`crates/lingxi-runtime` 负责校验和执行；`apps/desktop/src-tauri` 仅为桌面适配层；`apps/desktop/src` 只负责编辑和展示。
 - **依赖方向**：`lingxi-spec` ← `lingxi-runtime` ← Tauri 宿主。核心库不得依赖 Tauri、React 或 macOS 专属 API。前端不得实现另一套工作流调度器；拖拽、缩放等高频操作不得逐帧调用 Rust IPC。
 - **跨平台是硬要求**：面向 macOS / Windows / Linux。平台差异封装在独立适配层，不要把某一系统的专属 API 渗透到核心。CI 编译通过不等于实机运行验收通过。
-- **演进而非伪装完成**：当前 Phase 1.1 支持无环 DAG、单层受控循环、顺序执行与内置节点；嵌套循环、并发、动态插件、文件事务、持久化恢复尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
+- **演进而非伪装完成**：当前 Phase 1.4 支持无环 DAG、受控循环、组合子图、SQLite 运行恢复，以及 Provider/Model/Prompt/Context/Tool/MCP/Skill 组成的完整文本 Agent 闭环；并发调度、动态插件、文件事务、共享资源总线尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
 
 ## 2. 节点、循环与资源安全
 
 - **节点是最小执行单元**；通过 NodeSpec 声明类型化输入/输出、参数和能力，执行器在 Rust 侧注册。工作流 JSON 不得包含 React Flow 的内部临时状态。
 - **Agent Loop 由节点构建**。当前用 Loop Gate 组合单层循环：必须存在流向 SCC 外的 `exit` 边，反馈路径必须经过 Gate，且显式配置 `maxIterations` 与 `timeoutMs`；静态只证明循环受控，终止由运行期预算强制。不可通过简单移除 `graph.cycle` 检查来“支持循环”。
 - **工作流不配置文件并发细节**。并发由调度器执行，资源冲突由工具与总线处理。共享文件写入必须遵循 `read(version) → write(expected_version)` 的原子比较与提交；过期版本拒绝、要求重新读取，禁止静默覆盖或擅自合并。
-- **能力声明不等于授权**。当前 `AllowAllPolicy` 仍是占位；加入真实文件、Shell、网络或插件执行能力前，必须先完成真正的权限隔离。任何可能直接写共享文件的执行路径都不得绕过资源总线。
+- **能力声明不等于授权**。`DeclaredCapabilityPolicy` 只放行节点声明的 capability，并拒绝未知能力；网络、进程、文件与工具目标由 `PermissionManager` 在运行时逐目标审批，按 run + target 缓存。不得用预授权绕过用户审批，Composite 内部也不得绕过。文件事务与共享资源总线仍未实现；任何可能直接写共享文件的执行路径都不得绕过它们。
 - **凭据与密钥**不得进入工作流 JSON、日志、截图、测试夹具和提交。拒绝未经授权的危险操作，错误必须有可定位的稳定错误码。
 - **插件方案保持开放**：保留 2.0 的能力声明、隔离和契约测试思想，但不要未经评估便认定 C ABI、WASM 或子进程 RPC 是唯一方案；影响兼容性的决定应记录 ADR。
 

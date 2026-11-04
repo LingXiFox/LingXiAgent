@@ -26,8 +26,9 @@ test-results-artifact/
 # 2.4MB JPEG twice.
 Picture/
 
-# Scratch probes and mined CI logs (AGENTS.md convention)
+# Scratch probes, mined CI logs and local E2E runner logs
 .tmp/
+apps/desktop/logs/
 # 同步管线的发布标记（上一次成功发布的记录，供漂移检查用），不入库
 Server/models-site/public/publication.json.prev
 

@@ -9,6 +9,7 @@ import type {
   RunEvent,
   RunRecord,
   RunStartResponse,
+  SkillSummary,
   TemplateBundle,
   TemplateSummary,
   ValidationReport,
@@ -42,6 +43,14 @@ export const tauriTransport: Transport = {
   runDetail: (runId) => invoke<RunDetail | null>("run_detail", { runId }),
   runEvents: (runId, afterSeq) => invoke<RunEvent[]>("run_events", { runId, afterSeq }),
   activeRun: () => invoke<RunDetail | null>("active_run"),
+  credentialStatus: (reference) =>
+    invoke<boolean>("credential_status", { reference }),
+  credentialSet: (name, secret) => invoke<string>("credential_set", { name, secret }),
+  credentialDelete: (name) => invoke<boolean>("credential_delete", { name }),
+  providerModels: (baseUrl, credentialRef) =>
+    invoke<string[]>("provider_models", { baseUrl, credentialRef }),
+  skillList: () => invoke<SkillSummary[]>("skill_list"),
+  agentTemplate: () => invoke<TemplateBundle>("agent_template"),
   onRunEvent: async (handler) =>
     listen<RunEvent>(RUN_EVENT_NAME, (event) => handler(event.payload)),
   onPersistenceError: async (handler) =>

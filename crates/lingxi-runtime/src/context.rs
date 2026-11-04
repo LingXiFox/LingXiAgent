@@ -9,6 +9,7 @@ use crate::event::{EventEmitter, LogLevel, RunEvent};
 use crate::interaction::{
     InteractionBroker, InteractionDecision, InteractionOption, InteractionRequest,
 };
+use crate::services::RunServices;
 
 const INTERACTION_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -21,7 +22,9 @@ pub struct NodeContext<'a> {
     pub inputs: &'a BTreeMap<String, Value>,
     pub control: &'a RunControl,
     pub broker: &'a dyn InteractionBroker,
+    pub services: &'a RunServices,
     pub emitter: EventEmitter<'a>,
+    state_scope: &'a str,
 }
 
 impl<'a> NodeContext<'a> {
@@ -33,7 +36,9 @@ impl<'a> NodeContext<'a> {
         inputs: &'a BTreeMap<String, Value>,
         control: &'a RunControl,
         broker: &'a dyn InteractionBroker,
+        services: &'a RunServices,
         emitter: &EventEmitter<'a>,
+        state_scope: &'a str,
     ) -> Self {
         Self {
             run_id,
@@ -42,7 +47,20 @@ impl<'a> NodeContext<'a> {
             inputs,
             control,
             broker,
+            services,
             emitter: emitter.fork(),
+            state_scope,
+        }
+    }
+
+    /// Stable key for per-activation state such as context handles and model
+    /// budgets. A composite instance gets its own namespace, so two instances
+    /// of the same template never share conversation state.
+    pub fn state_key(&self) -> String {
+        if self.state_scope.is_empty() {
+            self.node.id.clone()
+        } else {
+            format!("{}/{}", self.state_scope, self.node.id)
         }
     }
 
@@ -169,6 +187,56 @@ impl<'a> NodeContext<'a> {
 
     /// Asks the host a question and waits for the answer. Emits the paired
     /// interaction events so the UI never has to guess request state.
+    /// Streams one incremental model token to the host. The model node
+    /// throttles before calling this so a fast stream cannot flood SQLite.
+    pub fn model_delta(&self, delta: impl Into<String>) {
+        self.emitter.emit(crate::event::RunEvent::ModelDelta {
+            run_id: self.run_id.to_string(),
+            seq: 0,
+            scope: Vec::new(),
+            node_id: self.node.id.clone(),
+            label: self.node.display_name(Some(self.spec)),
+            delta: delta.into(),
+        });
+    }
+
+    pub fn tool_started(&self, tool_call_id: &str, tool_name: &str, arguments: &str) {
+        self.emitter.emit(crate::event::RunEvent::ToolStarted {
+            run_id: self.run_id.to_string(),
+            seq: 0,
+            scope: Vec::new(),
+            node_id: self.node.id.clone(),
+            label: self.node.display_name(Some(self.spec)),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            arguments: arguments.to_string(),
+        });
+    }
+
+    pub fn tool_finished(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        ok: bool,
+        duration_ms: u64,
+        error: Option<String>,
+        result: String,
+    ) {
+        self.emitter.emit(crate::event::RunEvent::ToolFinished {
+            run_id: self.run_id.to_string(),
+            seq: 0,
+            scope: Vec::new(),
+            node_id: self.node.id.clone(),
+            label: self.node.display_name(Some(self.spec)),
+            tool_call_id: tool_call_id.to_string(),
+            tool_name: tool_name.to_string(),
+            ok,
+            duration_ms,
+            error,
+            result,
+        });
+    }
+
     pub async fn request_interaction(
         &self,
         prompt: impl Into<String>,

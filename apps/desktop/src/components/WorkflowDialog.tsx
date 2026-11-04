@@ -26,11 +26,17 @@ export function WorkflowDialog({
   if (!open) return null;
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="Open workflow">
+    <div
+      className="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Open workflow"
+      data-testid="workflow-dialog"
+    >
       <div className="modal__card">
         <header className="modal__head">
           <h2 className="modal__title">打开工作流</h2>
-          <button type="button" className="btn btn--tiny" onClick={onClose}>
+          <button type="button" className="btn btn--tiny" data-testid="workflow-close" onClick={onClose}>
             关闭
           </button>
         </header>
@@ -43,7 +49,11 @@ export function WorkflowDialog({
             <p className="modal__empty">还没有保存过的工作流。</p>
           ) : null}
           {workflows.map((workflow) => (
-            <div className="wfrow" key={workflow.name}>
+            <div
+              className="wfrow"
+              key={workflow.name}
+              data-testid={"workflow-row-" + workflow.name}
+            >
               <div className="wfrow__meta">
                 <span className="wfrow__name">{workflow.name}</span>
                 <span className="wfrow__sub">
@@ -51,12 +61,18 @@ export function WorkflowDialog({
                 </span>
               </div>
               <div className="wfrow__actions">
-                <button type="button" className="btn btn--tiny" onClick={() => onLoad(workflow.name)}>
+                <button
+                  type="button"
+                  className="btn btn--tiny"
+                  data-testid={"workflow-load-" + workflow.name}
+                  onClick={() => onLoad(workflow.name)}
+                >
                   载入
                 </button>
                 <button
                   type="button"
                   className="btn btn--tiny btn--danger"
+                  data-testid={"workflow-delete-" + workflow.name}
                   onClick={() => onDelete(workflow.name)}
                 >
                   删除

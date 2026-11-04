@@ -31,6 +31,7 @@ function ParamField({ nodeId, param, params, onChange }: ParamFieldProps) {
       <label className="field field--boolean" htmlFor={inputId}>
         <input
           id={inputId}
+          data-testid={"param-" + nodeId + "-" + param.name}
           type="checkbox"
           className="nodrag"
           checked={Boolean(value)}
@@ -47,6 +48,7 @@ function ParamField({ nodeId, param, params, onChange }: ParamFieldProps) {
         <span className="field__label">{param.label}</span>
         <select
           id={inputId}
+          data-testid={"param-" + nodeId + "-" + param.name}
           className="field__control nodrag"
           value={String(value ?? "")}
           onChange={(event) => onChange(nodeId, param.name, event.target.value)}
@@ -67,6 +69,7 @@ function ParamField({ nodeId, param, params, onChange }: ParamFieldProps) {
         <span className="field__label">{param.label}</span>
         <textarea
           id={inputId}
+          data-testid={"param-" + nodeId + "-" + param.name}
           className="field__control field__control--area nodrag"
           rows={3}
           value={String(value ?? "")}
@@ -82,6 +85,7 @@ function ParamField({ nodeId, param, params, onChange }: ParamFieldProps) {
         <span className="field__label">{param.label}</span>
         <input
           id={inputId}
+          data-testid={"param-" + nodeId + "-" + param.name}
           type="number"
           className="field__control nodrag"
           value={value === undefined || value === null ? "" : String(value)}
@@ -99,6 +103,7 @@ function ParamField({ nodeId, param, params, onChange }: ParamFieldProps) {
       <span className="field__label">{param.label}</span>
       <input
         id={inputId}
+        data-testid={"param-" + nodeId + "-" + param.name}
         type="text"
         className="field__control nodrag"
         value={String(value ?? "")}
@@ -139,6 +144,10 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
         (enabled ? "" : " node--disabled") +
         (run ? " node--" + run.state : "")
       }
+      data-testid={"node-" + id}
+      data-node-kind={spec.kind}
+      data-node-id={id}
+      data-run-state={run?.state ?? "idle"}
     >
       <header className="node__header">
         <span className={"node__dot node__dot--" + categoryClass(spec.category)} />
@@ -161,6 +170,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
         <button
           type="button"
           className={"node__power nodrag" + (enabled ? " node__power--on" : "")}
+          data-testid={"node-toggle-" + id}
           title={enabled ? "Disable node" : "Enable node"}
           onClick={() => data.onToggleEnabled(id)}
         >
@@ -183,6 +193,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
                 type="target"
                 position={Position.Left}
                 id={port.name}
+                data-testid={"handle-in-" + id + "-" + port.name}
                 className={
                   "port__handle dt-" + port.dataType + (port.control ? " port__handle--control" : "")
                 }
@@ -201,6 +212,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
                 type="source"
                 position={Position.Right}
                 id={port.name}
+                data-testid={"handle-out-" + id + "-" + port.name}
                 className={
                   "port__handle dt-" + port.dataType + (port.control ? " port__handle--control" : "")
                 }

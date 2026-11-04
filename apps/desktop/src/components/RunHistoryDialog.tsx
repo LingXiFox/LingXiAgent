@@ -52,6 +52,20 @@ function eventText(event: RunEvent): string {
       return "⏸ approval requested · " + event.prompt;
     case "interaction.resolved":
       return "interaction " + event.decision + " · " + event.nodeId;
+    case "model.delta":
+      return "model · " + event.delta;
+    case "tool.started":
+      return "tool ▶ " + event.toolName + " · " + event.arguments;
+    case "tool.finished":
+      return (
+        "tool " +
+        (event.ok ? "✓ " : "✕ ") +
+        event.toolName +
+        " · " +
+        event.durationMs +
+        "ms" +
+        (event.error ? " · " + event.error : "")
+      );
   }
 }
 
@@ -64,6 +78,7 @@ function eventLevel(event: RunEvent): string {
     case "interaction.requested":
       return "warn";
     case "node.finished":
+    case "tool.finished":
       return "success";
     case "run.finished":
       return event.status === "completed"
@@ -120,7 +135,13 @@ export function RunHistoryDialog({ open, onClose }: RunHistoryDialogProps) {
   if (!open) return null;
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="运行历史">
+    <div
+      className="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="运行历史"
+      data-testid="run-history-dialog"
+    >
       <div className="modal__card modal__card--wide">
         <div className="modal__head">
           <h2 className="modal__title">运行历史</h2>
@@ -153,6 +174,7 @@ export function RunHistoryDialog({ open, onClose }: RunHistoryDialogProps) {
                   className={
                     "runrow" + (selected?.run.runId === run.runId ? " runrow--active" : "")
                   }
+                  data-testid={"run-row-" + run.runId}
                   onClick={() => void select(run.runId)}
                 >
                   <span className="runrow__top">
@@ -197,6 +219,7 @@ export function RunHistoryDialog({ open, onClose }: RunHistoryDialogProps) {
                   {selected.events.map((event) => (
                     <div
                       className={"runhistory__event runhistory__event--" + eventLevel(event)}
+                      data-testid={"run-event-" + event.seq}
                       key={event.seq}
                     >
                       <span className="runhistory__seq">#{event.seq}</span>

@@ -17,6 +17,7 @@ use crate::engine::{elapsed_ms, CapabilityRequest, Engine, RunSummary};
 use crate::error::{error_codes, NodeError};
 use crate::event::{EventEmitter, LogLevel, RunCause, RunEvent, RunStatus, ScopeFrame};
 use crate::registry::NodeOutput;
+use crate::services::RunServices;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Ready {
@@ -37,15 +38,21 @@ struct Scheduler<'a> {
     workflow: &'a Workflow,
     run_id: &'a str,
     control: &'a RunControl,
+    services: &'a RunServices,
     emitter: EventEmitter<'a>,
     subgraphs: &'a BTreeMap<String, Subgraph>,
     composite_specs: Arc<BTreeMap<String, NodeSpec>>,
     parent_deadline: Option<Instant>,
+    scope: String,
     seeds: BTreeMap<(String, String), Value>,
     index: HashMap<String, usize>,
     incoming: Vec<Vec<usize>>,
     outgoing: Vec<Vec<usize>>,
     tokens: HashMap<String, Value>,
+    // Data edges are latched. This tracks edges whose value changed since the
+    // last activation of their target, so data-only nodes can re-evaluate on
+    // new upstream output without re-running on every scheduler pass.
+    fresh_data: HashSet<String>,
     inactive: HashSet<String>,
     queue: VecDeque<usize>,
     queued: HashSet<usize>,
@@ -69,6 +76,7 @@ pub(crate) async fn execute(
     control: Arc<RunControl>,
     emitter: &EventEmitter<'_>,
     started: Instant,
+    services: &RunServices,
 ) -> RunSummary {
     emitter.log(
         run_id,
@@ -87,10 +95,12 @@ pub(crate) async fn execute(
         workflow,
         run_id,
         control.as_ref(),
+        services,
         emitter.fork(),
         &workflow.subgraphs,
         composite_specs,
         None,
+        String::new(),
     );
     scheduler.prepare();
     scheduler.run().await;
@@ -104,10 +114,12 @@ impl<'a> Scheduler<'a> {
         workflow: &'a Workflow,
         run_id: &'a str,
         control: &'a RunControl,
+        services: &'a RunServices,
         emitter: EventEmitter<'a>,
         subgraphs: &'a BTreeMap<String, Subgraph>,
         composite_specs: Arc<BTreeMap<String, NodeSpec>>,
         parent_deadline: Option<Instant>,
+        scope: String,
     ) -> Self {
         let mut index = HashMap::with_capacity(workflow.nodes.len());
         for (position, node) in workflow.nodes.iter().enumerate() {
@@ -128,15 +140,18 @@ impl<'a> Scheduler<'a> {
             workflow,
             run_id,
             control,
+            services,
             emitter,
             subgraphs,
             composite_specs,
             parent_deadline,
+            scope,
             seeds: BTreeMap::new(),
             index,
             incoming,
             outgoing,
             tokens: HashMap::new(),
+            fresh_data: HashSet::new(),
             inactive: HashSet::new(),
             queue: VecDeque::new(),
             queued: HashSet::new(),
@@ -324,74 +339,95 @@ impl<'a> Scheduler<'a> {
 
     fn evaluate(&self, index: usize) -> Ready {
         let incoming = &self.incoming[index];
+        let node_id = &self.workflow.nodes[index].id;
+        let activation = self.activations[index];
+        let seeded_any = self.seeds.keys().any(|(target, _)| target == node_id);
         if incoming.is_empty() {
-            return if self.fired_sources.contains(&index) {
-                Ready::Wait
-            } else {
+            // A node without internal edges and without a subgraph seed is a
+            // constant source. A seeded node is also ready on its first
+            // activation even when the subgraph binds the port without an
+            // internal edge.
+            return if activation == 0 && !self.fired_sources.contains(&index) {
                 Ready::Go
+            } else {
+                Ready::Wait
             };
         }
 
         let spec = self.spec(index);
-        let node_id = &self.workflow.nodes[index].id;
-        let mut has_control = false;
-        let mut control_token = false;
-        let mut any_token = false;
-        let mut data_pending = false;
-        let mut required_data_inactive = false;
-
-        for &edge_index in incoming {
-            let edge = &self.workflow.edges[edge_index];
-            let inactive = self.inactive.contains(&edge.id);
-            // A subgraph input binding feeds an internal port without an
-            // internal edge. Treat that seed exactly like a delivered token.
-            let seeded = self
-                .seeds
-                .keys()
-                .any(|(target, port)| target == node_id && port == &edge.target_port);
-            let token = self.tokens.contains_key(&edge.id) || seeded;
-            if edge.kind == EdgeKind::Control {
-                has_control = true;
-                control_token |= token;
-            }
-            any_token |= token;
-            if edge.kind == EdgeKind::Data {
-                let required = spec
-                    .and_then(|spec| spec.input_port(&edge.target_port))
-                    .is_some_and(|port| port.required);
-                required_data_inactive |= required && inactive;
-                data_pending |= !token && !inactive;
-            }
-        }
-
         let seeded_control = self.seeds.keys().any(|(target, port)| {
             target == node_id
                 && spec
                     .and_then(|spec| spec.input_port(port))
                     .is_some_and(|port| port.control)
         });
-        let seeded_any = self.seeds.keys().any(|(target, _)| target == node_id);
+        let mut has_control = seeded_control;
+        let mut control_token = seeded_control;
+        let mut any_data = false;
+        let mut any_fresh = false;
+        let mut data_pending = false;
+        let mut required_data_inactive = false;
+        let mut any_active_path = false;
+
+        for &edge_index in incoming {
+            let edge = &self.workflow.edges[edge_index];
+            let inactive = self.inactive.contains(&edge.id);
+            // A subgraph input binding feeds an internal port without an
+            // internal edge. Treat that seed exactly like a delivered value.
+            let seeded = self
+                .seeds
+                .keys()
+                .any(|(target, port)| target == node_id && port == &edge.target_port);
+            let token = self.tokens.contains_key(&edge.id) || seeded;
+            any_active_path |= !inactive;
+            if edge.kind == EdgeKind::Control {
+                has_control = true;
+                control_token |= token;
+            } else {
+                any_data |= token;
+                any_fresh |= self.fresh_data.contains(&edge.id) || seeded;
+                data_pending |= !token && !inactive;
+                let required = spec
+                    .and_then(|spec| spec.input_port(&edge.target_port))
+                    .is_some_and(|port| port.required);
+                required_data_inactive |= required && inactive;
+            }
+        }
 
         if required_data_inactive {
-            return Ready::Blocked;
+            return if activation == 0 {
+                Ready::Blocked
+            } else {
+                Ready::Wait
+            };
         }
         if has_control {
-            if control_token || seeded_control {
-                if data_pending {
-                    Ready::Wait
-                } else {
-                    Ready::Go
-                }
-            } else if incoming
-                .iter()
-                .all(|edge| self.inactive.contains(&self.workflow.edges[*edge].id))
-            {
+            // Control edges are one-shot triggers. Data edges are latched, so
+            // an already-run node waits for its next control activation instead
+            // of re-running because a value is still present.
+            if control_token {
+                Ready::Go
+            } else if activation > 0 {
+                Ready::Wait
+            } else if !any_active_path {
                 Ready::Blocked
             } else {
                 Ready::Wait
             }
-        } else if (any_token || seeded_any) && !data_pending {
+        } else if activation == 0 {
+            if (any_data || seeded_any) && !data_pending {
+                Ready::Go
+            } else if !any_active_path {
+                Ready::Blocked
+            } else {
+                Ready::Wait
+            }
+        } else if any_fresh && !data_pending {
+            // A fresh upstream value makes a data-only node re-evaluate, e.g.
+            // a condition fed by a counter inside a loop.
             Ready::Go
+        } else if !any_active_path {
+            Ready::Blocked
         } else {
             Ready::Wait
         }
@@ -401,20 +437,48 @@ impl<'a> Scheduler<'a> {
         let mut inputs = BTreeMap::new();
         for edge_index in self.incoming[index].clone() {
             let edge = &self.workflow.edges[edge_index];
-            if let Some(value) = self.tokens.remove(&edge.id) {
+            let value = self.tokens.get(&edge.id).cloned().or_else(|| {
+                self.seeds
+                    .get(&(edge.target.clone(), edge.target_port.clone()))
+                    .cloned()
+            });
+            if let Some(value) = value {
                 inputs.insert(edge.target_port.clone(), value);
+            }
+            if edge.kind == EdgeKind::Control {
+                // A control token is an event: consuming it keeps the edge
+                // armed for the next activation. Data values stay latched for
+                // every activation that reads them.
+                self.tokens.remove(&edge.id);
+            } else {
+                self.fresh_data.remove(&edge.id);
             }
         }
         let node_id = self.workflow.nodes[index].id.clone();
+        let spec = self.spec(index);
         let seed_keys: Vec<_> = self
             .seeds
             .keys()
             .filter(|(target, _)| target == &node_id)
             .cloned()
             .collect();
+        let control_ports: Vec<String> = spec
+            .map(|spec| {
+                spec.inputs
+                    .iter()
+                    .filter(|port| port.control)
+                    .map(|port| port.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         for key in seed_keys {
-            if let Some(value) = self.seeds.remove(&key) {
-                inputs.insert(key.1, value);
+            let control = control_ports.iter().any(|port| port == &key.1);
+            if control {
+                if let Some(value) = self.seeds.remove(&key) {
+                    inputs.insert(key.1, value);
+                }
+            } else if let Some(value) = self.seeds.get(&key) {
+                inputs.insert(key.1.clone(), value.clone());
             }
         }
         inputs
@@ -431,7 +495,17 @@ impl<'a> Scheduler<'a> {
             if let Some(value) = outputs.get(&edge.source_port) {
                 self.inactive.remove(&edge.id);
                 self.tokens.insert(edge.id.clone(), value.clone());
-            } else if !defer_absent {
+                if edge.kind == EdgeKind::Data {
+                    self.fresh_data.insert(edge.id.clone());
+                }
+            } else if defer_absent {
+                continue;
+            } else if edge.kind == EdgeKind::Data {
+                // A missing data output clears the previous latch; it must not
+                // deactivate the branch because the value may appear later.
+                self.tokens.remove(&edge.id);
+                self.fresh_data.remove(&edge.id);
+            } else {
                 self.deactivate_edge(edge_index);
             }
         }
@@ -589,10 +663,16 @@ impl<'a> Scheduler<'a> {
             &subgraph.workflow,
             self.run_id,
             self.control,
+            self.services,
             scoped,
             self.subgraphs,
             Arc::clone(&self.composite_specs),
             self.deadline(),
+            if self.scope.is_empty() {
+                node_id.clone()
+            } else {
+                format!("{}/{}", self.scope, node_id)
+            },
         );
         inner.seeds = seeds;
         inner.prepare();
@@ -686,6 +766,17 @@ impl<'a> Scheduler<'a> {
             iteration,
         });
 
+        for port in &spec.inputs {
+            if port.required && !port.control && !inputs.contains_key(&port.name) {
+                let error = NodeError::new(
+                    error_codes::MISSING_INPUT,
+                    format!("required input {:?} was not provided", port.name),
+                );
+                self.fail_started(index, activation, iteration, error, 0);
+                return true;
+            }
+        }
+
         for capability in &spec.capabilities {
             let request = CapabilityRequest {
                 run_id: self.run_id,
@@ -720,7 +811,9 @@ impl<'a> Scheduler<'a> {
             &inputs,
             self.control,
             self.engine.interactions.as_ref(),
+            self.services,
             &self.emitter,
+            &self.scope,
         );
         let deadline = self.deadline();
         let node_started = Instant::now();
@@ -950,7 +1043,10 @@ impl<'a> Scheduler<'a> {
                     activation,
                     iteration: Some(1),
                 });
-                let outputs = BTreeMap::from([("continue".to_string(), payload)]);
+                let mut outputs = BTreeMap::from([("continue".to_string(), payload.clone())]);
+                if let Some(value) = inputs.get("value") {
+                    outputs.insert("value".to_string(), value.clone());
+                }
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
@@ -1044,7 +1140,10 @@ impl<'a> Scheduler<'a> {
                     activation,
                     iteration: Some(next),
                 });
-                let outputs = BTreeMap::from([("continue".to_string(), payload)]);
+                let mut outputs = BTreeMap::from([("continue".to_string(), payload.clone())]);
+                if let Some(value) = inputs.get("value") {
+                    outputs.insert("value".to_string(), value.clone());
+                }
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,
@@ -1078,7 +1177,10 @@ impl<'a> Scheduler<'a> {
                     activation,
                     iteration: Some(iteration),
                 });
-                let outputs = BTreeMap::from([("exit".to_string(), payload)]);
+                let mut outputs = BTreeMap::from([("exit".to_string(), payload.clone())]);
+                if let Some(value) = inputs.get("value") {
+                    outputs.insert("value".to_string(), value.clone());
+                }
                 self.emitter.emit(RunEvent::NodeFinished {
                     run_id: self.run_id.to_string(),
                     seq: 0,

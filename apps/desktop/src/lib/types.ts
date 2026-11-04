@@ -150,6 +150,14 @@ export interface TemplateSummary {
   updatedAtMs: number;
 }
 
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  version?: string | null;
+  path: string;
+}
+
 export interface TemplateBundle {
   rootId: string;
   subgraphs: Record<string, Subgraph>;
@@ -258,6 +266,31 @@ export type RunEvent =
       requestId: string;
       nodeId: string;
       decision: "approved" | "rejected";
+    })
+  | (RunEventBase & {
+      type: "model.delta";
+      nodeId: string;
+      label: string;
+      delta: string;
+    })
+  | (RunEventBase & {
+      type: "tool.started";
+      nodeId: string;
+      label: string;
+      toolCallId: string;
+      toolName: string;
+      arguments: string;
+    })
+  | (RunEventBase & {
+      type: "tool.finished";
+      nodeId: string;
+      label: string;
+      toolCallId: string;
+      toolName: string;
+      ok: boolean;
+      durationMs: number;
+      error: string | null;
+      result: string;
     })
   | (RunEventBase & {
       type: "run.finished";

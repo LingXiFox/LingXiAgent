@@ -1,6 +1,7 @@
 import type {
   NodeSpec,
   PersistenceError,
+  SkillSummary,
   RunDetail,
   RunEvent,
   RunRecord,
@@ -32,6 +33,12 @@ export interface Transport {
   runDetail(runId: string): Promise<RunDetail | null>;
   runEvents(runId: string, afterSeq?: number): Promise<RunEvent[]>;
   activeRun(): Promise<RunDetail | null>;
+  credentialStatus(reference: string): Promise<boolean>;
+  credentialSet(name: string, secret: string): Promise<string>;
+  credentialDelete(name: string): Promise<boolean>;
+  providerModels(baseUrl: string, credentialRef: string): Promise<string[]>;
+  skillList(): Promise<SkillSummary[]>;
+  agentTemplate(): Promise<TemplateBundle>;
   onRunEvent(handler: (event: RunEvent) => void): Promise<() => void>;
   onPersistenceError(handler: (error: PersistenceError) => void): Promise<() => void>;
 }

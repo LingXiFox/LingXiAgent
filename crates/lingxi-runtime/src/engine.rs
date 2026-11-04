@@ -19,6 +19,7 @@ use crate::error::{error_codes, NodeError};
 use crate::event::{EventEmitter, EventSink, LogLevel, RunCause, RunEvent, RunStatus};
 use crate::interaction::InteractionBroker;
 use crate::registry::NodeRegistry;
+use crate::services::{RunServices, ServiceConfig};
 
 /// What a node asks before it may touch a resource. Phase 0 ships an allow-all
 /// policy, but every executor still goes through this gate so the permission
@@ -58,6 +59,7 @@ pub struct Engine {
     pub(crate) registry: Arc<NodeRegistry>,
     pub(crate) policy: Arc<dyn CapabilityPolicy>,
     pub(crate) interactions: Arc<dyn InteractionBroker>,
+    pub(crate) services: ServiceConfig,
 }
 
 impl Engine {
@@ -70,6 +72,26 @@ impl Engine {
             registry,
             policy,
             interactions,
+            services: ServiceConfig {
+                credentials: Arc::new(crate::credentials::BuiltinCredentials),
+                skills_root: None,
+            },
+        }
+    }
+
+    /// Replaces the host-level services (credentials and skills) while keeping
+    /// the registry, capability policy and interaction broker.
+    pub fn with_services(
+        registry: Arc<NodeRegistry>,
+        policy: Arc<dyn CapabilityPolicy>,
+        interactions: Arc<dyn InteractionBroker>,
+        services: ServiceConfig,
+    ) -> Self {
+        Self {
+            registry,
+            policy,
+            interactions,
+            services,
         }
     }
 
@@ -91,6 +113,7 @@ impl Engine {
     ) -> RunSummary {
         let started = Instant::now();
         let emitter = EventEmitter::new(sink);
+        let services = Arc::new(RunServices::new(&self.services));
 
         emitter.emit(RunEvent::RunStarted {
             run_id: run_id.to_string(),
@@ -135,7 +158,7 @@ impl Engine {
 
         if requires_control_flow(workflow, self.registry.as_ref()) {
             return crate::control_flow::execute(
-                self, workflow, run_id, control, &emitter, started,
+                self, workflow, run_id, control, &emitter, started, &services,
             )
             .await;
         }
@@ -356,7 +379,9 @@ impl Engine {
                 &inputs,
                 control.as_ref(),
                 self.interactions.as_ref(),
+                services.as_ref(),
                 &emitter,
+                "",
             );
             let node_started = Instant::now();
             let outcome = tokio::select! {

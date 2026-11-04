@@ -95,6 +95,7 @@ export function Canvas({
   return (
     <div
       className={"canvas" + (running ? " canvas--running" : "")}
+      data-testid="canvas"
       onDrop={onDrop}
       onDragOver={onDragOver}
     >
@@ -113,6 +114,7 @@ export function Canvas({
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           defaultEdgeOptions={{ type: "smart" }}
+          multiSelectionKeyCode={["Meta", "Shift", "Control"]}
           fitView
           fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
           minZoom={0.2}

@@ -64,9 +64,9 @@ jobs:
         run: cargo test --workspace
 
   frontend:
-    name: Frontend (TypeScript + Vite)
+    name: Frontend (TypeScript + Vite + Playwright)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -98,3 +98,11 @@ jobs:
       - name: Composite helper tests
         working-directory: apps/desktop
         run: pnpm test:composite
+
+      - name: Install Playwright Chromium
+        working-directory: apps/desktop
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser end-to-end tests
+        working-directory: apps/desktop
+        run: pnpm test:e2e:web

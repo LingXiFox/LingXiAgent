@@ -16,6 +16,37 @@ pub mod error_codes {
     pub const LOOP_MISSING_TRIGGER: &str = "loop.missing_trigger";
     pub const LOOP_INVALID_STATE: &str = "loop.invalid_state";
     pub const SUBGRAPH_UNKNOWN_REFERENCE: &str = "subgraph.unknown_reference";
+    pub const CAPABILITY_UNSUPPORTED: &str = "capability.unsupported";
+    pub const CAPABILITY_UNAVAILABLE: &str = "capability.unavailable";
+    pub const PROVIDER_AUTH: &str = "provider.auth";
+    pub const PROVIDER_RATE_LIMITED: &str = "provider.rate_limited";
+    pub const PROVIDER_HTTP: &str = "provider.http";
+    pub const PROVIDER_TIMEOUT: &str = "provider.timeout";
+    pub const PROVIDER_NETWORK: &str = "provider.network";
+    pub const PROVIDER_INVALID_RESPONSE: &str = "provider.invalid_response";
+    pub const PROVIDER_CONFIG: &str = "provider.invalid_config";
+    pub const PROVIDER_MISSING_CREDENTIAL: &str = "provider.missing_credential";
+    pub const MODEL_EMPTY_RESPONSE: &str = "model.empty_response";
+    pub const CONTEXT_UNKNOWN_HANDLE: &str = "context.unknown_handle";
+    pub const CONTEXT_INVALID_MESSAGES: &str = "context.invalid_messages";
+    pub const CONTEXT_OVERFLOW: &str = "context.overflow";
+    pub const TOOL_INVALID_ARGUMENTS: &str = "tool.invalid_arguments";
+    pub const TOOL_UNKNOWN: &str = "tool.unknown";
+    pub const TOOL_FAILED: &str = "tool.failed";
+    pub const TOOL_TIMEOUT: &str = "tool.timeout";
+    pub const TOOLSET_UNKNOWN_HANDLE: &str = "toolset.unknown_handle";
+    pub const TOOLSET_NAMESPACE_CONFLICT: &str = "toolset.namespace_conflict";
+    pub const MCP_CONNECT: &str = "mcp.connect";
+    pub const MCP_PROTOCOL: &str = "mcp.protocol";
+    pub const MCP_TIMEOUT: &str = "mcp.timeout";
+    pub const MCP_CRASHED: &str = "mcp.crashed";
+    pub const MCP_UNSUPPORTED: &str = "mcp.unsupported";
+    pub const SKILL_NOT_FOUND: &str = "skill.not_found";
+    pub const SKILL_INVALID: &str = "skill.invalid";
+    pub const BUDGET_CALLS_EXHAUSTED: &str = "budget.calls_exhausted";
+    pub const BUDGET_TOKENS_EXHAUSTED: &str = "budget.tokens_exhausted";
+    pub const CREDENTIALS_UNAVAILABLE: &str = "credentials.unavailable";
+    pub const CREDENTIALS_INVALID_REFERENCE: &str = "credentials.invalid_reference";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

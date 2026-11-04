@@ -13,6 +13,8 @@ interface ToolbarProps {
   onNameChange: (name: string) => void;
   onNew: () => void;
   onDemo: () => void;
+  onAgent: () => void;
+  onSettings: () => void;
   onOpen: () => void;
   onSave: () => void;
   onValidate: () => void;
@@ -38,6 +40,8 @@ export function Toolbar({
   onNameChange,
   onNew,
   onDemo,
+  onAgent,
+  onSettings,
   onOpen,
   onSave,
   onValidate,
@@ -62,6 +66,7 @@ export function Toolbar({
           onChange={(event) => onNameChange(event.target.value)}
           placeholder="Workflow name"
           aria-label="Workflow name"
+          data-testid="workflow-name"
         />
         <span className={"status status--" + status}>
           <span className="status__dot" />
@@ -79,6 +84,7 @@ export function Toolbar({
             <button
               type="button"
               className="btn btn--ghost btn--compact"
+              data-testid="toolbar-group"
               onClick={onGroup}
               disabled={selectionCount < 2 || structuralLock}
               title="把选中的节点组合为可展开的组合节点"
@@ -88,6 +94,7 @@ export function Toolbar({
             <button
               type="button"
               className="btn btn--ghost btn--compact"
+              data-testid="toolbar-ungroup"
               onClick={onUngroup}
               disabled={!canUngroup || structuralLock}
               title="解组并把内部节点还原到当前画布"
@@ -97,6 +104,7 @@ export function Toolbar({
             <button
               type="button"
               className="btn btn--ghost btn--compact"
+              data-testid="toolbar-duplicate"
               onClick={onDuplicate}
               disabled={structuralLock}
               title="复制选中节点及其内部连线"
@@ -106,6 +114,7 @@ export function Toolbar({
             <button
               type="button"
               className="btn btn--ghost btn--compact"
+              data-testid="toolbar-template"
               onClick={onSaveTemplate}
               disabled={!canTemplate || structuralLock}
               title="把选中的组合存为本地模板"
@@ -115,27 +124,34 @@ export function Toolbar({
             <span className="toolbar__divider" />
           </span>
         ) : null}
-        <button type="button" className="btn btn--ghost" onClick={onNew} disabled={running}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-new" onClick={onNew} disabled={running}>
           新建
         </button>
-        <button type="button" className="btn btn--ghost" onClick={onDemo} disabled={running}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-demo" onClick={onDemo} disabled={running}>
           示例
         </button>
-        <button type="button" className="btn btn--ghost" onClick={onOpen} disabled={running}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-agent" onClick={onAgent} disabled={running || busy}>
+          Agent
+        </button>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-open" onClick={onOpen} disabled={running}>
           打开
         </button>
-        <button type="button" className="btn btn--ghost" onClick={onSave} disabled={running || busy}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-save" onClick={onSave} disabled={running || busy}>
           保存
         </button>
-        <button type="button" className="btn btn--ghost" onClick={onValidate} disabled={busy}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-validate" onClick={onValidate} disabled={busy}>
           校验
         </button>
-        <button type="button" className="btn btn--ghost" onClick={onHistory}>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-settings" onClick={onSettings}>
+          设置
+        </button>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-history" onClick={onHistory}>
           历史
         </button>
         <button
           type="button"
           className="btn btn--run"
+          data-testid="toolbar-run"
           onClick={onRun}
           disabled={running || busy}
         >
@@ -144,6 +160,7 @@ export function Toolbar({
         <button
           type="button"
           className="btn btn--stop"
+          data-testid="toolbar-stop"
           onClick={onStop}
           disabled={!running}
         >

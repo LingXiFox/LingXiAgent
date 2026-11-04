@@ -12,6 +12,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+# Automation-only WebDriver bridge. Never enabled for release builds.
+e2e = ["dep:tauri-plugin-wdio", "dep:tauri-plugin-wdio-webdriver"]
+
 [dependencies]
 lingxi-spec = { workspace = true }
 lingxi-runtime = { workspace = true }
@@ -21,3 +25,5 @@ rusqlite = { version = "0.41", default-features = false, features = ["bundled"] 
 tauri = { version = "2", features = [] }
 tokio = { workspace = true }
 uuid = { workspace = true }
+tauri-plugin-wdio = { version = "1.5.1", optional = true }
+tauri-plugin-wdio-webdriver = { version = "1.5.1", optional = true }

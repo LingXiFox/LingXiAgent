@@ -46,6 +46,7 @@ pub fn register(registry: &mut NodeRegistry) {
     registry
         .register(counter_spec(), Arc::new(Counter))
         .expect("built-in node kinds are unique");
+    crate::agent::register(registry);
 }
 
 pub fn text_input_spec() -> NodeSpec {
@@ -90,6 +91,8 @@ pub fn log_spec() -> NodeSpec {
     NodeSpec::new("core.log", "Log", "Output")
         .description("Writes the incoming value to the run log.")
         .input(PortSpec::new("value", "Value", DataType::Any).required())
+        .input(PortSpec::new("run", "Run", DataType::Any).control())
+        .output(PortSpec::new("text", "Text", DataType::Text))
         .param(ParamSpec::text("prefix", "Prefix", ""))
 }
 
@@ -130,8 +133,10 @@ pub fn loop_gate_spec() -> NodeSpec {
         .input(PortSpec::new("start", "Start", DataType::Any).control())
         .input(PortSpec::new("next", "Next", DataType::Any).control())
         .input(PortSpec::new("stop", "Stop", DataType::Any).control())
+        .input(PortSpec::new("value", "Value", DataType::Any))
         .output(PortSpec::new("continue", "Continue", DataType::Any).control())
         .output(PortSpec::new("exit", "Exit", DataType::Any).control())
+        .output(PortSpec::new("value", "Value", DataType::Any))
         .param(
             ParamSpec::number("maxIterations", "Max iterations", 10.0)
                 .help("Hard iteration budget; the run fails when it is exhausted."),
@@ -221,8 +226,9 @@ impl NodeExecutor for LogNode {
             NodeError::new(error_codes::MISSING_INPUT, "input \"value\" has no value")
         })?;
         let prefix = ctx.string_param("prefix")?.to_string();
-        ctx.log(LogLevel::Info, format!("{prefix}{}", display_value(value)));
-        Ok(NodeOutput::new())
+        let text = format!("{prefix}{}", display_value(value));
+        ctx.log(LogLevel::Info, text.clone());
+        Ok(NodeOutput::new().with("text", Value::String(text)))
     }
 }
 

@@ -26,7 +26,13 @@ export function TemplateDialog({
   if (!open) return null;
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label="Save composite template">
+    <div
+      className="modal"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Save composite template"
+      data-testid="template-dialog"
+    >
       <form
         className="modal__card modal__card--narrow"
         onSubmit={(event) => {
@@ -48,6 +54,7 @@ export function TemplateDialog({
             <span>模板名称</span>
             <input
               autoFocus
+              data-testid="template-name"
               value={name}
               maxLength={64}
               spellCheck={false}
@@ -58,10 +65,15 @@ export function TemplateDialog({
           {error ? <p className="modal__error">{error}</p> : null}
         </div>
         <div className="modal__actions">
-          <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          <button type="button" className="btn btn--ghost" data-testid="template-cancel" onClick={onCancel}>
             取消
           </button>
-          <button type="submit" className="btn" disabled={!name.trim() || busy}>
+          <button
+            type="submit"
+            className="btn"
+            data-testid="template-save"
+            disabled={!name.trim() || busy}
+          >
             {busy ? "保存中…" : "保存模板"}
           </button>
         </div>

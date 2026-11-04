@@ -6,10 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "build:e2e": "tsc --noEmit && vite build --mode e2e",
     "preview": "vite preview",
     "test:events": "node --test tests/eventReplay.test.mjs",
     "test:routing": "node --test tests/edgeRouter.test.mjs",
     "test:composite": "node --test tests/composite.test.mjs",
+    "test:e2e:web": "playwright test --config playwright.config.ts",
+    "e2e:tauri:build": "tauri build --debug --no-bundle --features e2e --config src-tauri/tauri.e2e.conf.json",
+    "test:e2e:tauri": "pnpm e2e:tauri:build && wdio run wdio.conf.mjs",
+    "test:all": "pnpm test:events && pnpm test:routing && pnpm test:composite && pnpm test:e2e:web && pnpm test:e2e:tauri",
     "bench:routing": "node tests/edgeRouter.bench.mjs",
     "tauri": "tauri"
   },
@@ -20,11 +25,19 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@tauri-apps/cli": "^2.1.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
+    "@wdio/cli": "9.31.9",
+    "@wdio/local-runner": "9.31.9",
+    "@wdio/mocha-framework": "9.31.9",
+    "@wdio/spec-reporter": "9.31.2",
+    "@wdio/tauri-plugin": "1.5.1",
+    "@wdio/tauri-service": "1.5.1",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "webdriverio": "9.31.9"
   }
 }

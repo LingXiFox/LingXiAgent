@@ -145,6 +145,44 @@ pub enum RunEvent {
         node_id: Option<String>,
         message: String,
     },
+    #[serde(rename = "model.delta")]
+    ModelDelta {
+        run_id: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
+        node_id: String,
+        label: String,
+        delta: String,
+    },
+    #[serde(rename = "tool.started")]
+    ToolStarted {
+        run_id: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
+        node_id: String,
+        label: String,
+        tool_call_id: String,
+        tool_name: String,
+        arguments: String,
+    },
+    #[serde(rename = "tool.finished")]
+    ToolFinished {
+        run_id: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
+        node_id: String,
+        label: String,
+        tool_call_id: String,
+        tool_name: String,
+        ok: bool,
+        duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        result: String,
+    },
     #[serde(rename = "interaction.requested")]
     InteractionRequested {
         run_id: String,
@@ -187,6 +225,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { run_id, .. }
             | RunEvent::NodeCancelled { run_id, .. }
             | RunEvent::Log { run_id, .. }
+            | RunEvent::ModelDelta { run_id, .. }
+            | RunEvent::ToolStarted { run_id, .. }
+            | RunEvent::ToolFinished { run_id, .. }
             | RunEvent::InteractionRequested { run_id, .. }
             | RunEvent::InteractionResolved { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => run_id,
@@ -204,6 +245,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { seq, .. }
             | RunEvent::NodeCancelled { seq, .. }
             | RunEvent::Log { seq, .. }
+            | RunEvent::ModelDelta { seq, .. }
+            | RunEvent::ToolStarted { seq, .. }
+            | RunEvent::ToolFinished { seq, .. }
             | RunEvent::InteractionRequested { seq, .. }
             | RunEvent::InteractionResolved { seq, .. }
             | RunEvent::RunFinished { seq, .. } => *seq,
@@ -219,6 +263,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { seq, .. }
             | RunEvent::NodeCancelled { seq, .. }
             | RunEvent::Log { seq, .. }
+            | RunEvent::ModelDelta { seq, .. }
+            | RunEvent::ToolStarted { seq, .. }
+            | RunEvent::ToolFinished { seq, .. }
             | RunEvent::InteractionRequested { seq, .. }
             | RunEvent::InteractionResolved { seq, .. }
             | RunEvent::RunFinished { seq, .. } => *seq = value,
@@ -235,6 +282,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { scope, .. }
             | RunEvent::NodeCancelled { scope, .. }
             | RunEvent::Log { scope, .. }
+            | RunEvent::ModelDelta { scope, .. }
+            | RunEvent::ToolStarted { scope, .. }
+            | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
             | RunEvent::InteractionResolved { scope, .. } => scope,
         }
@@ -249,6 +299,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { scope, .. }
             | RunEvent::NodeCancelled { scope, .. }
             | RunEvent::Log { scope, .. }
+            | RunEvent::ModelDelta { scope, .. }
+            | RunEvent::ToolStarted { scope, .. }
+            | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
             | RunEvent::InteractionResolved { scope, .. } => Some(scope),
         }
@@ -263,6 +316,9 @@ impl RunEvent {
             | RunEvent::NodeSkipped { scope, .. }
             | RunEvent::NodeCancelled { scope, .. }
             | RunEvent::Log { scope, .. }
+            | RunEvent::ModelDelta { scope, .. }
+            | RunEvent::ToolStarted { scope, .. }
+            | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
             | RunEvent::InteractionResolved { scope, .. } => *scope = frames,
         }

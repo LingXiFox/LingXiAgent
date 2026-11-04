@@ -18,17 +18,17 @@ export function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+    <div className="modal" role="dialog" aria-modal="true" aria-label={title} data-testid="confirm-dialog">
       <div className="modal__card modal__card--narrow">
         <header className="modal__head">
           <h2 className="modal__title">{title}</h2>
         </header>
         <p className="modal__prompt">{message}</p>
         <div className="modal__actions">
-          <button type="button" className="btn btn--ghost" onClick={onCancel}>
+          <button type="button" className="btn btn--ghost" data-testid="confirm-cancel" onClick={onCancel}>
             取消
           </button>
-          <button type="button" className="btn btn--run" onClick={onConfirm}>
+          <button type="button" className="btn btn--run" data-testid="confirm-accept" onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>

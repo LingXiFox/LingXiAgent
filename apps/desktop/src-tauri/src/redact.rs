@@ -90,6 +90,27 @@ pub fn redact_event(event: &RunEvent) -> RunEvent {
         RunEvent::Log { message, .. } => {
             *message = redact_text(message);
         }
+        RunEvent::ModelDelta { delta, .. } => {
+            *delta = redact_text(delta);
+        }
+        RunEvent::ToolStarted {
+            label, arguments, ..
+        } => {
+            *label = redact_text(label);
+            *arguments = redact_text(arguments);
+        }
+        RunEvent::ToolFinished {
+            label,
+            error,
+            result,
+            ..
+        } => {
+            *label = redact_text(label);
+            if let Some(error) = error {
+                *error = redact_text(error);
+            }
+            *result = redact_text(result);
+        }
         RunEvent::InteractionRequested {
             prompt, options, ..
         } => {
