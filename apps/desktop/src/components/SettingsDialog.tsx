@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { api } from "../lib/api";
-import type { SkillSummary } from "../lib/types";
+import type { ProviderProtocol, SkillSummary } from "../lib/types";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -14,6 +14,7 @@ const STORAGE_KEY = "lingxi.provider.settings";
 interface StoredSettings {
   baseUrl: string;
   credentialRef: string;
+  protocol: ProviderProtocol;
 }
 
 function loadSettings(): StoredSettings {
@@ -24,17 +25,23 @@ function loadSettings(): StoredSettings {
       return {
         baseUrl: parsed.baseUrl ?? "http://127.0.0.1:11434/v1",
         credentialRef: parsed.credentialRef ?? "env:OPENAI_API_KEY",
+        protocol: parsed.protocol ?? "openai_chat",
       };
     }
   } catch {
     // Ignore a corrupt preview setting.
   }
-  return { baseUrl: "http://127.0.0.1:11434/v1", credentialRef: "env:OPENAI_API_KEY" };
+  return {
+    baseUrl: "http://127.0.0.1:11434/v1",
+    credentialRef: "env:OPENAI_API_KEY",
+    protocol: "openai_chat",
+  };
 }
 
 export function SettingsDialog({ open, onClose, onLog }: SettingsDialogProps) {
   const [baseUrl, setBaseUrl] = useState("");
   const [credentialRef, setCredentialRef] = useState("");
+  const [protocol, setProtocol] = useState<ProviderProtocol>("openai_chat");
   const [secret, setSecret] = useState("");
   const [status, setStatus] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
@@ -47,6 +54,7 @@ export function SettingsDialog({ open, onClose, onLog }: SettingsDialogProps) {
     const stored = loadSettings();
     setBaseUrl(stored.baseUrl);
     setCredentialRef(stored.credentialRef);
+    setProtocol(stored.protocol);
     setSecret("");
     setStatus(null);
     setModels([]);
@@ -60,7 +68,7 @@ export function SettingsDialog({ open, onClose, onLog }: SettingsDialogProps) {
   if (!open) return null;
 
   const persist = () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ baseUrl, credentialRef }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ baseUrl, credentialRef, protocol }));
   };
 
   const saveCredential = async () => {
@@ -122,7 +130,7 @@ export function SettingsDialog({ open, onClose, onLog }: SettingsDialogProps) {
     setModels([]);
     try {
       persist();
-      const found = await api.providerModels(baseUrl, credentialRef);
+      const found = await api.providerModels(baseUrl, credentialRef, protocol);
       setModels(found);
       onLog("info", "provider returned " + found.length + " model(s)");
     } catch (reason) {
@@ -162,6 +170,20 @@ export function SettingsDialog({ open, onClose, onLog }: SettingsDialogProps) {
                 onChange={(event) => setBaseUrl(event.target.value)}
                 placeholder="http://127.0.0.1:11434/v1"
               />
+            </label>
+            <label className="field" htmlFor="settings-protocol">
+              <span className="field__label">协议</span>
+              <select
+                id="settings-protocol"
+                className="field__control"
+                data-testid="settings-protocol"
+                value={protocol}
+                onChange={(event) => setProtocol(event.target.value as ProviderProtocol)}
+              >
+                <option value="openai_chat">OpenAI Chat Completions</option>
+                <option value="openai_responses">OpenAI Responses</option>
+                <option value="anthropic_messages">Anthropic Messages</option>
+              </select>
             </label>
             <label className="field" htmlFor="settings-credential-ref">
               <span className="field__label">凭据引用</span>

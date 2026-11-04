@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::Value;
 
+use crate::assets::AssetStore;
 use crate::conversation::{
     messages_from_json, tool_results_from_json, ContextSnapshot, ContextStore, OverflowPolicy,
     ToolResultRecord,
@@ -38,8 +39,11 @@ impl UsageRecord {
 /// created fresh for each run by `RunServices::new`.
 #[derive(Clone)]
 pub struct ServiceConfig {
+    pub permissions: Arc<PermissionManager>,
     pub credentials: Arc<dyn CredentialResolver>,
     pub skills_root: Option<PathBuf>,
+    /// Immutable, content-addressed media store shared by all runs.
+    pub assets: Arc<AssetStore>,
 }
 
 impl std::fmt::Debug for ServiceConfig {
@@ -47,14 +51,25 @@ impl std::fmt::Debug for ServiceConfig {
         formatter
             .debug_struct("ServiceConfig")
             .field("skills_root", &self.skills_root)
+            .field("assets", &self.assets.root())
             .finish_non_exhaustive()
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ResponseSession {
+    pub id: String,
+    /// Number of local messages already represented by the remote response.
+    pub message_count: usize,
+    /// Fingerprint of the first message, used to detect local trimming.
+    pub first_message: String,
+}
+
 pub struct RunServices {
     pub credentials: Arc<dyn CredentialResolver>,
-    pub permissions: PermissionManager,
+    pub permissions: Arc<PermissionManager>,
     pub mcp: McpManager,
+    pub assets: Arc<AssetStore>,
     skills: Option<SkillLibrary>,
     builtins: BuiltinTools,
     contexts: Mutex<ContextStore>,
@@ -62,14 +77,16 @@ pub struct RunServices {
     providers: Mutex<BTreeMap<String, ProviderConfig>>,
     toolsets: Mutex<BTreeMap<String, Vec<ToolDefinition>>>,
     usage: Mutex<HashMap<String, UsageRecord>>,
+    response_sessions: Mutex<HashMap<String, ResponseSession>>,
 }
 
 impl RunServices {
     pub fn new(config: &ServiceConfig) -> Self {
         Self {
             credentials: Arc::clone(&config.credentials),
-            permissions: PermissionManager::new(),
+            permissions: Arc::clone(&config.permissions),
             mcp: McpManager::new(),
+            assets: Arc::clone(&config.assets),
             skills: config
                 .skills_root
                 .clone()
@@ -81,6 +98,7 @@ impl RunServices {
             providers: Mutex::new(BTreeMap::new()),
             toolsets: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(HashMap::new()),
+            response_sessions: Mutex::new(HashMap::new()),
         }
     }
 
@@ -214,6 +232,18 @@ impl RunServices {
                 Ok(snapshot)
             }
         }
+    }
+
+    pub fn response_session(&self, node_id: &str) -> Option<ResponseSession> {
+        Self::lock(&self.response_sessions).get(node_id).cloned()
+    }
+
+    pub fn set_response_session(&self, node_id: &str, session: ResponseSession) {
+        Self::lock(&self.response_sessions).insert(node_id.to_string(), session);
+    }
+
+    pub fn clear_response_session(&self, node_id: &str) {
+        Self::lock(&self.response_sessions).remove(node_id);
     }
 
     pub fn context_snapshot(&self, handle: &str) -> Result<ContextSnapshot, NodeError> {

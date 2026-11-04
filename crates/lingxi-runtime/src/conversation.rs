@@ -196,7 +196,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> u64 {
     messages
         .iter()
         .map(|message| {
-            4 + (message.content.chars().count() as u64 / 4)
+            4 + (message.content.char_count() as u64 / 4)
                 + message
                     .tool_calls
                     .iter()

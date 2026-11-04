@@ -35,7 +35,11 @@ async function connect(page: Page, source: Locator, target: Locator) {
   await page.mouse.move(from.x + 28, from.y + 18, { steps: 4 });
   await page.waitForTimeout(60);
   await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 20 });
+  // Give React Flow a frame to register the hovered target before releasing.
+  // Without it a loaded runner can drop the connection on an empty canvas.
+  await page.waitForTimeout(80);
   await page.mouse.up();
+  await page.waitForTimeout(80);
 }
 
 test.describe("LingXiAgent web canvas", () => {

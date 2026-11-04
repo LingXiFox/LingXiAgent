@@ -15,6 +15,8 @@ use crate::AppState;
 
 pub const RUN_EVENT: &str = "lingxi:run-event";
 pub const PERSISTENCE_ERROR: &str = "lingxi:persistence-error";
+pub const HOST_INTERACTION: &str = "lingxi:host-interaction";
+pub const HOST_INTERACTION_RESOLVED: &str = "lingxi:host-interaction-resolved";
 
 struct TauriSink {
     app: AppHandle,
@@ -311,12 +313,16 @@ pub async fn credential_delete(name: String, _state: State<'_, AppState>) -> Res
     Ok(true)
 }
 
-/// Lists models from an OpenAI-compatible provider. The credential is resolved
-/// by reference in the host, so it never travels through the webview.
+/// Lists models from a configured provider. The credential is resolved by
+/// reference in the host, so it never travels through the webview. Discovery
+/// uses the same protocol+host+port authorization rule as inference.
 #[tauri::command]
 pub async fn provider_models(
     base_url: String,
     credential_ref: String,
+    protocol: Option<String>,
+    capabilities: Option<serde_json::Value>,
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let config = lingxi_runtime::ProviderConfig {
@@ -325,7 +331,57 @@ pub async fn provider_models(
         credential_ref: credential_ref.clone(),
         organization: String::new(),
         supports_reasoning: true,
+        protocol: lingxi_runtime::ProviderProtocol::parse(
+            protocol.as_deref().unwrap_or("openai_chat"),
+        )
+        .map_err(node_error)?,
+        capabilities: capabilities.unwrap_or(serde_json::Value::Null),
     };
+    config.validate().map_err(node_error)?;
+    let target = config.target();
+    let run_id = "host-provider-models";
+    let class = lingxi_runtime::permissions::PermissionClass::Network;
+    if !state.permissions.is_approved(run_id, class, &target) {
+        let request = lingxi_runtime::interaction::InteractionRequest {
+            request_id: format!("host-{}", uuid::Uuid::new_v4()),
+            run_id: run_id.to_string(),
+            node_id: "provider-discovery".to_string(),
+            prompt: format!(
+                "Allow network access to {target}?\nDiscover models for {}.",
+                config.protocol.label()
+            ),
+            options: vec![
+                lingxi_runtime::interaction::InteractionOption {
+                    value: "approve".to_string(),
+                    label: "Allow for this session".to_string(),
+                },
+                lingxi_runtime::interaction::InteractionOption {
+                    value: "reject".to_string(),
+                    label: "Reject".to_string(),
+                },
+            ],
+        };
+        let request_id = request.request_id.clone();
+        app.emit(HOST_INTERACTION, &request)
+            .map_err(|error| format!("cannot show authorization prompt: {error}"))?;
+        use lingxi_runtime::interaction::InteractionBroker;
+        let decision = tokio::time::timeout(
+            std::time::Duration::from_secs(300),
+            state.interactions.request(request),
+        )
+        .await
+        .map_err(|_| format!("authorization for {target} timed out"))?
+        .map_err(node_error)?;
+        app.emit(
+            HOST_INTERACTION_RESOLVED,
+            serde_json::json!({ "requestId": request_id }),
+        )
+        .ok();
+        if decision != InteractionDecision::Approved {
+            return Err(format!("network access to {target} was rejected"));
+        }
+        state.permissions.pre_approve(run_id, class, &target);
+    }
     let secret = if credential_ref.trim().is_empty() {
         None
     } else {
@@ -339,10 +395,88 @@ pub async fn provider_models(
     };
     use lingxi_runtime::{OpenAiFactory, ProviderFactory};
     let provider = OpenAiFactory::default()
-        .create(&config, secret)
+        .create(&config, secret, state.assets.clone())
         .await
         .map_err(node_error)?;
     provider.list_models().await.map_err(node_error)
+}
+
+/// Resolves the effective capability profile for a model without contacting
+/// the provider. The Model node uses it to explain which media and reasoning
+/// options are actually available before a run starts.
+#[tauri::command]
+pub fn model_capabilities(
+    protocol: String,
+    model: String,
+    capabilities: Option<serde_json::Value>,
+) -> Result<lingxi_runtime::ModelCapabilities, String> {
+    lingxi_runtime::ProviderProtocol::parse(&protocol).map_err(node_error)?;
+    let profile = lingxi_runtime::ModelCapabilities::infer(&protocol, &model);
+    match capabilities {
+        Some(overrides) => profile.with_overrides(&overrides).map_err(node_error),
+        None => Ok(profile),
+    }
+}
+
+/// Resolves a host-level authorization prompt raised outside a workflow run,
+/// for example provider model discovery.
+#[tauri::command]
+pub fn respond_host_interaction(
+    request_id: String,
+    approved: bool,
+    state: State<'_, AppState>,
+) -> bool {
+    use lingxi_runtime::interaction::InteractionBroker;
+    let decision = if approved {
+        InteractionDecision::Approved
+    } else {
+        InteractionDecision::Rejected
+    };
+    state.interactions.resolve(&request_id, decision)
+}
+
+#[tauri::command]
+pub async fn asset_import(
+    path: String,
+    kind: String,
+    state: State<'_, AppState>,
+) -> Result<lingxi_spec::AssetRef, String> {
+    let kind = match kind.as_str() {
+        "image" => lingxi_spec::AssetKind::Image,
+        "audio" => lingxi_spec::AssetKind::Audio,
+        "video" => lingxi_spec::AssetKind::Video,
+        "document" => lingxi_spec::AssetKind::Document,
+        other => return Err(format!("unknown asset kind {other:?}")),
+    };
+    state
+        .assets
+        .import_path(std::path::Path::new(&path), kind, "user-picker")
+        .map_err(node_error)
+}
+
+/// Returns a data URL for a small local preview. The frontend never receives
+/// arbitrary filesystem access: only blobs already in the content-addressed
+/// store can be read, and oversized media is refused rather than buffered.
+#[tauri::command]
+pub fn asset_preview(
+    id: String,
+    mime: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    const MAX_PREVIEW: usize = 24 * 1024 * 1024;
+    let bytes = state.assets.read_by_id(&id).map_err(node_error)?;
+    if bytes.len() > MAX_PREVIEW {
+        return Err(format!(
+            "asset preview is limited to {MAX_PREVIEW} bytes; use the metadata panel instead"
+        ));
+    }
+    use base64::Engine;
+    let mime = mime
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| infer::get(&bytes).map(|kind| kind.mime_type().to_string()))
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
 }
 
 #[tauri::command]
@@ -367,5 +501,6 @@ pub fn agent_template() -> TemplateBundle {
     TemplateBundle {
         root_id: lingxi_runtime::agent_template::AGENT_SUBGRAPH_ID.to_string(),
         subgraphs,
+        assets: std::collections::BTreeMap::new(),
     }
 }

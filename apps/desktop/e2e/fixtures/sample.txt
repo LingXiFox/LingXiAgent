@@ -1,0 +1,3 @@
+LingXi document sample
+
+Paragraph two with unicode: 泠溪.

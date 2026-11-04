@@ -42,6 +42,14 @@ async function openSaved(name) {
   await row.click();
 }
 
+async function clearLog() {
+  const button = await $('[data-testid="log-clear"]');
+  if (await button.isEnabled().catch(() => false)) {
+    await button.click();
+    await browser.pause(100);
+  }
+}
+
 async function approvePendingInteractions(timeout = 60000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -198,6 +206,7 @@ describe("LingXiAgent native Tauri E2E", () => {
     await openSaved(DAG_NAME);
     await waitForCounts("3 节点 · 2 连线");
 
+    await clearLog();
     await $('[data-testid="toolbar-run"]').click();
     await waitForLog("HELLO RUST E2E", 30000);
     await waitForLog("run completed", 30000);
@@ -253,6 +262,11 @@ describe("LingXiAgent native Tauri E2E", () => {
     }
     const provider = subgraph.workflow.nodes.find((node) => node.kind === "core.provider");
     assert.equal(provider.params.baseUrl, "http://127.0.0.1:11434/v1");
+    // The mock provider selects its behavior by model name. The standard
+    // template ships with a real model, which answers without a tool call.
+    const modelNode = subgraph.workflow.nodes.find((node) => node.kind === "core.model");
+    assert.ok(modelNode, "agent subgraph must contain a model node");
+    modelNode.params.model = "mock-calculator";
 
     // Seed the template with a prompt and a control trigger. This is the same
     // shape the UI produces when a text input is wired into a composite.
@@ -290,6 +304,7 @@ describe("LingXiAgent native Tauri E2E", () => {
 
     await openSaved(AGENT_RUN_NAME);
     await waitForCounts("2 节点 · 2 连线");
+    await clearLog();
     await $('[data-testid="toolbar-run"]').click();
     // Network access and the calculator target are approved through the same
     // InteractionBroker the desktop UI uses; the run stays paused until then.
@@ -333,6 +348,7 @@ describe("LingXiAgent native Tauri E2E", () => {
     await openSaved(RECOVERY_NAME);
     await waitForCounts("2 节点 · 2 连线");
 
+    await clearLog();
     await $('[data-testid="toolbar-run"]').click();
     await waitForLog("waiting for approval", 30000);
     const run = await waitForRunning(RECOVERY_NAME);
@@ -367,6 +383,7 @@ describe("LingXiAgent native Tauri E2E", () => {
     await openSaved(CANCEL_NAME);
     await waitForCounts("2 节点 · 2 连线");
 
+    await clearLog();
     await $('[data-testid="toolbar-run"]').click();
     await waitForLog("waiting for approval", 30000);
     const run = await waitForRunning(CANCEL_NAME);

@@ -47,6 +47,20 @@ pub mod error_codes {
     pub const BUDGET_TOKENS_EXHAUSTED: &str = "budget.tokens_exhausted";
     pub const CREDENTIALS_UNAVAILABLE: &str = "credentials.unavailable";
     pub const CREDENTIALS_INVALID_REFERENCE: &str = "credentials.invalid_reference";
+    pub const ASSET_READ: &str = "asset.read_failed";
+    pub const ASSET_WRITE: &str = "asset.write_failed";
+    pub const ASSET_IO: &str = "asset.io_failed";
+    pub const ASSET_EMPTY: &str = "asset.empty";
+    pub const ASSET_TOO_LARGE: &str = "asset.too_large";
+    pub const ASSET_INVALID: &str = "asset.invalid";
+    pub const ASSET_MISSING: &str = "asset.missing";
+    pub const ASSET_UNSUPPORTED: &str = "asset.unsupported";
+    pub const MODEL_UNSUPPORTED_MODALITY: &str = "model.unsupported_modality";
+    pub const MODEL_UNSUPPORTED_REASONING: &str = "model.unsupported_reasoning";
+    pub const MODEL_UNKNOWN_CAPABILITY: &str = "model.unknown_capability";
+    pub const MEDIA_PROCESSING: &str = "media.processing_failed";
+    pub const MEDIA_TOOL_MISSING: &str = "media.tool_missing";
+    pub const PROVIDER_PERMISSION_REQUIRED: &str = "provider.permission_required";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

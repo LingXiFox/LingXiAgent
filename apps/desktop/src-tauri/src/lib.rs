@@ -29,6 +29,8 @@ pub struct AppState {
     pub store: store::WorkflowStore,
     pub templates: templates::TemplateStore,
     pub db: Arc<RunDatabase>,
+    pub permissions: Arc<lingxi_runtime::permissions::PermissionManager>,
+    pub assets: Arc<lingxi_runtime::AssetStore>,
     // Held for the lifetime of the app; dropping it releases the OS lock.
     _instance_lock: InstanceLock,
 }
@@ -45,6 +47,8 @@ impl AppState {
             eprintln!("marked {recovered} unfinished run(s) as interrupted after restart");
         }
         let registry = Arc::new(NodeRegistry::builtin());
+        let permissions = Arc::new(lingxi_runtime::permissions::PermissionManager::new());
+        let assets = Arc::new(lingxi_runtime::AssetStore::new(data_dir.join("assets")));
         let interactions = Arc::new(PendingInteractions::new());
         let broker: Arc<dyn InteractionBroker> = interactions.clone();
         let policy: Arc<dyn CapabilityPolicy> = Arc::new(policy::DeclaredCapabilityPolicy);
@@ -61,8 +65,10 @@ impl AppState {
             policy,
             broker,
             ServiceConfig {
+                permissions: permissions.clone(),
                 credentials: credentials.clone(),
                 skills_root: skills_root.clone(),
+                assets: assets.clone(),
             },
         ));
         Ok(Self {
@@ -75,6 +81,8 @@ impl AppState {
             store: store::WorkflowStore::new(data_dir.join("workflows")),
             templates: templates::TemplateStore::new(data_dir.join("templates")),
             db,
+            permissions,
+            assets,
             _instance_lock: instance_lock,
         })
     }
@@ -82,7 +90,7 @@ impl AppState {
 
 pub fn run() {
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
 
     // The automation bridge is compiled only for E2E builds. Production
     // binaries must never expose the WebDriver command surface.
@@ -142,6 +150,10 @@ pub fn run() {
             commands::credential_set,
             commands::credential_delete,
             commands::provider_models,
+            commands::model_capabilities,
+            commands::respond_host_interaction,
+            commands::asset_import,
+            commands::asset_preview,
             commands::skill_list,
             commands::agent_template,
         ])

@@ -4,7 +4,11 @@
 
 pub mod agent;
 pub mod agent_template;
+pub mod anthropic;
+pub mod assets;
 pub mod builtin;
+pub mod capabilities;
+pub mod content;
 pub mod context;
 pub mod control;
 mod control_flow;
@@ -15,13 +19,18 @@ pub mod error;
 pub mod event;
 pub mod interaction;
 pub mod mcp;
+pub mod media;
 pub mod permissions;
 pub mod provider;
 pub mod registry;
+pub mod responses;
 pub mod services;
 pub mod skills;
 pub mod tools;
 
+pub use assets::AssetStore;
+pub use capabilities::{ModelCapabilities, ReasoningLevel, Support};
+pub use content::{ContentPart, MessageContent};
 pub use context::NodeContext;
 pub use control::RunControl;
 pub use conversation::{ContextSnapshot, ContextStore, OverflowPolicy};
@@ -37,7 +46,7 @@ pub use mcp::{McpHttpConfig, McpManager, McpStdioConfig, McpTool};
 pub use permissions::{PermissionClass, PermissionManager};
 pub use provider::{
     ChatMessage, ChatProvider, ChatRequest, ChatResponse, MessageRole, OpenAiFactory,
-    ProviderConfig, ProviderFactory, TokenUsage, ToolCall,
+    ProviderConfig, ProviderFactory, ProviderProtocol, TokenUsage, ToolCall,
 };
 pub use registry::{NodeExecutor, NodeOutput, NodeRegistry};
 pub use services::{RunServices, ServiceConfig, UsageRecord};

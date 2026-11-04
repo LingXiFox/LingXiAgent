@@ -238,18 +238,40 @@ pub fn engine_with_interactions(
     skills_root: Option<std::path::PathBuf>,
     interactions: Arc<dyn InteractionBroker>,
 ) -> Engine {
+    engine_with_assets(skills_root, interactions, test_assets())
+}
+
+pub fn engine_with_assets(
+    skills_root: Option<std::path::PathBuf>,
+    interactions: Arc<dyn InteractionBroker>,
+    assets: Arc<lingxi_runtime::AssetStore>,
+) -> Engine {
     Engine::with_services(
         Arc::new(lingxi_runtime::NodeRegistry::builtin()),
         Arc::new(AllowAllPolicy),
         interactions,
         ServiceConfig {
+            permissions: Arc::new(lingxi_runtime::permissions::PermissionManager::new()),
             credentials: MemoryCredentials::arc(vec![(
                 "test-key".to_string(),
                 "test-key".to_string(),
             )]),
             skills_root,
+            assets,
         },
     )
+}
+
+pub fn test_assets() -> Arc<lingxi_runtime::AssetStore> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|value| value.as_nanos())
+        .unwrap_or_default();
+    let root = std::env::temp_dir().join(format!(
+        "lingxi-test-assets-{}-{unique}",
+        std::process::id()
+    ));
+    Arc::new(lingxi_runtime::AssetStore::new(root))
 }
 
 pub async fn run(

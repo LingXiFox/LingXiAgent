@@ -27,6 +27,14 @@ pub enum DataType {
     Number,
     Boolean,
     Json,
+    /// A binary image or a list of image asset references.
+    Image,
+    /// A binary audio clip or a list of audio asset references.
+    Audio,
+    /// A binary video clip or sampled frames.
+    Video,
+    /// A document asset or its extracted text.
+    Document,
     Any,
 }
 
@@ -35,15 +43,33 @@ impl DataType {
     /// port of the source type. Any is a wildcard on both sides; runtime
     /// values are still checked by the executors.
     pub fn accepts(self, source: DataType) -> bool {
-        self == DataType::Any || source == DataType::Any || self == source
+        if self == DataType::Any || source == DataType::Any || self == source {
+            return true;
+        }
+        // Media nodes emit a JSON part envelope, so a json port may consume a
+        // media port intentionally (Context collects parts this way).
+        self == DataType::Json && source.is_media()
     }
 
+    /// True for the four modality ports introduced with the asset layer.
+    pub fn is_media(self) -> bool {
+        matches!(
+            self,
+            DataType::Image | DataType::Audio | DataType::Video | DataType::Document
+        )
+    }
+
+    /// The wire name used in workflow JSON, asset MIME metadata and logs.
     pub fn as_str(self) -> &'static str {
         match self {
             DataType::Text => "text",
             DataType::Number => "number",
             DataType::Boolean => "boolean",
             DataType::Json => "json",
+            DataType::Image => "image",
+            DataType::Audio => "audio",
+            DataType::Video => "video",
+            DataType::Document => "document",
             DataType::Any => "any",
         }
     }
@@ -81,6 +107,9 @@ pub enum ParamKind {
     Number,
     Boolean,
     Select,
+    /// An ordered list of asset ids. The editor renders a picker and preview;
+    /// the runtime resolves ids through the workflow asset table.
+    Asset,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +204,17 @@ impl ParamSpec {
 
     pub fn boolean(name: impl Into<String>, label: impl Into<String>, default: bool) -> Self {
         Self::with_default(name, label, ParamKind::Boolean, Some(Value::Bool(default)))
+    }
+
+    /// An ordered asset-id list parameter. The default is always an array so
+    /// older documents without the key validate against the same shape.
+    pub fn asset(name: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::with_default(
+            name,
+            label,
+            ParamKind::Asset,
+            Some(Value::Array(Vec::new())),
+        )
     }
 
     pub fn select(

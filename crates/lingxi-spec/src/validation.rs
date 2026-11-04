@@ -2,7 +2,8 @@
 //! executes nodes and it never mutates the document.
 
 use crate::model::{
-    EdgeKind, Subgraph, Workflow, WorkflowNode, COMPOSITE_NODE_KIND, SUPPORTED_SCHEMA_VERSIONS,
+    AssetRef, EdgeKind, Subgraph, Workflow, WorkflowNode, COMPOSITE_NODE_KIND,
+    SUPPORTED_SCHEMA_VERSIONS,
 };
 use crate::node::{ControlKind, NodeSpec, ParamKind, ParamSpec};
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,8 @@ pub mod codes {
     pub const SUBGRAPH_RECURSIVE_REFERENCE: &str = "subgraph.recursive_reference";
     pub const SUBGRAPH_NESTED_DEFINITIONS: &str = "subgraph.nested_definitions";
     pub const SUBGRAPH_NESTED_LOOP_UNSUPPORTED: &str = "subgraph.nested_loop_unsupported";
+    pub const ASSET_UNKNOWN: &str = "asset.unknown";
+    pub const ASSET_INVALID: &str = "asset.invalid";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,8 +132,10 @@ pub fn validate(workflow: &Workflow, resolver: &dyn NodeKindResolver) -> Validat
         resolver,
         subgraphs: &workflow.subgraphs,
         specs,
+        assets: &workflow.assets,
     };
 
+    validate_assets(workflow, &mut issues);
     validate_workflow(workflow, &context, "", &HashSet::new(), &mut issues);
     validate_subgraphs(workflow, &context, &mut issues);
     validate_recursive_references(workflow, &mut issues);
@@ -143,6 +148,8 @@ struct ValidationContext<'a> {
     subgraphs: &'a BTreeMap<String, Subgraph>,
     /// Keyed by the root map key, which is what `subgraphId` resolves against.
     specs: BTreeMap<String, NodeSpec>,
+    /// The root asset table; subgraph workflows resolve ids through it.
+    assets: &'a BTreeMap<String, AssetRef>,
 }
 
 impl ValidationContext<'_> {
@@ -267,7 +274,7 @@ fn validate_workflow(
                 format!("unknown node kind {:?}", node.kind),
             )),
             Some(spec) => {
-                validate_params(node, spec, &path, issues);
+                validate_params(node, spec, context.assets, &path, issues);
                 if spec.control == ControlKind::LoopGate {
                     validate_gate_budget(node, index, &path, issues);
                 }
@@ -620,6 +627,7 @@ fn subgraph_has_loop_gate(
 fn validate_params(
     node: &crate::model::WorkflowNode,
     spec: &NodeSpec,
+    assets: &BTreeMap<String, AssetRef>,
     path: &str,
     issues: &mut Vec<ValidationIssue>,
 ) {
@@ -651,7 +659,7 @@ fn validate_params(
                     ));
                 }
             }
-            Some(value) => check_param_value(param, value, path, issues),
+            Some(value) => check_param_value(param, value, assets, path, issues),
         }
     }
 }
@@ -659,14 +667,20 @@ fn validate_params(
 fn check_param_value(
     param: &ParamSpec,
     value: &Value,
+    assets: &BTreeMap<String, AssetRef>,
     path: &str,
     issues: &mut Vec<ValidationIssue>,
 ) {
     let issue_path = format!("{path}.params.{}", param.name);
+    if param.kind == ParamKind::Asset {
+        validate_asset_param(param, value, assets, &issue_path, issues);
+        return;
+    }
     let type_ok = match param.kind {
         ParamKind::Text | ParamKind::TextArea | ParamKind::Select => value.is_string(),
         ParamKind::Number => value.is_number(),
         ParamKind::Boolean => value.is_boolean(),
+        ParamKind::Asset => true,
     };
     if !type_ok {
         issues.push(ValidationIssue::error(
@@ -694,6 +708,58 @@ fn check_param_value(
                     ),
                 ));
             }
+        }
+    }
+}
+
+/// Asset params hold an ordered list of asset ids. The binary itself lives in
+/// the asset store, so only the reference is validated here.
+fn validate_asset_param(
+    param: &ParamSpec,
+    value: &Value,
+    assets: &BTreeMap<String, AssetRef>,
+    issue_path: &str,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    let Some(items) = value.as_array() else {
+        issues.push(ValidationIssue::error(
+            codes::PARAM_TYPE_MISMATCH,
+            issue_path,
+            format!("parameter {:?} expects an array of asset ids", param.name),
+        ));
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        let Some(id) = item.as_str() else {
+            issues.push(ValidationIssue::error(
+                codes::PARAM_TYPE_MISMATCH,
+                format!("{issue_path}[{index}]"),
+                format!("parameter {:?} expects asset id strings", param.name),
+            ));
+            continue;
+        };
+        if !assets.contains_key(id) {
+            issues.push(ValidationIssue::error(
+                codes::ASSET_UNKNOWN,
+                format!("{issue_path}[{index}]"),
+                format!("parameter {:?} references unknown asset {id:?}", param.name),
+            ));
+        }
+    }
+}
+
+fn validate_assets(workflow: &Workflow, issues: &mut Vec<ValidationIssue>) {
+    for (key, asset) in &workflow.assets {
+        let path = format!("assets.{key}");
+        if asset.id != *key {
+            issues.push(ValidationIssue::error(
+                codes::ASSET_INVALID,
+                format!("{path}.id"),
+                format!("asset map key {key:?} must equal its id {:?}", asset.id),
+            ));
+        }
+        if let Err(message) = asset.validate() {
+            issues.push(ValidationIssue::error(codes::ASSET_INVALID, path, message));
         }
     }
 }

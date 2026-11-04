@@ -25,5 +25,10 @@ rusqlite = { version = "0.41", default-features = false, features = ["bundled"] 
 tauri = { version = "2", features = [] }
 tokio = { workspace = true }
 uuid = { workspace = true }
+base64 = "0.23.1"
+infer = "0.22.0"
 tauri-plugin-wdio = { version = "1.5.1", optional = true }
 tauri-plugin-wdio-webdriver = { version = "1.5.1", optional = true }
+tauri-plugin-dialog = "2"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }

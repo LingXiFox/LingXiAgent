@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use lingxi_spec::{Subgraph, COMPOSITE_NODE_KIND, SUBGRAPH_VERSION};
+use lingxi_spec::{AssetRef, Subgraph, COMPOSITE_NODE_KIND, SUBGRAPH_VERSION};
 use serde::{Deserialize, Serialize};
 
 use crate::store::validate_entry_name;
@@ -17,6 +17,10 @@ use crate::store::validate_entry_name;
 pub struct TemplateBundle {
     pub root_id: String,
     pub subgraphs: BTreeMap<String, Subgraph>,
+    /// Assets referenced by any node in the closure. Stored next to the
+    /// template so an instance can keep using the same immutable blobs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, AssetRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +184,12 @@ fn validate_bundle(bundle: &TemplateBundle) -> Result<(), String> {
             ));
         }
     }
+    for (key, asset) in &bundle.assets {
+        if key != &asset.id {
+            return Err(format!("template asset key {key:?} does not match its id"));
+        }
+        asset.validate()?;
+    }
     for subgraph in bundle.subgraphs.values() {
         for node in &subgraph.workflow.nodes {
             if node.kind != COMPOSITE_NODE_KIND {
@@ -236,6 +246,7 @@ mod tests {
         TemplateBundle {
             root_id: "sg-template".to_string(),
             subgraphs,
+            assets: BTreeMap::new(),
         }
     }
 

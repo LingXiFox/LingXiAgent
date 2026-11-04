@@ -1,5 +1,10 @@
 import type {
+  AssetKind,
+  AssetRef,
+  HostInteraction,
+  ModelCapabilities,
   NodeSpec,
+  ProviderProtocol,
   PersistenceError,
   SkillSummary,
   RunDetail,
@@ -36,9 +41,25 @@ export interface Transport {
   credentialStatus(reference: string): Promise<boolean>;
   credentialSet(name: string, secret: string): Promise<string>;
   credentialDelete(name: string): Promise<boolean>;
-  providerModels(baseUrl: string, credentialRef: string): Promise<string[]>;
+  providerModels(
+    baseUrl: string,
+    credentialRef: string,
+    protocol?: ProviderProtocol,
+    capabilities?: unknown,
+  ): Promise<string[]>;
+  modelCapabilities(
+    protocol: ProviderProtocol,
+    model: string,
+    capabilities?: unknown,
+  ): Promise<ModelCapabilities>;
+  assetImport(path: string, kind: AssetKind): Promise<AssetRef>;
+  assetImportFile(file: File, kind: AssetKind): Promise<AssetRef>;
+  assetPreview(id: string, mime: string): Promise<string>;
+  respondHostInteraction(requestId: string, approved: boolean): Promise<boolean>;
   skillList(): Promise<SkillSummary[]>;
   agentTemplate(): Promise<TemplateBundle>;
   onRunEvent(handler: (event: RunEvent) => void): Promise<() => void>;
   onPersistenceError(handler: (error: PersistenceError) => void): Promise<() => void>;
+  onHostInteraction(handler: (request: HostInteraction) => void): Promise<() => void>;
+  onHostInteractionResolved(handler: (requestId: string) => void): Promise<() => void>;
 }

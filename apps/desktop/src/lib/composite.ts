@@ -1,4 +1,5 @@
 import type {
+  AssetRef,
   EdgeDoc,
   NodeSpec,
   PortBindingDoc,
@@ -32,6 +33,7 @@ export interface UngroupResult {
 export interface InstantiatedTemplate {
   node: WorkflowNodeDoc;
   subgraphs: Record<string, Subgraph>;
+  assets: Record<string, AssetRef>;
 }
 
 function freshId(prefix: string): string {
@@ -603,7 +605,27 @@ export function templateBundle(doc: WorkflowDoc, rootId: string): TemplateBundle
     }
   };
   visit(rootId);
-  return { rootId, subgraphs: selected };
+
+  // Workflow JSON never embeds media bytes: a template carries only the asset
+  // metadata its inner nodes reference. The content-addressed blobs are
+  // immutable, so copies can share them safely.
+  const referenced = new Set<string>();
+  for (const definition of Object.values(selected)) {
+    for (const node of definition.workflow.nodes) {
+      for (const value of Object.values(node.params)) {
+        if (!Array.isArray(value)) continue;
+        for (const entry of value) {
+          if (typeof entry === "string" && entry.startsWith("asset-")) referenced.add(entry);
+        }
+      }
+    }
+  }
+  const assets: Record<string, AssetRef> = {};
+  for (const id of referenced) {
+    const asset = doc.assets?.[id];
+    if (asset) assets[id] = clone(asset);
+  }
+  return { rootId, subgraphs: selected, assets };
 }
 
 /** Instantiate a template with fresh definition ids so instances never share edits. */
@@ -684,6 +706,7 @@ export function instantiateTemplate(
       subgraphId: definitionIds.get(bundle.rootId)!,
     },
     subgraphs,
+    assets: clone(bundle.assets ?? {}),
   };
 }
 

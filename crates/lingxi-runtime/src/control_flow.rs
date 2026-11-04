@@ -809,6 +809,7 @@ impl<'a> Scheduler<'a> {
             node,
             spec,
             &inputs,
+            &self.workflow.assets,
             self.control,
             self.engine.interactions.as_ref(),
             self.services,

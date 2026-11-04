@@ -17,6 +17,41 @@ import type {
   WorkflowSummary,
 } from "./types";
 
+const mockPreviews = new Map<string, string>();
+
+function mockAsset(name: string, kind: string, mime: string, size: number) {
+  let hash = 0;
+  for (let index = 0; index < name.length; index += 1) {
+    hash = (hash * 31 + name.charCodeAt(index)) >>> 0;
+  }
+  const sha = hash.toString(16).padStart(8, "0").repeat(8).slice(0, 64);
+  return {
+    id: "asset-" + sha,
+    name,
+    mime,
+    size,
+    sha256: sha,
+    kind: kind as "image" | "audio" | "video" | "document",
+    source: "browser-file",
+    metadata: {},
+  };
+}
+
+function mockPlaceholder(kind: string, name: string): string {
+  const palette: Record<string, string> = { image: "#3f6f8f", audio: "#6f5a3f", video: "#4f3f6f", document: "#3f5f4f" };
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="96"><rect width="100%" height="100%" fill="' + (palette[kind] ?? "#333") + '"/><text x="80" y="54" font-size="11" fill="#fff" text-anchor="middle" font-family="sans-serif">' + name.replace(/[<>&]/g, "") + '</text></svg>';
+  return "data:image/svg+xml;base64," + btoa(svg);
+}
+
+function readFileDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
 const rawSpecs: NodeSpec[] = [
   {
     kind: "core.text_input",
@@ -213,6 +248,8 @@ const rawSpecs: NodeSpec[] = [
       { name: "context", label: "Context", dataType: "json", required: false },
       { name: "messages", label: "Messages", dataType: "json", required: false },
       { name: "toolset", label: "Tool Set", dataType: "text", required: false },
+      { name: "reasoning", label: "Reasoning", dataType: "json", required: false },
+      { name: "assets", label: "Media", dataType: "any", required: false },
     ],
     outputs: [
       { name: "text", label: "Text", dataType: "text", required: false },
@@ -220,6 +257,8 @@ const rawSpecs: NodeSpec[] = [
       { name: "hasToolCalls", label: "Has Tool Calls", dataType: "boolean", required: false },
       { name: "assistant", label: "Assistant Message", dataType: "json", required: false },
       { name: "usage", label: "Usage", dataType: "json", required: false },
+      { name: "capabilities", label: "Capabilities", dataType: "json", required: false },
+      { name: "reasoningSummary", label: "Reasoning Summary", dataType: "text", required: false },
       { name: "done", label: "Done", dataType: "any", required: false, control: true },
     ],
     params: [
@@ -231,6 +270,7 @@ const rawSpecs: NodeSpec[] = [
       { name: "timeoutMs", label: "Timeout (ms)", kind: "number", defaultValue: 60000, required: false, options: [] },
       { name: "maxCalls", label: "Max Calls", kind: "number", defaultValue: 8, required: false, options: [] },
       { name: "maxTotalTokens", label: "Max Total Tokens", kind: "number", defaultValue: 0, required: false, options: [] },
+      { name: "capabilities", label: "Capability Overrides (JSON)", kind: "text_area", defaultValue: "{}", required: false, options: [] },
     ],
     capabilities: ["network", "credential"],
   },
@@ -359,6 +399,170 @@ const rawSpecs: NodeSpec[] = [
       { name: "skillId", label: "Skill ID", kind: "text", defaultValue: "text-stats", required: false, options: [] },
     ],
     capabilities: ["filesystem", "interaction"],
+  },
+  {
+    kind: "core.provider.openai_responses",
+    title: "OpenAI Responses",
+    category: "Agent",
+    description: "Declares an OpenAI Responses API service. Secrets stay in credential references.",
+    inputs: [],
+    outputs: [
+      { name: "provider", label: "Provider", dataType: "text", required: false },
+      { name: "config", label: "Config", dataType: "json", required: false },
+    ],
+    params: [
+      { name: "providerId", label: "Provider ID", kind: "text", defaultValue: "openai", required: false, options: [] },
+      { name: "baseUrl", label: "Base URL", kind: "text", defaultValue: "https://api.openai.com/v1", required: false, options: [] },
+      { name: "credentialRef", label: "Credential", kind: "text", defaultValue: "env:OPENAI_API_KEY", required: false, options: [] },
+      { name: "organization", label: "Organization", kind: "text", defaultValue: "", required: false, options: [] },
+      { name: "protocol", label: "Protocol", kind: "select", defaultValue: "openai_responses", required: false, options: [{ value: "openai_responses", label: "OpenAI Responses" }] },
+      { name: "capabilities", label: "Capability Overrides (JSON)", kind: "text_area", defaultValue: "{}", required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.provider.anthropic_messages",
+    title: "Anthropic Messages",
+    category: "Agent",
+    description: "Declares an Anthropic Messages API service with x-api-key authentication.",
+    inputs: [],
+    outputs: [
+      { name: "provider", label: "Provider", dataType: "text", required: false },
+      { name: "config", label: "Config", dataType: "json", required: false },
+    ],
+    params: [
+      { name: "providerId", label: "Provider ID", kind: "text", defaultValue: "anthropic", required: false, options: [] },
+      { name: "baseUrl", label: "Base URL", kind: "text", defaultValue: "https://api.anthropic.com", required: false, options: [] },
+      { name: "credentialRef", label: "Credential", kind: "text", defaultValue: "env:ANTHROPIC_API_KEY", required: false, options: [] },
+      { name: "protocol", label: "Protocol", kind: "select", defaultValue: "anthropic_messages", required: false, options: [{ value: "anthropic_messages", label: "Anthropic Messages" }] },
+      { name: "capabilities", label: "Capability Overrides (JSON)", kind: "text_area", defaultValue: "{}", required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.provider.openai_chat",
+    title: "OpenAI Chat",
+    category: "Agent",
+    description: "Declares an OpenAI Chat Completions compatible service.",
+    inputs: [],
+    outputs: [
+      { name: "provider", label: "Provider", dataType: "text", required: false },
+      { name: "config", label: "Config", dataType: "json", required: false },
+    ],
+    params: [
+      { name: "providerId", label: "Provider ID", kind: "text", defaultValue: "openai", required: false, options: [] },
+      { name: "baseUrl", label: "Base URL", kind: "text", defaultValue: "http://127.0.0.1:11434/v1", required: false, options: [] },
+      { name: "credentialRef", label: "Credential", kind: "text", defaultValue: "env:OPENAI_API_KEY", required: false, options: [] },
+      { name: "organization", label: "Organization", kind: "text", defaultValue: "", required: false, options: [] },
+      { name: "protocol", label: "Protocol", kind: "select", defaultValue: "openai_chat", required: false, options: [{ value: "openai_chat", label: "OpenAI Chat Completions" }] },
+      { name: "capabilities", label: "Capability Overrides (JSON)", kind: "text_area", defaultValue: "{}", required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.reasoning",
+    title: "Reasoning",
+    category: "Agent",
+    description: "Chooses a reasoning level and maps it through the model protocol.",
+    inputs: [
+      { name: "run", label: "Run", dataType: "any", required: false, control: true },
+      { name: "level", label: "Level Override", dataType: "text", required: false },
+      { name: "capabilities", label: "Capabilities", dataType: "json", required: false },
+    ],
+    outputs: [
+      { name: "config", label: "Config", dataType: "json", required: false },
+      { name: "level", label: "Level", dataType: "text", required: false },
+      { name: "done", label: "Done", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "level", label: "Reasoning Level", kind: "select", defaultValue: "auto", required: false, options: [
+        { value: "off", label: "Off" }, { value: "auto", label: "Auto" }, { value: "low", label: "Low" },
+        { value: "medium", label: "Medium" }, { value: "high", label: "High" }, { value: "xhigh", label: "Extra high" },
+      ] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.input.image",
+    title: "Image Input",
+    category: "Media",
+    description: "Imports local images as multimodal content parts.",
+    inputs: [{ name: "run", label: "Run", dataType: "any", required: false, control: true }],
+    outputs: [
+      { name: "parts", label: "Parts", dataType: "json", required: false },
+      { name: "images", label: "Images", dataType: "image", required: false },
+      { name: "count", label: "Count", dataType: "number", required: false },
+      { name: "summary", label: "Summary", dataType: "text", required: false },
+      { name: "done", label: "Done", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "assets", label: "Images", kind: "asset", defaultValue: [], required: false, options: [] },
+      { name: "maxDimension", label: "Max dimension", kind: "number", defaultValue: 2048, required: false, options: [] },
+      { name: "detail", label: "Detail", kind: "select", defaultValue: "auto", required: false, options: [{ value: "auto", label: "Auto" }, { value: "low", label: "Low" }, { value: "high", label: "High" }] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.input.audio",
+    title: "Audio Input",
+    category: "Media",
+    description: "Imports audio natively or as an explicit transcript.",
+    inputs: [{ name: "run", label: "Run", dataType: "any", required: false, control: true }],
+    outputs: [
+      { name: "parts", label: "Parts", dataType: "json", required: false },
+      { name: "assets", label: "Assets", dataType: "audio", required: false },
+      { name: "count", label: "Count", dataType: "number", required: false },
+      { name: "summary", label: "Summary", dataType: "text", required: false },
+      { name: "done", label: "Done", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "assets", label: "Audio", kind: "asset", defaultValue: [], required: false, options: [] },
+      { name: "mode", label: "Mode", kind: "select", defaultValue: "native", required: false, options: [{ value: "native", label: "Native audio" }, { value: "transcribed", label: "Transcript" }] },
+      { name: "transcript", label: "Transcript", kind: "text_area", defaultValue: "", required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.input.video",
+    title: "Video Input",
+    category: "Media",
+    description: "Extracts timestamped frames or sends native video when supported.",
+    inputs: [{ name: "run", label: "Run", dataType: "any", required: false, control: true }],
+    outputs: [
+      { name: "parts", label: "Parts", dataType: "json", required: false },
+      { name: "frames", label: "Frames", dataType: "image", required: false },
+      { name: "count", label: "Count", dataType: "number", required: false },
+      { name: "summary", label: "Summary", dataType: "text", required: false },
+      { name: "done", label: "Done", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "assets", label: "Video", kind: "asset", defaultValue: [], required: false, options: [] },
+      { name: "mode", label: "Mode", kind: "select", defaultValue: "frames", required: false, options: [{ value: "frames", label: "Frame extraction" }, { value: "native", label: "Native video" }] },
+      { name: "frameIntervalMs", label: "Frame interval (ms)", kind: "number", defaultValue: 1000, required: false, options: [] },
+      { name: "maxFrames", label: "Max frames", kind: "number", defaultValue: 8, required: false, options: [] },
+      { name: "startMs", label: "Start (ms)", kind: "number", defaultValue: 0, required: false, options: [] },
+      { name: "endMs", label: "End (ms)", kind: "number", defaultValue: 0, required: false, options: [] },
+    ],
+    capabilities: [],
+  },
+  {
+    kind: "core.input.document",
+    title: "Document Input",
+    category: "Media",
+    description: "Extracts text from PDF, DOCX, TXT or Markdown.",
+    inputs: [{ name: "run", label: "Run", dataType: "any", required: false, control: true }],
+    outputs: [
+      { name: "parts", label: "Parts", dataType: "json", required: false },
+      { name: "text", label: "Text", dataType: "text", required: false },
+      { name: "pages", label: "Pages", dataType: "number", required: false },
+      { name: "summary", label: "Summary", dataType: "text", required: false },
+      { name: "done", label: "Done", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "assets", label: "Documents", kind: "asset", defaultValue: [], required: false, options: [] },
+      { name: "mode", label: "Mode", kind: "select", defaultValue: "extracted", required: false, options: [{ value: "native", label: "Native document" }, { value: "extracted", label: "Extracted text" }] },
+    ],
+    capabilities: [],
   },
   {
     kind: "core.composite",
@@ -998,8 +1202,62 @@ export function createMockTransport(): Transport {
       return true;
     },
 
-    async providerModels() {
-      return ["mock-calculator", "mock-final", "mock-stream"];
+    async providerModels(_baseUrl, _credentialRef, protocol) {
+      if (protocol === "anthropic_messages") return ["claude-sonnet-4-5", "claude-opus-4-1"];
+      if (protocol === "openai_responses") return ["gpt-5", "gpt-4.1"];
+      return ["mock-calculator", "mock-final", "mock-stream", "gpt-4o"];
+    },
+
+    async modelCapabilities(protocol, model) {
+      const anthropic = protocol === "anthropic_messages";
+      const openai = protocol === "openai_responses" || protocol === "openai_chat";
+      const vision = anthropic || /gpt-4o|gpt-4\.1|gpt-5/.test(model);
+      const reasoning = anthropic || /^o[134]|gpt-5/.test(model);
+      return {
+        input: {
+          text: "native",
+          image: vision ? "native" : "unknown",
+          audio: "preprocessed",
+          video: "preprocessed",
+          document: anthropic ? "native" : "preprocessed",
+          maxImages: vision ? 8 : null,
+          maxFileSize: 20 * 1024 * 1024,
+          supportedMediaTypes: vision ? ["image/png", "image/jpeg", "image/webp"] : [],
+        },
+        output: { text: "native", image: "unsupported", audio: "unsupported" },
+        features: {
+          streaming: "native",
+          toolCalling: openai || anthropic ? "native" : "unknown",
+          reasoning: reasoning ? "native" : "unsupported",
+          structuredOutput: openai ? "native" : "unknown",
+        },
+        limits: { maxContextTokens: anthropic ? 200000 : 128000, maxOutputTokens: anthropic ? 8192 : 16384 },
+        reasoningLevels: reasoning ? ["off", "auto", "low", "medium", "high", "xhigh"] : ["off"],
+        source: "builtin",
+      };
+    },
+
+    async assetImport(path, kind) {
+      const name = path.split("/").pop() ?? path;
+      const mime = kind === "image" ? "image/png" : kind === "audio" ? "audio/mpeg" : kind === "video" ? "video/mp4" : "application/pdf";
+      const asset = mockAsset(name, kind, mime, 1024);
+      mockPreviews.set(asset.id, mockPlaceholder(kind, name));
+      return asset;
+    },
+
+    async assetImportFile(file, kind) {
+      const dataUrl = await readFileDataUrl(file);
+      const asset = mockAsset(file.name, kind, file.type || "application/octet-stream", file.size);
+      mockPreviews.set(asset.id, dataUrl);
+      return asset;
+    },
+
+    async assetPreview(id) {
+      return mockPreviews.get(id) ?? mockPlaceholder("image", id);
+    },
+
+    async respondHostInteraction() {
+      return true;
     },
 
     async skillList(): Promise<SkillSummary[]> {
@@ -1019,6 +1277,14 @@ export function createMockTransport(): Transport {
     },
 
     async onPersistenceError() {
+      return () => {};
+    },
+
+    async onHostInteraction() {
+      return () => {};
+    },
+
+    async onHostInteractionResolved() {
       return () => {};
     },
   };

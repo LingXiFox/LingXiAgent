@@ -1,4 +1,4 @@
-use lingxi_spec::{NodeSpec, WorkflowNode};
+use lingxi_spec::{AssetRef, NodeSpec, WorkflowNode};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -20,6 +20,7 @@ pub struct NodeContext<'a> {
     pub node: &'a WorkflowNode,
     pub spec: &'a NodeSpec,
     pub inputs: &'a BTreeMap<String, Value>,
+    pub assets: &'a BTreeMap<String, AssetRef>,
     pub control: &'a RunControl,
     pub broker: &'a dyn InteractionBroker,
     pub services: &'a RunServices,
@@ -34,6 +35,7 @@ impl<'a> NodeContext<'a> {
         node: &'a WorkflowNode,
         spec: &'a NodeSpec,
         inputs: &'a BTreeMap<String, Value>,
+        assets: &'a BTreeMap<String, AssetRef>,
         control: &'a RunControl,
         broker: &'a dyn InteractionBroker,
         services: &'a RunServices,
@@ -45,6 +47,7 @@ impl<'a> NodeContext<'a> {
             node,
             spec,
             inputs,
+            assets,
             control,
             broker,
             services,

@@ -12,9 +12,12 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::assets::AssetStore;
+use crate::content::{ContentPart, MessageContent};
 use crate::control::RunControl;
 use crate::credentials::Secret;
 use crate::error::{error_codes, NodeError};
+use base64::Engine as _;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,7 +42,7 @@ pub struct ToolCall {
 pub struct ChatMessage {
     pub role: MessageRole,
     #[serde(default)]
-    pub content: String,
+    pub content: MessageContent,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,7 +67,7 @@ impl ChatMessage {
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Tool,
-            content: content.into(),
+            content: MessageContent::text(content),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: None,
@@ -74,10 +77,65 @@ impl ChatMessage {
     pub fn text(role: MessageRole, content: impl Into<String>) -> Self {
         Self {
             role,
-            content: content.into(),
+            content: MessageContent::text(content),
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+        }
+    }
+
+    pub fn with_parts(role: MessageRole, parts: Vec<ContentPart>) -> Self {
+        Self {
+            role,
+            content: MessageContent::Parts(parts),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    pub fn plain_text(&self) -> String {
+        self.content.plain_text()
+    }
+}
+
+/// Wire protocol spoken by one provider endpoint. The node kind selects a
+/// default; users can point any of the three at a compatible local gateway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderProtocol {
+    #[default]
+    OpenAiChat,
+    OpenAiResponses,
+    AnthropicMessages,
+}
+
+impl ProviderProtocol {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProviderProtocol::OpenAiChat => "openai_chat",
+            ProviderProtocol::OpenAiResponses => "openai_responses",
+            ProviderProtocol::AnthropicMessages => "anthropic_messages",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, NodeError> {
+        match value {
+            "openai_chat" | "openai" | "" => Ok(Self::OpenAiChat),
+            "openai_responses" | "responses" => Ok(Self::OpenAiResponses),
+            "anthropic_messages" | "anthropic" => Ok(Self::AnthropicMessages),
+            other => Err(NodeError::new(
+                error_codes::PROVIDER_CONFIG,
+                format!("unknown provider protocol {other:?}"),
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ProviderProtocol::OpenAiChat => "OpenAI Chat Completions",
+            ProviderProtocol::OpenAiResponses => "OpenAI Responses",
+            ProviderProtocol::AnthropicMessages => "Anthropic Messages",
         }
     }
 }
@@ -94,6 +152,12 @@ pub struct ProviderConfig {
     pub organization: String,
     #[serde(default = "default_true")]
     pub supports_reasoning: bool,
+    #[serde(default)]
+    pub protocol: ProviderProtocol,
+    /// Optional manual capability override. It is merged over the conservative
+    /// built-in profile and marked with source `manual`.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub capabilities: Value,
 }
 
 fn default_provider() -> String {
@@ -128,6 +192,51 @@ impl ProviderConfig {
             .and_then(|url| url.host_str().map(|host| host.to_string()))
             .unwrap_or_else(|| self.base_url.clone())
     }
+
+    /// Host plus explicit port. `https` defaults to 443 and `http` to 80, so
+    /// an approval for one endpoint cannot silently cover another port.
+    pub fn authority(&self) -> String {
+        match reqwest::Url::parse(self.base_url.trim()) {
+            Ok(url) => {
+                let host = url.host_str().unwrap_or_default();
+                let port = url.port_or_known_default().unwrap_or(0);
+                format!("{host}:{port}")
+            }
+            Err(_) => self.base_url.clone(),
+        }
+    }
+
+    /// Stable permission target: protocol, host and port. Adapters disable
+    /// automatic redirects, so a credential never crosses this boundary.
+    pub fn target(&self) -> String {
+        format!("{}://{}", self.protocol.as_str(), self.authority())
+    }
+
+    pub fn endpoint(&self) -> String {
+        endpoint_for(&self.base_url, self.protocol)
+    }
+}
+
+pub(crate) fn endpoint_for(base_url: &str, protocol: ProviderProtocol) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    let path = match protocol {
+        ProviderProtocol::OpenAiChat => "chat/completions",
+        ProviderProtocol::OpenAiResponses => "responses",
+        ProviderProtocol::AnthropicMessages => "messages",
+    };
+    if base.ends_with(&format!("/{path}")) {
+        return base.to_string();
+    }
+    if protocol == ProviderProtocol::AnthropicMessages && base.ends_with("/v1") {
+        return format!("{base}/{path}");
+    }
+    if protocol == ProviderProtocol::AnthropicMessages
+        && !base.ends_with("/v1")
+        && !base.ends_with("/messages")
+    {
+        return format!("{base}/v1/{path}");
+    }
+    format!("{base}/{path}")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +258,10 @@ pub struct ChatRequest {
     pub tools: Vec<Value>,
     #[serde(default = "default_timeout")]
     pub timeout_ms: u64,
+    /// Server-side Responses conversation state. When set, callers must send
+    /// only the new turn, never the full local history as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_response_id: Option<String>,
 }
 
 fn default_timeout() -> u64 {
@@ -170,6 +283,12 @@ pub struct ChatResponse {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
     pub usage: TokenUsage,
+    /// Provider-supplied reasoning summary. Never mixed into `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Responses API id, usable as `previous_response_id` for the next turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_id: Option<String>,
 }
 
 #[async_trait]
@@ -192,6 +311,7 @@ pub trait ProviderFactory: Send + Sync {
         &self,
         config: &ProviderConfig,
         secret: Option<Secret>,
+        assets: Arc<AssetStore>,
     ) -> Result<Arc<dyn ChatProvider>, NodeError>;
 }
 
@@ -205,6 +325,8 @@ impl Default for OpenAiFactory {
         Self {
             client: reqwest::Client::builder()
                 .connect_timeout(Duration::from_secs(15))
+                // Credentials must never follow a redirect to another origin.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap_or_default(),
         }
@@ -217,13 +339,33 @@ impl ProviderFactory for OpenAiFactory {
         &self,
         config: &ProviderConfig,
         secret: Option<Secret>,
+        assets: Arc<AssetStore>,
     ) -> Result<Arc<dyn ChatProvider>, NodeError> {
         config.validate()?;
-        Ok(Arc::new(OpenAiProvider {
-            config: config.clone(),
-            secret,
-            client: self.client.clone(),
-        }))
+        match config.protocol {
+            ProviderProtocol::OpenAiChat => Ok(Arc::new(OpenAiProvider {
+                config: config.clone(),
+                secret,
+                client: self.client.clone(),
+                assets,
+            })),
+            ProviderProtocol::OpenAiResponses => {
+                Ok(Arc::new(crate::responses::ResponsesProvider::new(
+                    config.clone(),
+                    secret,
+                    self.client.clone(),
+                    assets,
+                )))
+            }
+            ProviderProtocol::AnthropicMessages => {
+                Ok(Arc::new(crate::anthropic::AnthropicProvider::new(
+                    config.clone(),
+                    secret,
+                    self.client.clone(),
+                    assets,
+                )))
+            }
+        }
     }
 }
 
@@ -231,12 +373,16 @@ struct OpenAiProvider {
     config: ProviderConfig,
     secret: Option<Secret>,
     client: reqwest::Client,
+    assets: Arc<AssetStore>,
 }
 
 impl OpenAiProvider {
     fn endpoint(&self, suffix: &str) -> String {
+        if suffix == "chat/completions" {
+            return self.config.endpoint();
+        }
         let base = self.config.base_url.trim().trim_end_matches('/');
-        if base.ends_with("/chat/completions") || base.ends_with("/models") {
+        if base.ends_with("/models") {
             return base.to_string();
         }
         format!("{base}/{suffix}")
@@ -310,7 +456,7 @@ impl ChatProvider for OpenAiProvider {
     ) -> Result<ChatResponse, NodeError> {
         let mut body = json!({
             "model": request.model,
-            "messages": encode_messages(&request.messages),
+            "messages": encode_messages(&request.messages, &self.assets)?,
             "stream": request.stream,
         });
         if let Some(temperature) = request.temperature {
@@ -449,6 +595,8 @@ impl ChatProvider for OpenAiProvider {
             tool_calls,
             finish_reason,
             usage,
+            reasoning: None,
+            response_id: None,
         })
     }
 
@@ -501,48 +649,115 @@ impl ToolCallBuilder {
     }
 }
 
-fn encode_messages(messages: &[ChatMessage]) -> Value {
-    Value::Array(
-        messages
-            .iter()
-            .map(|message| {
-                let mut item = json!({
-                    "role": match message.role {
-                        MessageRole::System => "system",
-                        MessageRole::User => "user",
-                        MessageRole::Assistant => "assistant",
-                        MessageRole::Tool => "tool",
-                    },
-                    "content": message.content,
-                });
-                if !message.tool_calls.is_empty() {
-                    item["tool_calls"] = Value::Array(
-                        message
-                            .tool_calls
-                            .iter()
-                            .map(|call| {
-                                json!({
-                                    "id": call.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": call.name,
-                                        "arguments": call.arguments.to_string(),
-                                    }
-                                })
-                            })
-                            .collect(),
-                    );
+fn encode_messages(messages: &[ChatMessage], assets: &AssetStore) -> Result<Value, NodeError> {
+    let mut encoded = Vec::with_capacity(messages.len());
+    for message in messages {
+        let mut item = json!({
+            "role": match message.role {
+                MessageRole::System => "system",
+                MessageRole::User => "user",
+                MessageRole::Assistant => "assistant",
+                MessageRole::Tool => "tool",
+            },
+            "content": encode_content(&message.content, assets)?,
+        });
+        if !message.tool_calls.is_empty() {
+            item["tool_calls"] = Value::Array(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|call| {
+                        json!({
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": call.arguments.to_string(),
+                            }
+                        })
+                    })
+                    .collect(),
+            );
+        }
+        if let Some(id) = &message.tool_call_id {
+            item["tool_call_id"] = json!(id);
+        }
+        if let Some(name) = &message.name {
+            item["name"] = json!(name);
+        }
+        encoded.push(item);
+    }
+    Ok(Value::Array(encoded))
+}
+
+pub(crate) fn audio_format(mime: &str) -> String {
+    match mime.rsplit('/').next().unwrap_or("wav") {
+        "mpeg" | "mp3" => "mp3".to_string(),
+        "x-wav" | "wave" | "wav" => "wav".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn encode_content(content: &MessageContent, assets: &AssetStore) -> Result<Value, NodeError> {
+    let parts = match content {
+        MessageContent::Text(text) => return Ok(json!(text)),
+        MessageContent::Parts(parts) => parts,
+    };
+    let mut encoded = Vec::with_capacity(parts.len());
+    for part in parts {
+        match part {
+            ContentPart::Text { text, .. } => encoded.push(json!({"type": "text", "text": text})),
+            ContentPart::Image { asset, detail } => {
+                let bytes = assets.read(asset)?;
+                let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                let mut image = json!({"url": format!("data:{};base64,{}", asset.mime, data)});
+                if let Some(detail) = detail {
+                    image["detail"] = json!(detail);
                 }
-                if let Some(id) = &message.tool_call_id {
-                    item["tool_call_id"] = json!(id);
+                encoded.push(json!({"type": "image_url", "image_url": image}));
+            }
+            ContentPart::Audio {
+                asset,
+                mode,
+                transcript,
+            } => match mode {
+                crate::content::AudioMode::Transcribed => encoded.push(json!({
+                    "type": "text",
+                    "text": format!(
+                        "[audio transcript {}{}]\n{}",
+                        asset.name,
+                        transcript.as_deref().map(|_| "").unwrap_or(" (missing)"),
+                        transcript.as_deref().unwrap_or("")
+                    )
+                })),
+                crate::content::AudioMode::Native => {
+                    let bytes = assets.read(asset)?;
+                    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    let format = audio_format(&asset.mime);
+                    encoded.push(json!({"type": "input_audio", "input_audio": {"data": data, "format": format}}));
                 }
-                if let Some(name) = &message.name {
-                    item["name"] = json!(name);
+            },
+            ContentPart::Video { .. } => {
+                return Err(NodeError::new(
+                    error_codes::MODEL_UNSUPPORTED_MODALITY,
+                    "OpenAI Chat Completions has no native video input; use frame extraction",
+                ))
+            }
+            ContentPart::Document { mode, text, .. } => {
+                match mode {
+                    crate::content::DocumentMode::Extracted => encoded.push(json!({
+                        "type": "text",
+                        "text": text.clone().unwrap_or_default()
+                    })),
+                    crate::content::DocumentMode::Native => return Err(NodeError::new(
+                        error_codes::MODEL_UNSUPPORTED_MODALITY,
+                        "OpenAI Chat Completions has no native document input; use text extraction",
+                    )),
                 }
-                item
-            })
-            .collect(),
-    )
+            }
+        }
+    }
+    Ok(Value::Array(encoded))
 }
 
 fn parse_completion(value: &Value) -> Result<ChatResponse, NodeError> {
@@ -608,6 +823,8 @@ fn parse_completion(value: &Value) -> Result<ChatResponse, NodeError> {
             .and_then(Value::as_str)
             .map(str::to_string),
         usage: value.get("usage").map(parse_usage).unwrap_or_default(),
+        reasoning: None,
+        response_id: None,
     })
 }
 

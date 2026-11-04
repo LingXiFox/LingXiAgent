@@ -12,6 +12,8 @@ use async_trait::async_trait;
 use lingxi_spec::{DataType, NodeSpec, ParamOption, ParamSpec, PortSpec};
 use serde_json::{json, Value};
 
+use crate::capabilities::{ModelCapabilities, ReasoningLevel, Support};
+use crate::content::{ContentPart, MessageContent};
 use crate::context::NodeContext;
 use crate::conversation::{messages_from_json, ContextSnapshot, OverflowPolicy, ToolResultRecord};
 use crate::error::{error_codes, NodeError};
@@ -19,7 +21,8 @@ use crate::event::RunEvent;
 use crate::mcp::{McpHttpConfig, McpStdioConfig};
 use crate::permissions::PermissionClass;
 use crate::provider::{
-    ChatMessage, ChatRequest, OpenAiFactory, ProviderConfig, ProviderFactory, ToolCall,
+    ChatMessage, ChatRequest, OpenAiFactory, ProviderConfig, ProviderFactory, ProviderProtocol,
+    ToolCall,
 };
 use crate::registry::{NodeExecutor, NodeOutput};
 use crate::skills::SkillLibrary;
@@ -28,6 +31,10 @@ use crate::tools::{
 };
 
 pub const PROVIDER_KIND: &str = "core.provider";
+pub const PROVIDER_OPENAI_CHAT_KIND: &str = "core.provider.openai_chat";
+pub const PROVIDER_OPENAI_RESPONSES_KIND: &str = "core.provider.openai_responses";
+pub const PROVIDER_ANTHROPIC_KIND: &str = "core.provider.anthropic_messages";
+pub const REASONING_KIND: &str = "core.reasoning";
 pub const MODEL_KIND: &str = "core.model";
 pub const PROMPT_KIND: &str = "core.prompt";
 pub const CONTEXT_KIND: &str = "core.context";
@@ -48,9 +55,9 @@ fn json_port(name: &str, label: &str) -> PortSpec {
     PortSpec::new(name, label, DataType::Json)
 }
 
-fn provider_spec() -> NodeSpec {
-    NodeSpec::new(PROVIDER_KIND, "Provider", "Agent")
-        .description("Declares an OpenAI-compatible model service. Secrets are referenced, never stored here.")
+fn provider_spec(kind: &str, title: &str, protocol: &str, description: &str) -> NodeSpec {
+    NodeSpec::new(kind, title, "Agent")
+        .description(description)
         .output(text_port("provider", "Provider"))
         .output(json_port("config", "Config"))
         .param(ParamSpec::text("providerId", "Provider ID", "openai"))
@@ -63,7 +70,26 @@ fn provider_spec() -> NodeSpec {
                 .help("env:NAME reads an environment variable. key:NAME reads the OS keyring."),
         )
         .param(ParamSpec::text("organization", "Organization", ""))
-        .param(ParamSpec::boolean("supportsReasoning", "Reasoning support", true))
+        .param(ParamSpec::boolean(
+            "supportsReasoning",
+            "Reasoning support",
+            true,
+        ))
+        .param(ParamSpec::select(
+            "protocol",
+            "Protocol",
+            protocol,
+            vec![
+                ParamOption::new("openai_chat", "OpenAI Chat Completions"),
+                ParamOption::new("openai_responses", "OpenAI Responses"),
+                ParamOption::new("anthropic_messages", "Anthropic Messages"),
+            ],
+        ))
+        .param(
+            ParamSpec::text_area("capabilities", "Capability overrides (JSON)", "{}").help(
+                "Merged over the conservative built-in profile and marked as manually configured.",
+            ),
+        )
 }
 
 fn model_spec() -> NodeSpec {
@@ -74,6 +100,7 @@ fn model_spec() -> NodeSpec {
         .input(json_port("context", "Context"))
         .input(json_port("messages", "Messages"))
         .input(text_port("toolset", "Tool Set"))
+        .input(json_port("reasoning", "Reasoning"))
         .output(text_port("text", "Text"))
         .output(json_port("toolCalls", "Tool Calls"))
         .output(PortSpec::new(
@@ -84,6 +111,8 @@ fn model_spec() -> NodeSpec {
         .output(json_port("assistant", "Assistant Message"))
         .output(json_port("usage", "Usage"))
         .output(control_port("done", "Done"))
+        .output(json_port("capabilities", "Capabilities"))
+        .output(text_port("reasoningSummary", "Reasoning Summary"))
         .param(ParamSpec::text("model", "Model", "llama3.2"))
         .param(ParamSpec::number("temperature", "Temperature", 0.7))
         .param(ParamSpec::number("maxTokens", "Max Output Tokens", 1024.0))
@@ -99,6 +128,10 @@ fn model_spec() -> NodeSpec {
             ],
         ))
         .param(ParamSpec::boolean("stream", "Streaming", true))
+        .param(
+            ParamSpec::text_area("capabilities", "Capability overrides (JSON)", "{}")
+                .help("Optional manual evidence for local or self-hosted models."),
+        )
         .param(ParamSpec::number("timeoutMs", "Timeout (ms)", 60000.0))
         .param(
             ParamSpec::number("maxCalls", "Max Calls", 8.0)
@@ -107,6 +140,30 @@ fn model_spec() -> NodeSpec {
         .param(ParamSpec::number("maxTotalTokens", "Max Total Tokens", 0.0))
         .capability(lingxi_spec::node::capabilities::NETWORK)
         .capability("credential")
+}
+
+fn reasoning_spec() -> NodeSpec {
+    NodeSpec::new(REASONING_KIND, "Reasoning", "Agent")
+        .description("Selects a reasoning effort independently of the model and validates it against capabilities.")
+        .input(control_port("run", "Run"))
+        .input(json_port("capabilities", "Model Capabilities"))
+        .input(json_port("override", "Upstream Override"))
+        .output(json_port("config", "Reasoning Config"))
+        .output(text_port("level", "Level"))
+        .output(control_port("done", "Done"))
+        .param(ParamSpec::select(
+            "level",
+            "Reasoning Effort",
+            "auto",
+            vec![
+                ParamOption::new("off", "Off"),
+                ParamOption::new("auto", "Auto"),
+                ParamOption::new("low", "Low"),
+                ParamOption::new("medium", "Medium"),
+                ParamOption::new("high", "High"),
+                ParamOption::new("xhigh", "Extra high"),
+            ],
+        ))
 }
 
 fn prompt_spec() -> NodeSpec {
@@ -135,13 +192,26 @@ fn context_spec() -> NodeSpec {
         .input(json_port("messages", "Initial Messages"))
         .input(json_port("assistant", "Assistant Message"))
         .input(json_port("toolResults", "Tool Results"))
+        .input(PortSpec::new("assets", "Media Parts", DataType::Any))
+        .input(text_port("text", "Text"))
+        .input(json_port("image", "Image Parts"))
+        .input(json_port("audio", "Audio Parts"))
+        .input(json_port("video", "Video Parts"))
+        .input(json_port("document", "Document Parts"))
         .output(json_port("context", "Context"))
         .output(text_port("handle", "Handle"))
         .output(json_port("messages", "Messages"))
+        .output(PortSpec::new("assets", "Media Parts", DataType::Any))
+        .output(json_port("parts", "Ordered Parts"))
         .output(PortSpec::new("trimmed", "Trimmed", DataType::Number))
         .output(control_port("done", "Done"))
         .param(ParamSpec::number("maxMessages", "Max Messages", 40.0))
         .param(ParamSpec::number("maxTokens", "Max Estimated Tokens", 12000.0))
+        .param(ParamSpec::text(
+            "partOrder",
+            "Media Part Order",
+            "text,image,audio,video,document",
+        ))
         .param(ParamSpec::select(
             "overflow",
             "Overflow Policy",
@@ -213,6 +283,8 @@ fn mcp_spec() -> NodeSpec {
             "http://127.0.0.1:8765/mcp",
         ))
         .param(ParamSpec::text("credentialRef", "Credential", ""))
+        .param(ParamSpec::text("cwd", "Working Directory", ""))
+        .param(ParamSpec::text_area("env", "Environment (KEY=VALUE)", ""))
         .capability(lingxi_spec::node::capabilities::PROCESS)
         .capability(lingxi_spec::node::capabilities::NETWORK)
         .capability(lingxi_spec::node::capabilities::INTERACTION)
@@ -233,12 +305,42 @@ fn skill_spec() -> NodeSpec {
 }
 
 pub fn register(registry: &mut crate::registry::NodeRegistry) {
-    registry
-        .register(provider_spec(), Arc::new(ProviderNode))
-        .expect("provider node registers");
+    for (kind, title, protocol, description) in [
+        (
+            PROVIDER_OPENAI_CHAT_KIND,
+            "OpenAI Chat Provider",
+            "openai_chat",
+            "Declares an OpenAI Chat Completions endpoint. Secrets are referenced, never stored here.",
+        ),
+        (
+            PROVIDER_OPENAI_RESPONSES_KIND,
+            "OpenAI Responses Provider",
+            "openai_responses",
+            "Declares an OpenAI Responses endpoint with server-side conversation state.",
+        ),
+        (
+            PROVIDER_ANTHROPIC_KIND,
+            "Anthropic Provider",
+            "anthropic_messages",
+            "Declares an Anthropic Messages endpoint with native documents and thinking.",
+        ),
+        (
+            PROVIDER_KIND,
+            "Provider (legacy)",
+            "openai_chat",
+            "Legacy compatibility alias for an OpenAI Chat Completions endpoint.",
+        ),
+    ] {
+        registry
+            .register(provider_spec(kind, title, protocol, description), Arc::new(ProviderNode))
+            .expect("provider node registers");
+    }
     registry
         .register(model_spec(), Arc::new(ModelNode))
         .expect("model node registers");
+    registry
+        .register(reasoning_spec(), Arc::new(ReasoningNode))
+        .expect("reasoning node registers");
     registry
         .register(prompt_spec(), Arc::new(PromptNode))
         .expect("prompt node registers");
@@ -270,6 +372,28 @@ impl NodeExecutor for ProviderNode {
             credential_ref: ctx.string_param("credentialRef")?.trim().to_string(),
             organization: ctx.string_param("organization")?.trim().to_string(),
             supports_reasoning: ctx.bool_param("supportsReasoning")?,
+            protocol: ctx
+                .string_param("protocol")
+                .ok()
+                .and_then(|value| match value.trim() {
+                    "openai_responses" => Some(ProviderProtocol::OpenAiResponses),
+                    "anthropic_messages" => Some(ProviderProtocol::AnthropicMessages),
+                    "openai_chat" => Some(ProviderProtocol::OpenAiChat),
+                    _ => None,
+                })
+                .unwrap_or(match ctx.node.kind.as_str() {
+                    PROVIDER_OPENAI_RESPONSES_KIND => ProviderProtocol::OpenAiResponses,
+                    PROVIDER_ANTHROPIC_KIND => ProviderProtocol::AnthropicMessages,
+                    _ => ProviderProtocol::OpenAiChat,
+                }),
+            capabilities: ctx
+                .param("capabilities")
+                .and_then(|value| match value {
+                    Value::String(raw) if !raw.trim().is_empty() => serde_json::from_str(raw).ok(),
+                    Value::Object(_) => Some(value.clone()),
+                    _ => None,
+                })
+                .unwrap_or(Value::Null),
         };
         config.validate()?;
         let handle = ctx.services.register_provider(config.clone());
@@ -321,10 +445,14 @@ fn provider_tool_schema(definitions: &[ToolDefinition]) -> Vec<Value> {
         .collect()
 }
 
+fn message_fingerprint(message: &ChatMessage) -> String {
+    format!("{:?}:{}", message.role, message.plain_text())
+}
+
 fn assistant_message_json(text: &str, calls: &[ToolCall]) -> Value {
     let message = ChatMessage {
         role: crate::provider::MessageRole::Assistant,
-        content: text.to_string(),
+        content: MessageContent::text(text),
         tool_calls: calls.to_vec(),
         tool_call_id: None,
         name: None,
@@ -356,12 +484,109 @@ impl NodeExecutor for ModelNode {
             Some(value) if !value.is_null() => tool_definitions_from_input(value)?,
             _ => Vec::new(),
         };
+        let mut messages = messages;
+        let requested_parts = match ctx.input("assets") {
+            Some(Value::Array(items)) if !items.is_empty() => {
+                serde_json::from_value::<Vec<ContentPart>>(Value::Array(items.clone())).map_err(
+                    |error| {
+                        NodeError::new(
+                            error_codes::INVALID_INPUT,
+                            format!("assets input is not a valid content part list: {error}"),
+                        )
+                    },
+                )?
+            }
+            _ => Vec::new(),
+        };
 
         let model = ctx.string_param("model")?.trim().to_string();
         if model.is_empty() {
             return Err(NodeError::new(
                 error_codes::PROVIDER_CONFIG,
                 "model id must not be empty",
+            ));
+        }
+        let capabilities_override = match ctx.param("capabilities") {
+            Some(Value::String(raw)) if !raw.trim().is_empty() => {
+                serde_json::from_str::<Value>(raw).map_err(|error| {
+                    NodeError::new(
+                        error_codes::MODEL_UNKNOWN_CAPABILITY,
+                        format!("capabilities override is not valid JSON: {error}"),
+                    )
+                })?
+            }
+            Some(Value::Object(_)) => ctx.param("capabilities").cloned().unwrap_or(Value::Null),
+            _ => Value::Null,
+        };
+        let capabilities = ModelCapabilities::infer(config.protocol.as_str(), &model)
+            .with_overrides(&capabilities_override)?;
+        let mut media_parts = Vec::new();
+        for part in requested_parts {
+            media_parts.extend(part.flatten());
+        }
+        let mut all_parts = Vec::new();
+        for message in &messages {
+            if let MessageContent::Parts(parts) = &message.content {
+                all_parts.extend(parts.iter().cloned());
+            }
+        }
+        all_parts.extend(media_parts.iter().cloned());
+        capabilities.check_parts(&all_parts)?;
+        if !media_parts.is_empty() {
+            merge_media_into_last_user(&mut messages, media_parts);
+        }
+        let state_key = ctx.state_key();
+        let mut request_messages = messages.clone();
+        let mut previous_response_id = None;
+        if config.protocol == ProviderProtocol::OpenAiResponses {
+            if let Some(session) = ctx.services.response_session(&state_key) {
+                let first = request_messages
+                    .first()
+                    .map(message_fingerprint)
+                    .unwrap_or_default();
+                if request_messages.len() >= session.message_count && first == session.first_message
+                {
+                    previous_response_id = Some(session.id);
+                    request_messages = request_messages[session.message_count..].to_vec();
+                } else {
+                    // Local history was trimmed or replaced; server state no
+                    // longer lines up, so send the complete local transcript.
+                    ctx.services.clear_response_session(&state_key);
+                }
+            }
+        }
+        let sent_count = request_messages.len();
+        let sent_first = request_messages
+            .first()
+            .map(message_fingerprint)
+            .unwrap_or_default();
+        let reasoning_input = ctx.input("reasoning").cloned();
+        let reasoning_value = reasoning_input
+            .as_ref()
+            .and_then(|value| value.get("level").or_else(|| value.get("effort")))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                ctx.string_param("reasoningEffort")
+                    .unwrap_or("none")
+                    .to_string()
+            });
+        let reasoning_level = ReasoningLevel::parse(&reasoning_value).ok_or_else(|| {
+            NodeError::new(
+                error_codes::MODEL_UNSUPPORTED_REASONING,
+                format!("unknown reasoning level {reasoning_value:?}"),
+            )
+        })?;
+        capabilities.check_reasoning(reasoning_level)?;
+        let reasoning_effort = if reasoning_level.enabled() {
+            Some(reasoning_level.as_str().to_string())
+        } else {
+            None
+        };
+        if !tools.is_empty() && capabilities.features.tool_calling == Support::Unsupported {
+            return Err(NodeError::new(
+                error_codes::MODEL_UNSUPPORTED_MODALITY,
+                "model does not declare tool calling support",
             ));
         }
         let max_calls = ctx.number_param("maxCalls")?.max(1.0) as u64;
@@ -372,8 +597,13 @@ impl NodeExecutor for ModelNode {
             .authorize(
                 ctx,
                 PermissionClass::Network,
-                &config.host(),
-                &format!("provider {} at {}", config.provider_id, config.base_url),
+                &config.target(),
+                &format!(
+                    "provider {} ({}) at {}",
+                    config.provider_id,
+                    config.protocol.label(),
+                    config.base_url
+                ),
                 true,
             )
             .await?;
@@ -388,23 +618,25 @@ impl NodeExecutor for ModelNode {
                     .await?,
             )
         };
-        let provider = OpenAiFactory::default().create(&config, secret).await?;
+        let provider = OpenAiFactory::default()
+            .create(&config, secret, Arc::clone(&ctx.services.assets))
+            .await?;
 
         let temperature = ctx.number_param("temperature")?;
         let max_tokens = ctx.number_param("maxTokens")?;
-        let reasoning = ctx.string_param("reasoningEffort")?.to_string();
         let stream = ctx.bool_param("stream")?;
         let timeout_ms = ctx.number_param("timeoutMs")?.max(1.0) as u64;
         let request = ChatRequest {
             model,
-            messages,
+            messages: request_messages,
             temperature: Some(temperature),
             max_tokens: if max_tokens > 0.0 {
                 Some(max_tokens as u32)
             } else {
                 None
             },
-            reasoning_effort: Some(reasoning),
+            reasoning_effort,
+            previous_response_id,
             stream,
             tools: provider_tool_schema(&tools),
             timeout_ms,
@@ -437,6 +669,16 @@ impl NodeExecutor for ModelNode {
             }
         };
         let response = provider.complete(request, ctx.control, &mut delta).await?;
+        if let Some(response_id) = response.response_id.clone() {
+            ctx.services.set_response_session(
+                &state_key,
+                crate::services::ResponseSession {
+                    id: response_id,
+                    message_count: sent_count,
+                    first_message: sent_first,
+                },
+            );
+        }
         {
             let mut state = stream_state
                 .lock()
@@ -460,6 +702,12 @@ impl NodeExecutor for ModelNode {
         let has_calls = !response.tool_calls.is_empty();
         let calls = serde_json::to_value(&response.tool_calls).unwrap_or(Value::Array(Vec::new()));
         let assistant = assistant_message_json(&response.text, &response.tool_calls);
+        if let Some(reasoning) = &response.reasoning {
+            ctx.log(
+                crate::event::LogLevel::Info,
+                format!("model reasoning summary: {reasoning}"),
+            );
+        }
         ctx.log(
             crate::event::LogLevel::Info,
             format!(
@@ -476,7 +724,65 @@ impl NodeExecutor for ModelNode {
             .with("hasToolCalls", Value::Bool(has_calls))
             .with("assistant", json!([assistant]))
             .with("usage", serde_json::to_value(&usage).unwrap_or(Value::Null))
+            .with(
+                "capabilities",
+                serde_json::to_value(&capabilities).unwrap_or(Value::Null),
+            )
+            .with(
+                "reasoningSummary",
+                response
+                    .reasoning
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            )
+            .with(
+                "responseId",
+                response
+                    .response_id
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null),
+            )
             .with("done", Value::Bool(true)))
+    }
+}
+
+/// Media arrives separately from the conversation snapshot, but protocols
+/// expect it in the same user turn as the text it belongs to. Merge instead of
+/// appending a second user message, de-duplicating the exact text that already
+/// came from the Prompt node.
+fn merge_media_into_last_user(messages: &mut Vec<ChatMessage>, media_parts: Vec<ContentPart>) {
+    let existing = messages
+        .iter()
+        .rev()
+        .find(|message| matches!(message.role, crate::provider::MessageRole::User))
+        .map(ChatMessage::plain_text)
+        .unwrap_or_default();
+    if existing.is_empty() && media_parts.is_empty() {
+        return;
+    }
+    let mut parts = Vec::new();
+    if !existing.is_empty() {
+        parts.push(ContentPart::text(existing.clone()));
+    }
+    for part in media_parts {
+        let duplicate = matches!(&part, ContentPart::Text { text, .. } if text == &existing);
+        if !duplicate {
+            parts.push(part);
+        }
+    }
+    if let Some(last) = messages
+        .iter_mut()
+        .rev()
+        .find(|message| matches!(message.role, crate::provider::MessageRole::User))
+    {
+        last.content = MessageContent::Parts(parts);
+    } else {
+        messages.push(ChatMessage::with_parts(
+            crate::provider::MessageRole::User,
+            parts,
+        ));
     }
 }
 
@@ -484,6 +790,53 @@ fn request_model_label(ctx: &NodeContext<'_>) -> String {
     ctx.string_param("model")
         .map(str::to_string)
         .unwrap_or_else(|_| "unknown".to_string())
+}
+
+struct ReasoningNode;
+
+#[async_trait]
+impl NodeExecutor for ReasoningNode {
+    async fn execute(&self, ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
+        let requested = match ctx.input("override") {
+            Some(value) if !value.is_null() => value
+                .get("level")
+                .or_else(|| value.get("effort"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| ctx.string_param("level").unwrap_or("auto").to_string()),
+            _ => ctx.string_param("level").unwrap_or("auto").to_string(),
+        };
+        let level = ReasoningLevel::parse(&requested).ok_or_else(|| {
+            NodeError::new(
+                error_codes::MODEL_UNSUPPORTED_REASONING,
+                format!("unknown reasoning level {requested:?}"),
+            )
+        })?;
+        if let Some(Value::Object(_)) = ctx.input("capabilities") {
+            let capabilities: ModelCapabilities =
+                serde_json::from_value(ctx.input("capabilities").cloned().unwrap_or(Value::Null))
+                    .map_err(|error| {
+                    NodeError::new(
+                        error_codes::MODEL_UNKNOWN_CAPABILITY,
+                        format!("capabilities input is not valid: {error}"),
+                    )
+                })?;
+            capabilities.check_reasoning(level)?;
+        }
+        let config = json!({
+            "level": level.as_str(),
+            "enabled": level.enabled(),
+            "source": "reasoning-node",
+        });
+        ctx.log(
+            crate::event::LogLevel::Info,
+            format!("reasoning level {}", level.as_str()),
+        );
+        Ok(NodeOutput::new()
+            .with("config", config)
+            .with("level", Value::String(level.as_str().to_string()))
+            .with("done", Value::Bool(true)))
+    }
 }
 
 struct PromptNode;
@@ -573,6 +926,55 @@ fn snapshot_json(snapshot: &ContextSnapshot) -> Value {
     })
 }
 
+fn content_parts_from_input(value: Option<&Value>) -> Vec<ContentPart> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let list = match value {
+        Value::Array(items) => items.clone(),
+        Value::Object(map) => match map.get("parts") {
+            Some(Value::Array(items)) => items.clone(),
+            _ => vec![value.clone()],
+        },
+        _ => Vec::new(),
+    };
+    list.into_iter()
+        .filter_map(|item| serde_json::from_value::<ContentPart>(item).ok())
+        .collect()
+}
+
+/// Builds the ordered multimodal payload that travels Context -> Model.
+/// Each input slot keeps the order of its own media list; the partOrder
+/// parameter decides how the different modalities interleave.
+fn ordered_context_parts(ctx: &NodeContext<'_>) -> Vec<ContentPart> {
+    let order = ctx
+        .string_param("partOrder")
+        .unwrap_or("text,image,audio,video,document");
+    let mut parts = Vec::new();
+    for token in order.split(',') {
+        let token = token.trim().to_ascii_lowercase();
+        match token.as_str() {
+            "text" => {
+                if let Some(text) = ctx.input("text").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        parts.push(ContentPart::text(text.to_string()));
+                    }
+                }
+            }
+            "image" | "audio" | "video" | "document" => {
+                parts.extend(content_parts_from_input(ctx.input(token.as_str())));
+            }
+            "assets" | "media" => {
+                parts.extend(content_parts_from_input(ctx.input("assets")));
+            }
+            _ => {}
+        }
+    }
+    // Unknown custom part arrays still reach the model instead of being dropped.
+    parts.extend(content_parts_from_input(ctx.input("assets")));
+    parts
+}
+
 #[async_trait]
 impl NodeExecutor for ContextNode {
     async fn execute(&self, ctx: &NodeContext<'_>) -> Result<NodeOutput, NodeError> {
@@ -612,6 +1014,8 @@ impl NodeExecutor for ContextNode {
                 format!("context trimmed {} old message(s)", snapshot.trimmed),
             );
         }
+        let parts = ordered_context_parts(ctx);
+        let parts_json = serde_json::to_value(&parts).unwrap_or(Value::Null);
         Ok(NodeOutput::new()
             .with("context", snapshot_json(&snapshot))
             .with("handle", Value::String(snapshot.handle.clone()))
@@ -619,6 +1023,8 @@ impl NodeExecutor for ContextNode {
                 "messages",
                 serde_json::to_value(&snapshot.messages).unwrap_or(Value::Null),
             )
+            .with("assets", parts_json.clone())
+            .with("parts", parts_json)
             .with("trimmed", Value::from(snapshot.trimmed))
             .with("done", Value::Bool(true)))
     }
@@ -926,16 +1332,6 @@ impl NodeExecutor for McpServerNode {
                     "MCP command must not be empty",
                 ));
             }
-            ctx.services
-                .permissions
-                .authorize(
-                    ctx,
-                    PermissionClass::Process,
-                    &command,
-                    &format!("spawn MCP server {command} as namespace {namespace}"),
-                    true,
-                )
-                .await?;
             let args: Vec<String> = ctx
                 .string_param("args")?
                 .lines()
@@ -943,6 +1339,37 @@ impl NodeExecutor for McpServerNode {
                 .filter(|line| !line.is_empty())
                 .map(str::to_string)
                 .collect();
+            let cwd = {
+                let value = ctx.string_param("cwd")?.trim();
+                (!value.is_empty()).then(|| std::path::PathBuf::from(value))
+            };
+            let env: Vec<(String, String)> = ctx
+                .string_param("env")?
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(|line| {
+                    line.split_once('=')
+                        .map(|(key, value)| (key.trim().to_string(), value.to_string()))
+                        .ok_or_else(|| {
+                            NodeError::new(
+                                error_codes::INVALID_PARAM,
+                                format!("MCP environment line {line:?} must be KEY=VALUE"),
+                            )
+                        })
+                })
+                .collect::<Result<_, _>>()?;
+            let executable = resolve_executable(&command);
+            let env_names: Vec<&str> = env.iter().map(|(key, _)| key.as_str()).collect();
+            let detail = format!(
+                "spawn MCP server as namespace {namespace}\nexecutable: {executable}\narguments: {args:?}\ncwd: {}\nenvironment keys: {}\nisolation: child process inherits this user's permissions; it is not sandboxed",
+                cwd.as_ref().map(|path| path.display().to_string()).unwrap_or_else(|| "(inherited)".to_string()),
+                if env_names.is_empty() { "(none)".to_string() } else { env_names.join(", ") }
+            );
+            ctx.services
+                .permissions
+                .authorize(ctx, PermissionClass::Process, &executable, &detail, true)
+                .await?;
             ctx.services
                 .mcp
                 .connect_stdio(
@@ -951,8 +1378,8 @@ impl NodeExecutor for McpServerNode {
                     &McpStdioConfig {
                         command,
                         args,
-                        env: std::collections::HashMap::new(),
-                        cwd: None,
+                        env: env.into_iter().collect(),
+                        cwd: cwd.as_ref().map(|path| path.display().to_string()),
                     },
                 )
                 .await?
@@ -980,6 +1407,25 @@ impl NodeExecutor for McpServerNode {
 }
 
 struct SkillNode;
+
+fn resolve_executable(command: &str) -> String {
+    let candidate = std::path::Path::new(command);
+    if candidate.components().count() > 1 {
+        return candidate
+            .canonicalize()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| command.to_string());
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&paths) {
+            let path = directory.join(command);
+            if path.is_file() {
+                return path.display().to_string();
+            }
+        }
+    }
+    command.to_string()
+}
 
 fn skill_messages(skill: &crate::skills::SkillDocument, input: Option<&Value>) -> Vec<ChatMessage> {
     let mut messages = vec![ChatMessage::system(
@@ -1039,5 +1485,43 @@ impl NodeExecutor for SkillNode {
             )
             .with("resources", json!(skill.resources))
             .with("done", Value::Bool(true)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image_part() -> ContentPart {
+        let asset: lingxi_spec::AssetRef = serde_json::from_value(json!({
+            "id": format!("asset-{}", "a".repeat(64)),
+            "name": "pixel.png",
+            "mime": "image/png",
+            "size": 8,
+            "sha256": "a".repeat(64),
+            "kind": "image",
+            "source": "test"
+        }))
+        .expect("asset fixture");
+        ContentPart::image(asset)
+    }
+
+    #[test]
+    fn media_parts_merge_into_the_last_user_turn() {
+        let mut messages = vec![
+            ChatMessage::system("system"),
+            ChatMessage::user("describe the picture"),
+        ];
+        merge_media_into_last_user(
+            &mut messages,
+            vec![ContentPart::text("describe the picture"), image_part()],
+        );
+        assert_eq!(messages.len(), 2, "media must not add a second user turn");
+        let parts = messages[1].content.as_parts();
+        assert_eq!(parts.len(), 2, "duplicate text is not repeated: {parts:?}");
+        assert!(
+            matches!(&parts[0], ContentPart::Text { text, .. } if text == "describe the picture")
+        );
+        assert!(matches!(&parts[1], ContentPart::Image { .. }));
     }
 }

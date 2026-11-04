@@ -73,8 +73,12 @@ impl Engine {
             policy,
             interactions,
             services: ServiceConfig {
+                permissions: Arc::new(crate::permissions::PermissionManager::new()),
                 credentials: Arc::new(crate::credentials::BuiltinCredentials),
                 skills_root: None,
+                assets: Arc::new(crate::assets::AssetStore::new(
+                    std::env::temp_dir().join("lingxi-assets"),
+                )),
             },
         }
     }
@@ -377,6 +381,7 @@ impl Engine {
                 node,
                 spec,
                 &inputs,
+                &workflow.assets,
                 control.as_ref(),
                 self.interactions.as_ref(),
                 services.as_ref(),

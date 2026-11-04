@@ -46,8 +46,11 @@ import {
   type WorkflowMeta,
 } from "./lib/workflow";
 import type {
+  AssetRef,
+  HostInteraction,
   NodeSpec,
   PositionDoc,
+  ProviderProtocol,
   RunEvent,
   RunStatus,
   Subgraph,
@@ -130,6 +133,11 @@ function buildNode(
   onToggleEnabled: LingXiNode["data"]["onToggleEnabled"],
   subgraphId?: string,
   innerNodeCount?: number,
+  assets?: Record<string, AssetRef>,
+  onAssetImported?: (asset: AssetRef) => void,
+  protocol?: ProviderProtocol,
+  modelName?: string,
+  capabilitiesOverride?: unknown,
 ): LingXiNode {
   return {
     id,
@@ -143,6 +151,11 @@ function buildNode(
       spec,
       subgraphId,
       innerNodeCount,
+      assets,
+      onAssetImported,
+      protocol,
+      modelName,
+      capabilitiesOverride,
       onParamChange,
       onToggleEnabled,
     },
@@ -169,6 +182,130 @@ function visibleNodeId(
 function scopePrefix(scope: ScopeFrame[]): string {
   if (scope.length === 0) return "";
   return "[" + scope.map((frame) => frame.label).join(" / ") + "] ";
+}
+
+const PROVIDER_PROTOCOLS: ProviderProtocol[] = [
+  "openai_chat",
+  "openai_responses",
+  "anthropic_messages",
+];
+
+function protocolForProvider(kind: string, params: Record<string, unknown>): ProviderProtocol {
+  const explicit = typeof params.protocol === "string" ? params.protocol : "";
+  if ((PROVIDER_PROTOCOLS as string[]).includes(explicit)) return explicit as ProviderProtocol;
+  if (kind === "core.provider.openai_responses") return "openai_responses";
+  if (kind === "core.provider.anthropic_messages") return "anthropic_messages";
+  return "openai_chat";
+}
+
+/** Recompute the presentation link from the live canvas state, so editing a
+ *  provider/model parameter refreshes capability panels without a graph reload. */
+function runtimeLink(
+  node: LingXiNode,
+  allNodes: LingXiNode[],
+  allEdges: Edge[],
+): Partial<LingXiNode["data"]> {
+  const providerForModel = (model: LingXiNode) => {
+    const edge = allEdges.find(
+      (entry) => entry.target === model.id && entry.targetHandle === "provider",
+    );
+    return edge ? allNodes.find((entry) => entry.id === edge.source) : undefined;
+  };
+  const kind = node.data.spec.kind;
+  if (kind === "core.model") {
+    const provider = providerForModel(node);
+    return {
+      protocol: provider
+        ? protocolForProvider(provider.data.spec.kind, provider.data.params)
+        : undefined,
+      modelName:
+        typeof node.data.params.model === "string" ? node.data.params.model : undefined,
+      capabilitiesOverride: capabilityOverride(node.data.params),
+    };
+  }
+  if (kind === "core.reasoning") {
+    const edge = allEdges.find(
+      (entry) => entry.source === node.id && entry.targetHandle === "reasoning",
+    );
+    const model = edge ? allNodes.find((entry) => entry.id === edge.target) : undefined;
+    if (!model || model.data.spec.kind !== "core.model") return {};
+    const provider = providerForModel(model);
+    return {
+      protocol: provider
+        ? protocolForProvider(provider.data.spec.kind, provider.data.params)
+        : undefined,
+      modelName:
+        typeof model.data.params.model === "string" ? model.data.params.model : undefined,
+      capabilitiesOverride: capabilityOverride(model.data.params),
+    };
+  }
+  return {};
+}
+
+/** Applies runtime presentation links and preserves node identities when nothing changed. */
+function withRuntimeLinks(nodes: LingXiNode[], edges: Edge[]): LingXiNode[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    const link = runtimeLink(node, nodes, edges);
+    const same =
+      node.data.protocol === link.protocol &&
+      node.data.modelName === link.modelName &&
+      node.data.capabilitiesOverride === link.capabilitiesOverride;
+    if (same) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, ...link } };
+  });
+  return changed ? next : nodes;
+}
+
+function capabilityOverride(params: Record<string, unknown>): unknown {
+  const raw = params.capabilities;
+  if (typeof raw !== "string") return raw;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Presentation-only link from a Model/Reasoning node to the protocol and model
+ *  name whose capabilities it should display. The runtime still resolves the
+ *  real provider config from the graph. */
+function linkedModel(
+  layer: WorkflowDoc,
+  node: WorkflowNodeDoc,
+): { protocol?: ProviderProtocol; modelName?: string; capabilitiesOverride?: unknown } {
+  const providerForModel = (model: WorkflowNodeDoc) => {
+    const edge = layer.edges.find((entry) => entry.target === model.id && entry.targetPort === "provider");
+    if (!edge) return undefined;
+    const provider = layer.nodes.find((entry) => entry.id === edge.source);
+    if (!provider || !provider.kind.startsWith("core.provider")) return undefined;
+    return provider;
+  };
+  if (node.kind === "core.model") {
+    const provider = providerForModel(node);
+    return {
+      protocol: provider ? protocolForProvider(provider.kind, provider.params) : undefined,
+      modelName: typeof node.params.model === "string" ? node.params.model : undefined,
+      capabilitiesOverride: capabilityOverride(node.params),
+    };
+  }
+  if (node.kind === "core.reasoning") {
+    const edge = layer.edges.find(
+      (entry) => entry.source === node.id && entry.targetPort === "reasoning",
+    );
+    const model = edge ? layer.nodes.find((entry) => entry.id === edge.target) : undefined;
+    if (!model || model.kind !== "core.model") return {};
+    const provider = providerForModel(model);
+    return {
+      protocol: provider ? protocolForProvider(provider.kind, provider.params) : undefined,
+      modelName: typeof model.params.model === "string" ? model.params.model : undefined,
+      capabilitiesOverride: capabilityOverride(model.params),
+    };
+  }
+  return {};
 }
 
 function flowEdges(document: WorkflowDoc): Edge[] {
@@ -216,6 +353,8 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [persistenceError, setPersistenceError] = useState<string | null>(null);
   const [subgraphs, setSubgraphsState] = useState<Record<string, Subgraph>>({});
+  const [assets, setAssetsState] = useState<Record<string, AssetRef>>({});
+  const [hostInteraction, setHostInteraction] = useState<HostInteraction | null>(null);
   const [layerPath, setLayerPathState] = useState<LayerPath>([]);
   const [instancePath, setInstancePathState] = useState<string[]>([]);
   const [activeViewport, setActiveViewport] = useState<ViewportDoc>({
@@ -241,6 +380,7 @@ export default function App() {
   const metaRef = useRef(meta);
   const statusRef = useRef(status);
   const subgraphsRef = useRef(subgraphs);
+  const assetsRef = useRef<Record<string, AssetRef>>(assets);
   // The canonical root document. Every layer is stored here, so leaving a
   // composite cannot drop the parent canvas that is not currently rendered.
   const documentRef = useRef<WorkflowDoc | null>(null);
@@ -262,9 +402,17 @@ export default function App() {
 
   nodesRef.current = nodes;
   edgesRef.current = edges;
+  // Provider/model links are presentation-only. Recompute them when edges change
+  // so capability panels react to a newly connected provider without reflowing
+  // the whole workflow document.
+  useEffect(() => {
+    setNodes((current) => withRuntimeLinks(current, edges));
+  }, [edges, setNodes]);
+
   metaRef.current = meta;
   statusRef.current = status;
   subgraphsRef.current = subgraphs;
+  assetsRef.current = assets;
   layerPathRef.current = layerPath;
   instancePathRef.current = instancePath;
   activeViewportRef.current = activeViewport;
@@ -284,12 +432,29 @@ export default function App() {
 
   const handleParamChange = useCallback(
     (nodeId: string, name: string, value: unknown) => {
-      setNodes((current) =>
-        current.map((node) =>
+      setNodes((current) => {
+        const updated = current.map((node) =>
           node.id === nodeId
             ? { ...node, data: { ...node.data, params: { ...node.data.params, [name]: value } } }
             : node,
-        ),
+        );
+        const edgesNow = edgesRef.current;
+        return updated.map((node) => ({
+          ...node,
+          data: { ...node.data, ...runtimeLink(node, updated, edgesNow) },
+        }));
+      });
+    },
+    [setNodes],
+  );
+
+  const handleAssetImported = useCallback(
+    (asset: AssetRef) => {
+      const next = { ...assetsRef.current, [asset.id]: asset };
+      assetsRef.current = next;
+      setAssetsState(next);
+      setNodes((current) =>
+        current.map((node) => ({ ...node, data: { ...node.data, assets: next } })),
       );
     },
     [setNodes],
@@ -334,8 +499,19 @@ export default function App() {
         true,
         handleParamChange,
         handleToggleEnabled,
+        undefined,
+        undefined,
+        assetsRef.current,
+        handleAssetImported,
       );
-      setNodes((current) => [...current, node]);
+      setNodes((current) => {
+        const next = [...current, node];
+        return next.map((entry) =>
+          entry.id === id
+            ? { ...entry, data: { ...entry.data, ...runtimeLink(entry, next, edgesRef.current) } }
+            : entry,
+        );
+      });
     },
     [handleParamChange, handleToggleEnabled, pushLog, setNodes, specMap],
   );
@@ -408,6 +584,7 @@ export default function App() {
         const spec = nodeSpec(node, specMap, definitions);
         if (!spec) missing.push(node.kind);
         const definition = node.subgraphId ? definitions[node.subgraphId] : undefined;
+        const link = linkedModel(layer, node);
         return buildNode(
           node.id,
           spec ?? UNKNOWN_SPEC(node.kind),
@@ -419,6 +596,11 @@ export default function App() {
           handleToggleEnabled,
           node.subgraphId,
           definition?.workflow.nodes.length,
+          assetsRef.current,
+          handleAssetImported,
+          link.protocol,
+          link.modelName,
+          link.capabilitiesOverride,
         );
       });
       if (missing.length > 0) {
@@ -426,7 +608,7 @@ export default function App() {
       }
       return nextNodes;
     },
-    [handleParamChange, handleToggleEnabled, pushLog, specMap],
+    [handleAssetImported, handleParamChange, handleToggleEnabled, pushLog, specMap],
   );
 
   const buildDoc = useCallback((): WorkflowDoc => {
@@ -450,6 +632,7 @@ export default function App() {
     base.metadata = metaRef.current.metadata;
     base.viewport = metaRef.current.viewport;
     base.subgraphs = subgraphsRef.current;
+    base.assets = assetsRef.current;
     const next = writeLayer(
       base,
       layerPathRef.current,
@@ -505,6 +688,8 @@ export default function App() {
       const definitions = subgraphsOf(document);
       subgraphsRef.current = definitions;
       setSubgraphsState(definitions);
+      assetsRef.current = document.assets ?? {};
+      setAssetsState(document.assets ?? {});
       layerPathRef.current = [];
       setLayerPathState([]);
       instancePathRef.current = [];
@@ -1032,6 +1217,7 @@ export default function App() {
         const instantiated = instantiateTemplate(bundle, at);
         const next: WorkflowDoc = {
           ...document,
+          assets: { ...(document.assets ?? {}), ...instantiated.assets },
           subgraphs: {
             ...subgraphsOf(document),
             ...instantiated.subgraphs,
@@ -1253,6 +1439,27 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
+  useEffect(() => {
+    let disposed = false;
+    const cleanups: Array<() => void> = [];
+    void Promise.all([
+      api.onHostInteraction((request) => setHostInteraction(request)),
+      api.onHostInteractionResolved((requestId) =>
+        setHostInteraction((current) => (current?.requestId === requestId ? null : current)),
+      ),
+    ]).then((listeners) => {
+      if (disposed) {
+        for (const unlisten of listeners) unlisten();
+        return;
+      }
+      cleanups.push(...listeners);
+    });
+    return () => {
+      disposed = true;
+      for (const unlisten of cleanups) unlisten();
+    };
+  }, []);
+
   const selectedSingle = selectedNodeIds.length === 1
     ? nodes.find((node) => node.id === selectedNodeIds[0])
     : undefined;
@@ -1343,6 +1550,47 @@ export default function App() {
         onLoad={(name) => void loadNamed(name)}
         onDelete={(name) => void deleteNamed(name)}
       />
+
+      {hostInteraction ? (
+        <div className="modal-backdrop" data-testid="host-interaction">
+          <div className="modal modal--interaction" role="dialog" aria-modal="true">
+            <div className="modal__head">
+              <h2>网络授权</h2>
+              <span className="modal__tag">宿主操作</span>
+            </div>
+            <div className="modal__body">
+              <p className="modal__prompt">{hostInteraction.prompt}</p>
+              <p className="modal__hint">
+                模型列表发现与推理使用同一授权层；本次批准只对当前目标地址生效。
+              </p>
+            </div>
+            <div className="modal__actions">
+              <button
+                type="button"
+                className="btn btn--ghost"
+                data-testid="host-reject"
+                onClick={() => {
+                  void api.respondHostInteraction(hostInteraction.requestId, false);
+                  setHostInteraction(null);
+                }}
+              >
+                拒绝
+              </button>
+              <button
+                type="button"
+                className="btn btn--primary"
+                data-testid="host-approve"
+                onClick={() => {
+                  void api.respondHostInteraction(hostInteraction.requestId, true);
+                  setHostInteraction(null);
+                }}
+              >
+                允许访问
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <InteractionDialog request={pending} onDecide={(approved) => void decide(approved)} />
 

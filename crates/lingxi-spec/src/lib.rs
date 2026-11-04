@@ -8,9 +8,9 @@ pub mod node;
 pub mod validation;
 
 pub use model::{
-    Edge, EdgeKind, PortBinding, Position, Subgraph, SubgraphInput, SubgraphOutput, Viewport,
-    Workflow, WorkflowNode, COMPOSITE_NODE_KIND, SCHEMA_VERSION, SUBGRAPH_VERSION,
-    SUPPORTED_SCHEMA_VERSIONS,
+    AssetKind, AssetRef, Edge, EdgeKind, PortBinding, Position, Subgraph, SubgraphInput,
+    SubgraphOutput, Viewport, Workflow, WorkflowNode, COMPOSITE_NODE_KIND, SCHEMA_VERSION,
+    SUBGRAPH_VERSION, SUPPORTED_SCHEMA_VERSIONS,
 };
 pub use node::{
     capabilities, ControlKind, DataType, NodeSpec, ParamKind, ParamOption, ParamSpec, PortSpec,

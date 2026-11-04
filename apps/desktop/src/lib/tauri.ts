@@ -3,6 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { Transport } from "./transport";
 import type {
+  AssetRef,
+  HostInteraction,
+  ModelCapabilities,
   NodeSpec,
   PersistenceError,
   RunDetail,
@@ -16,7 +19,12 @@ import type {
   WorkflowDoc,
   WorkflowSummary,
 } from "./types";
-import { PERSISTENCE_ERROR_NAME, RUN_EVENT_NAME } from "./types";
+import {
+  HOST_INTERACTION_NAME,
+  HOST_INTERACTION_RESOLVED_NAME,
+  PERSISTENCE_ERROR_NAME,
+  RUN_EVENT_NAME,
+} from "./types";
 
 export const isTauri = (): boolean =>
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -47,12 +55,34 @@ export const tauriTransport: Transport = {
     invoke<boolean>("credential_status", { reference }),
   credentialSet: (name, secret) => invoke<string>("credential_set", { name, secret }),
   credentialDelete: (name) => invoke<boolean>("credential_delete", { name }),
-  providerModels: (baseUrl, credentialRef) =>
-    invoke<string[]>("provider_models", { baseUrl, credentialRef }),
+  providerModels: (baseUrl, credentialRef, protocol, capabilities) =>
+    invoke<string[]>("provider_models", {
+      baseUrl,
+      credentialRef,
+      protocol: protocol ?? null,
+      capabilities: capabilities ?? null,
+    }),
+  modelCapabilities: (protocol, model, capabilities) =>
+    invoke<ModelCapabilities>("model_capabilities", {
+      protocol,
+      model,
+      capabilities: capabilities ?? null,
+    }),
+  assetImport: (path, kind) => invoke<AssetRef>("asset_import", { path, kind }),
+  assetImportFile: async () => {
+    throw new Error("desktop builds use the native file picker");
+  },
+  assetPreview: (id, mime) => invoke<string>("asset_preview", { id, mime }),
+  respondHostInteraction: (requestId, approved) =>
+    invoke<boolean>("respond_host_interaction", { requestId, approved }),
   skillList: () => invoke<SkillSummary[]>("skill_list"),
   agentTemplate: () => invoke<TemplateBundle>("agent_template"),
   onRunEvent: async (handler) =>
     listen<RunEvent>(RUN_EVENT_NAME, (event) => handler(event.payload)),
   onPersistenceError: async (handler) =>
     listen<PersistenceError>(PERSISTENCE_ERROR_NAME, (event) => handler(event.payload)),
+  onHostInteraction: async (handler) =>
+    listen<HostInteraction>(HOST_INTERACTION_NAME, (event) => handler(event.payload)),
+  onHostInteractionResolved: async (handler) =>
+    listen<string>(HOST_INTERACTION_RESOLVED_NAME, (event) => handler(event.payload)),
 };

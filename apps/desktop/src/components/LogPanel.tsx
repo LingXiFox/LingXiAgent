@@ -36,7 +36,13 @@ export function LogPanel({ entries, open, status, onToggle, onClear }: LogPanelP
             <span className="status__dot" />
             {status === "idle" ? "空闲" : RUN_STATUS_TEXT[status]}
           </span>
-          <button type="button" className="btn btn--tiny" onClick={onClear} disabled={entries.length === 0}>
+          <button
+            type="button"
+            className="btn btn--tiny"
+            data-testid="log-clear"
+            onClick={onClear}
+            disabled={entries.length === 0}
+          >
             清空
           </button>
         </div>

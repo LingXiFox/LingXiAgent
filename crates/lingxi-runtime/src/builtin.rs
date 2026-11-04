@@ -47,6 +47,7 @@ pub fn register(registry: &mut NodeRegistry) {
         .register(counter_spec(), Arc::new(Counter))
         .expect("built-in node kinds are unique");
     crate::agent::register(registry);
+    crate::media::register(registry);
 }
 
 pub fn text_input_spec() -> NodeSpec {

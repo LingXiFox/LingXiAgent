@@ -61,7 +61,7 @@ fn workflow_round_trips_through_json_with_camel_case_keys() {
     workflow.edges.push(Edge::new("t1", "text", "add", "a"));
 
     let json = serde_json::to_value(&workflow).expect("serialize");
-    assert_eq!(json["schemaVersion"], "1.1");
+    assert_eq!(json["schemaVersion"], "1.2");
     assert_eq!(json["nodes"][0]["id"], "t1");
     assert_eq!(json["edges"][0]["sourcePort"], "text");
     assert_eq!(json["edges"][0]["targetPort"], "a");

@@ -1,9 +1,18 @@
 // Wire types shared with the Rust crates. Field names mirror the serde
 // camelCase contract in crates/lingxi-spec and crates/lingxi-runtime.
 
-export type DataType = "text" | "number" | "boolean" | "json" | "any";
+export type DataType =
+  | "text"
+  | "number"
+  | "boolean"
+  | "json"
+  | "image"
+  | "audio"
+  | "video"
+  | "document"
+  | "any";
 
-export type ParamKind = "text" | "text_area" | "number" | "boolean" | "select";
+export type ParamKind = "text" | "text_area" | "number" | "boolean" | "select" | "asset";
 
 export type ControlKind = "normal" | "branch" | "loop_gate";
 
@@ -23,6 +32,24 @@ export interface ParamSpec {
   options: ParamOption[];
   help?: string | null;
 }
+
+export type AssetKind = "image" | "audio" | "video" | "document";
+
+export interface AssetRef {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  kind: AssetKind;
+  source: string;
+  metadata: Record<string, unknown>;
+}
+
+export type ProviderProtocol =
+  | "openai_chat"
+  | "openai_responses"
+  | "anthropic_messages";
 
 export interface PortSpec {
   name: string;
@@ -88,6 +115,8 @@ export interface WorkflowDoc {
   metadata: Record<string, unknown>;
   /** Root-only definitions; a definition's own workflow never nests definitions. */
   subgraphs?: Record<string, Subgraph>;
+  /** Root-only content-addressed media table. Large bytes never live here. */
+  assets?: Record<string, AssetRef>;
 }
 
 export interface PortBindingDoc {
@@ -161,6 +190,7 @@ export interface SkillSummary {
 export interface TemplateBundle {
   rootId: string;
   subgraphs: Record<string, Subgraph>;
+  assets?: Record<string, AssetRef>;
 }
 
 export interface RunStartResponse {
@@ -327,3 +357,34 @@ export interface PersistenceError {
 
 export const RUN_EVENT_NAME = "lingxi:run-event";
 export const PERSISTENCE_ERROR_NAME = "lingxi:persistence-error";
+export const HOST_INTERACTION_NAME = "lingxi:host-interaction";
+export const HOST_INTERACTION_RESOLVED_NAME = "lingxi:host-interaction-resolved";
+
+
+export type Support = "native" | "preprocessed" | "unsupported" | "unknown";
+
+export interface ModelCapabilities {
+  input: {
+    text: Support;
+    image: Support;
+    audio: Support;
+    video: Support;
+    document: Support;
+    maxImages: number | null;
+    maxFileSize: number | null;
+    supportedMediaTypes: string[];
+  };
+  output: { text: Support; image: Support; audio: Support };
+  features: { streaming: Support; toolCalling: Support; reasoning: Support; structuredOutput: Support };
+  limits: { maxContextTokens: number | null; maxOutputTokens: number | null };
+  reasoningLevels: string[];
+  source: string;
+}
+
+export interface HostInteraction {
+  requestId: string;
+  runId: string;
+  nodeId: string;
+  prompt: string;
+  options: { value: string; label: string }[];
+}

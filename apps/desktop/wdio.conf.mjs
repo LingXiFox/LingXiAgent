@@ -15,15 +15,159 @@ fs.mkdirSync(logDir, { recursive: true });
 const LLM_PORT = 11434;
 let llmServer;
 
+function writeSse(response, events) {
+  for (const event of events) {
+    response.write("data: " + JSON.stringify(event) + "\n\n");
+  }
+  response.end();
+}
+
+function openAiChat(response, payload) {
+  const hasToolResult = Array.isArray(payload.messages)
+    && payload.messages.some((message) => message?.role === "tool");
+  const wantsTool = payload.model === "mock-calculator" && !hasToolResult;
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  const send = (value) => response.write("data: " + JSON.stringify(value) + "\n\n");
+  const base = {
+    id: "chatcmpl-lingxi-e2e",
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: payload.model || "e2e-tool-model",
+  };
+  if (wantsTool) {
+    send({
+      ...base,
+      choices: [{
+        index: 0,
+        delta: {
+          role: "assistant",
+          tool_calls: [{
+            index: 0,
+            id: "call_lingxi_e2e",
+            type: "function",
+            function: {
+              name: "calculator",
+              arguments: JSON.stringify({ expression: "128 * 256" }),
+            },
+          }],
+        },
+        finish_reason: null,
+      }],
+    });
+    send({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      usage: { prompt_tokens: 64, completion_tokens: 8, total_tokens: 72 },
+    });
+  } else if (hasToolResult) {
+    send({
+      ...base,
+      choices: [{ index: 0, delta: { role: "assistant", content: "The answer is " }, finish_reason: null }],
+    });
+    send({
+      ...base,
+      choices: [{ index: 0, delta: { content: "32768." }, finish_reason: null }],
+    });
+    send({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 96, completion_tokens: 6, total_tokens: 102 },
+    });
+  } else {
+    send({
+      ...base,
+      choices: [{ index: 0, delta: { role: "assistant", content: "Mock OpenAI Chat accepted." }, finish_reason: null }],
+    });
+    send({
+      ...base,
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: { prompt_tokens: 48, completion_tokens: 5, total_tokens: 53 },
+    });
+  }
+  response.write("data: [DONE]\n\n");
+  response.end();
+}
+
+function openAiResponses(response, payload) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  writeSse(response, [
+    {
+      type: "response.created",
+      response: { id: "resp-lingxi-e2e", status: "in_progress", model: payload.model || "gpt-5" },
+    },
+    {
+      type: "response.output_text.delta",
+      item_id: "msg-lingxi-e2e",
+      output_index: 0,
+      content_index: 0,
+      delta: "Mock OpenAI Responses accepted.",
+    },
+    {
+      type: "response.completed",
+      response: {
+        id: "resp-lingxi-e2e",
+        status: "completed",
+        model: payload.model || "gpt-5",
+        usage: { input_tokens: 48, output_tokens: 5, total_tokens: 53 },
+        output: [],
+      },
+    },
+  ]);
+}
+
+function anthropicMessages(response, payload) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+  });
+  writeSse(response, [
+    {
+      type: "message_start",
+      message: {
+        id: "msg-lingxi-e2e",
+        type: "message",
+        role: "assistant",
+        model: payload.model || "claude-sonnet-4-5",
+        usage: { input_tokens: 48, output_tokens: 1 },
+      },
+    },
+    {
+      type: "content_block_start",
+      index: 0,
+      content_block: { type: "text", text: "" },
+    },
+    {
+      type: "content_block_delta",
+      index: 0,
+      delta: { type: "text_delta", text: "Mock Anthropic Messages accepted." },
+    },
+    { type: "content_block_stop", index: 0 },
+    {
+      type: "message_delta",
+      delta: { stop_reason: "end_turn" },
+      usage: { output_tokens: 6 },
+    },
+    { type: "message_stop" },
+  ]);
+}
+
 /**
- * Deterministic OpenAI-compatible endpoint for the standard Agent template.
- * The first request asks for the calculator tool; after the runtime returns a
- * tool message, the second request produces the final answer. Nothing here is
- * a model provider: this only proves the Rust loop/tool path around it.
+ * Deterministic multi-protocol LLM endpoint. Each route is an explicit wire
+ * format mock; the OpenAI Chat route also serves the tool-loop Agent tests.
+ * Nothing here is a model provider: it only proves Rust adapters and loops.
  */
 function startLlmMock() {
   const server = http.createServer((request, response) => {
-    if (request.method !== "POST" || !request.url?.endsWith("/chat/completions")) {
+    if (request.method !== "POST") {
       response.writeHead(404, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "not found" } }));
       return;
@@ -39,62 +183,17 @@ function startLlmMock() {
       } catch {
         payload = {};
       }
-      const hasToolResult = Array.isArray(payload.messages)
-        && payload.messages.some((message) => message?.role === "tool");
-      response.writeHead(200, {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      });
-      const send = (value) => response.write("data: " + JSON.stringify(value) + "\n\n");
-      const base = {
-        id: "chatcmpl-lingxi-e2e",
-        object: "chat.completion.chunk",
-        created: Math.floor(Date.now() / 1000),
-        model: payload.model || "e2e-tool-model",
-      };
-      if (!hasToolResult) {
-        send({
-          ...base,
-          choices: [{
-            index: 0,
-            delta: {
-              role: "assistant",
-              tool_calls: [{
-                index: 0,
-                id: "call_lingxi_e2e",
-                type: "function",
-                function: {
-                  name: "calculator",
-                  arguments: JSON.stringify({ expression: "128 * 256" }),
-                },
-              }],
-            },
-            finish_reason: null,
-          }],
-        });
-        send({
-          ...base,
-          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
-          usage: { prompt_tokens: 64, completion_tokens: 8, total_tokens: 72 },
-        });
+      const url = request.url || "";
+      if (url.endsWith("/chat/completions")) {
+        openAiChat(response, payload);
+      } else if (url.endsWith("/responses")) {
+        openAiResponses(response, payload);
+      } else if (url.endsWith("/messages")) {
+        anthropicMessages(response, payload);
       } else {
-        send({
-          ...base,
-          choices: [{ index: 0, delta: { role: "assistant", content: "The answer is " }, finish_reason: null }],
-        });
-        send({
-          ...base,
-          choices: [{ index: 0, delta: { content: "32768." }, finish_reason: null }],
-        });
-        send({
-          ...base,
-          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-          usage: { prompt_tokens: 96, completion_tokens: 6, total_tokens: 102 },
-        });
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "not found" } }));
       }
-      response.write("data: [DONE]\n\n");
-      response.end();
     });
   });
   return new Promise((resolve, reject) => {
@@ -119,8 +218,6 @@ export const config = {
       env: {
         ...process.env,
         LINGXI_DATA_DIR: dataDir,
-        // The template references env:OPENAI_API_KEY. The mock ignores it,
-        // but the credential lookup must succeed before the request runs.
         OPENAI_API_KEY: process.env.OPENAI_API_KEY || "sk-e2e-local",
         RUST_BACKTRACE: "1",
       },
@@ -139,7 +236,7 @@ export const config = {
   mochaOpts: { ui: "bdd", timeout: 240000 },
   onPrepare: async () => {
     llmServer = await startLlmMock();
-    console.log("mock LLM listening on http://127.0.0.1:" + LLM_PORT + "/v1");
+    console.log("mock LLM listening on http://127.0.0.1:" + LLM_PORT + "/v1 (chat/responses/messages)");
     console.log("tauri data dir: " + dataDir);
   },
   onComplete: async () => {

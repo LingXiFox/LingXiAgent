@@ -7,10 +7,11 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 /// Version written by this build. Documents at older supported versions still load.
-pub const SCHEMA_VERSION: &str = "1.1";
+/// 1.2 adds the optional root `assets` table; no existing field changed shape.
+pub const SCHEMA_VERSION: &str = "1.2";
 
-/// Versions this build accepts. Adding optional fields is the only 1.0 -> 1.1 change.
-pub const SUPPORTED_SCHEMA_VERSIONS: &[&str] = &["1.0", "1.1"];
+/// Versions this build accepts. Every step only added optional fields.
+pub const SUPPORTED_SCHEMA_VERSIONS: &[&str] = &["1.0", "1.1", "1.2"];
 
 /// The only node kind whose ports come from a `Subgraph` definition.
 pub const COMPOSITE_NODE_KIND: &str = "core.composite";
@@ -46,6 +47,10 @@ pub struct Workflow {
     /// must keep this empty; nested composites reference this same map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subgraphs: BTreeMap<String, Subgraph>,
+    /// Content-addressed media referenced by node params. Binary content is
+    /// never inlined in this document; ids resolve through the local asset store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assets: BTreeMap<String, AssetRef>,
 }
 
 impl Workflow {
@@ -60,7 +65,12 @@ impl Workflow {
             viewport: None,
             metadata: BTreeMap::new(),
             subgraphs: BTreeMap::new(),
+            assets: BTreeMap::new(),
         }
+    }
+
+    pub fn asset(&self, id: &str) -> Option<&AssetRef> {
+        self.assets.get(id)
     }
 
     pub fn node(&self, id: &str) -> Option<&WorkflowNode> {
@@ -218,6 +228,62 @@ impl Default for Viewport {
             y: 0.0,
             zoom: 1.0,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetKind {
+    Image,
+    Audio,
+    Video,
+    Document,
+}
+
+impl AssetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AssetKind::Image => "image",
+            AssetKind::Audio => "audio",
+            AssetKind::Video => "video",
+            AssetKind::Document => "document",
+        }
+    }
+}
+
+/// A safe reference to one immutable local asset. `sha256` is both the storage
+/// key and the integrity check; `id` is derived from it, so two workflows that
+/// reference the same bytes share one file. No absolute path is serialized.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetRef {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+    pub sha256: String,
+    pub kind: AssetKind,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub metadata: BTreeMap<String, Value>,
+}
+
+impl AssetRef {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.id.trim().is_empty() {
+            return Err("asset id must not be empty".to_string());
+        }
+        if self.sha256.len() != 64 || !self.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(format!("asset {} has an invalid sha256", self.id));
+        }
+        if self.mime.trim().is_empty() {
+            return Err(format!("asset {} has no mime type", self.id));
+        }
+        if self.size == 0 {
+            return Err(format!("asset {} is empty", self.id));
+        }
+        Ok(())
     }
 }
 
