@@ -1,8 +1,8 @@
 # Phase 1.6 测试与验收
 
-状态：代码与自动化验收完成；最终提交、CI 与跨平台结果见第 7 节
+状态：代码、自动化验收、提交与 CI 完成
 分支：`rewrite/3.0`
-基线：`d80069e`（Phase 1.5 文档收口）
+基线：`d80069e`（Phase 1.5 文档收口）；实现提交：`8b48dac`
 
 ## 1. 验收环境
 
@@ -147,8 +147,8 @@ pnpm -C apps/desktop exec wdio run wdio.conf.mjs --spec e2e/tauri/phase16.spec.m
 | 平台 | 编译 / 静态检查 / 单测 | 真实桌面运行 |
 | --- | --- | --- |
 | macOS | 本地通过 | **通过**（原生 WDIO 8 项，真实窗口与 IPC） |
-| Windows | **待最终 CI** | **未验收** |
-| Linux | **待最终 CI** | **未验收** |
+| Windows | **通过**（CI `42045389615`） | **未验收** |
+| Linux | **通过**（CI `42045389615`） | **未验收** |
 
 CI 的 Rust job 在 macOS、Ubuntu 24.04、Windows 上执行 format、clippy、`cargo test --workspace`；前端 job 执行构建、三组单元测试与 Playwright 固定 Chromium。CI 编译通过不等同于 Windows/Linux 实机运行验收，平台相关 keyring、WebView、路径与进程行为仍需实机复核。
 
@@ -189,5 +189,7 @@ pnpm -C apps/desktop test:e2e:tauri
 | `pnpm -C apps/desktop build` | 通过；221 modules，主 JS 474.22 kB（gzip 148.48 kB） |
 | 前端单元测试 | events 6、routing 13、composite 8，全部通过 |
 | Playwright 浏览器 E2E | **25 passed**（5 回归 + 14 Phase 1.5 + 6 Phase 1.6） |
-| 原生 Tauri WDIO | **8 passed**（A-H，真实窗口与 IPC） |
-| GitHub Actions CI | 待最终提交后执行；结果回填本节 |
+| 原生 Tauri WDIO | **8 passed**（A-H，真实窗口与 IPC，34.7s） |
+| GitHub Actions CI | **通过**：run [`42045389615`](https://github.com/LingXiFox/LingXiAgent/actions/runs/42045389615) attempt 2；macOS / Ubuntu / Windows Rust 与 Frontend 四个 job 全绿 |
+
+CI 的 attempt 1 在 Ubuntu `apt-get` 安装 WebKit 依赖时停滞超过 25 分钟，未进入格式检查；取消后重跑 attempt 2 在 6 分 13 秒内完成该步骤，四个 job 均通过。该次停滞属于托管 runner 环境问题，不是项目构建失败。

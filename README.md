@@ -6,7 +6,7 @@
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
 - 阶段：Phase 1.6 — 一等 Agent 节点、双视图工作台与运行期干预
-- 验收：macOS 真实 Tauri 通过（原生 WDIO 8 项）；Windows / Linux 的 CI 编译、clippy、单测结果见最终 CI，运行行为**未验收**
+- 验收：macOS 真实 Tauri 通过（原生 WDIO 8 项）；Windows / Linux 的 CI 编译、clippy、单测均通过（[CI 42045389615](https://github.com/LingXiFox/LingXiAgent/actions/runs/42045389615)），运行行为**未验收**
 - 测试：`cargo test --workspace` 146 passed；Playwright 25 passed（5 项回归 + 14 Phase 1.5 + 6 Phase 1.6）；原生 Tauri WDIO 8 passed；前端单测 6 + 13 + 8 passed
 
 ## 技术栈
