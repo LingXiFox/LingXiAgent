@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn parent_and_symlink_escapes_are_rejected() {
-        let (workspace, root) = workspace();
+        let (workspace, _root) = workspace();
         assert_eq!(
             workspace.resolve("../outside").unwrap_err().code,
             error_codes::WORKSPACE_PATH_ESCAPE
@@ -337,7 +337,7 @@ mod tests {
         {
             let outside = std::env::temp_dir().join(format!("lingxi-out-{}", uuid::Uuid::new_v4()));
             fs::create_dir_all(&outside).unwrap();
-            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            std::os::unix::fs::symlink(&outside, _root.join("escape")).unwrap();
             assert_eq!(
                 workspace.resolve("escape/file.txt").unwrap_err().code,
                 error_codes::WORKSPACE_PATH_ESCAPE
