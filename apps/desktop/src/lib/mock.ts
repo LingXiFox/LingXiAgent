@@ -4,11 +4,16 @@
 
 import type { Transport } from "./transport";
 import type {
+  AgentConfigRevision,
+  AgentConfigSnapshot,
+  AgentEvent,
+  ConfigChange,
   NodeSpec,
   RunDetail,
   SkillSummary,
   RunEvent,
   RunStartResponse,
+  TaskSession,
   TemplateBundle,
   TemplateSummary,
   ValidationIssue,
@@ -565,6 +570,40 @@ const rawSpecs: NodeSpec[] = [
     capabilities: [],
   },
   {
+    kind: "core.agent",
+    title: "Agent",
+    category: "Agent",
+    description: "Autonomous agent with tools, budgets and a structured result.",
+    inputs: [
+      { name: "provider", label: "Provider", dataType: "json", required: false, group: "Capabilities" },
+      { name: "toolset", label: "ToolSet", dataType: "json", required: false, group: "Capabilities" },
+      { name: "systemPrompt", label: "System Prompt", dataType: "text", required: false, group: "Instructions" },
+      { name: "rolePrompt", label: "Role Prompt", dataType: "text", required: false, group: "Instructions" },
+      { name: "userPrompt", label: "User Prompt", dataType: "text", required: false, group: "Instructions" },
+      { name: "task", label: "Task", dataType: "json", required: false, group: "Collaboration" },
+      { name: "messages", label: "Messages", dataType: "json", required: false, group: "Collaboration" },
+      { name: "start", label: "Start", dataType: "any", required: false, control: true, group: "Control" },
+      { name: "budget", label: "Budget", dataType: "json", required: false, group: "Control" },
+    ],
+    outputs: [
+      { name: "agentMessage", label: "Agent Message", dataType: "json", required: false, group: "Result" },
+      { name: "userResponse", label: "User Response", dataType: "text", required: false, group: "Result" },
+      { name: "artifacts", label: "Artifacts", dataType: "json", required: false, group: "Result" },
+      { name: "executionState", label: "Execution State", dataType: "json", required: false, group: "Result" },
+      { name: "completed", label: "Completed", dataType: "any", required: false, control: true, group: "Control" },
+      { name: "blocked", label: "Blocked", dataType: "any", required: false, control: true, group: "Control" },
+      { name: "failed", label: "Failed", dataType: "any", required: false, control: true, group: "Control" },
+    ],
+    params: [
+      { name: "model", label: "Model", kind: "text", defaultValue: "mock-agent", required: true, options: [] },
+      { name: "rolePrompt", label: "Role", kind: "text_area", defaultValue: "", required: false, options: [] },
+      { name: "instruction", label: "Instruction", kind: "text_area", defaultValue: "", required: false, options: [] },
+      { name: "maxIterations", label: "Max Iterations", kind: "number", defaultValue: 12, required: false, options: [] },
+      { name: "maxToolCalls", label: "Max Tool Calls", kind: "number", defaultValue: 48, required: false, options: [] },
+    ],
+    capabilities: ["network"],
+  },
+  {
     kind: "core.composite",
     title: "Composite",
     category: "组合",
@@ -761,6 +800,81 @@ function mockAgentTemplate(): TemplateBundle {
 }
 
 const TEMPLATE_PREFIX = "lingxi.templates.";
+const MOCK_RUNS_KEY = "lingxi.mock.runs";
+const MOCK_SESSIONS_KEY = "lingxi.mock.sessions";
+
+function loadMockRuns(): [string, RunDetail][] {
+  try {
+    const raw = window.localStorage.getItem(MOCK_RUNS_KEY);
+    return raw ? (JSON.parse(raw) as [string, RunDetail][]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadMockSessions(): [string, TaskSession][] {
+  try {
+    const raw = window.localStorage.getItem(MOCK_SESSIONS_KEY);
+    return raw ? (JSON.parse(raw) as [string, TaskSession][]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function mockCsv(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function mockNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function mockAgentConfig(node: WorkflowDoc["nodes"][number]): AgentConfigSnapshot {
+  return {
+    revision: 0,
+    model: typeof node.params.model === "string" ? node.params.model : "mock-agent",
+    temperature: mockNumber(node.params.temperature, 0.2),
+    reasoning: typeof node.params.reasoning === "string" ? node.params.reasoning : "auto",
+    rolePrompt: typeof node.params.rolePrompt === "string" ? node.params.rolePrompt : "",
+    systemPrompt: typeof node.params.systemPrompt === "string" ? node.params.systemPrompt : "",
+    maxIterations: mockNumber(node.params.maxIterations, 12),
+    maxToolCalls: mockNumber(node.params.maxToolCalls, 48),
+    maxTotalTokens: mockNumber(node.params.maxTotalTokens, 0),
+    timeoutMs: mockNumber(node.params.timeoutMs, 300000),
+    toolset: mockCsv(node.params.toolset),
+    skills: mockCsv(node.params.skills),
+    lsp: mockCsv(node.params.lsp),
+  };
+}
+
+const AGENT_CONFIG_FIELDS: (keyof AgentConfigSnapshot)[] = [
+  "model",
+  "temperature",
+  "reasoning",
+  "rolePrompt",
+  "systemPrompt",
+  "maxIterations",
+  "maxToolCalls",
+  "maxTotalTokens",
+  "timeoutMs",
+  "toolset",
+  "skills",
+  "lsp",
+];
+
+function mockConfigDiff(
+  before: AgentConfigSnapshot,
+  after: AgentConfigSnapshot,
+): ConfigChange[] {
+  return AGENT_CONFIG_FIELDS.filter(
+    (field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]),
+  ).map((field) => ({ field, before: before[field], after: after[field] }));
+}
 
 interface MockTemplateFile {
   name: string;
@@ -772,8 +886,29 @@ export function createMockTransport(): Transport {
   const templateFiles = new Map<string, MockTemplateFile>();
   const listeners = new Set<(event: RunEvent) => void>();
   const pending = new Map<string, (approved: boolean) => void>();
-  const runs = new Map<string, RunDetail>();
+  const runs = new Map<string, RunDetail>(loadMockRuns());
+  const sessions = new Map<string, TaskSession>(loadMockSessions());
+  const pausedRuns = new Set<string>();
+  const pausedAgents = new Set<string>();
   let counter = 0;
+
+  // The browser mock has no Rust backend to reconnect to. Persisting the
+  // simulated session keeps a WebView refresh from wiping the workbench in UI
+  // tests; native runs always recover from SQLite instead.
+  const persistRuns = () => {
+    try {
+      window.localStorage.setItem(MOCK_RUNS_KEY, JSON.stringify([...runs.entries()]));
+    } catch {
+      // Quota failures must not break the simulated run.
+    }
+  };
+  const persistSessions = () => {
+    try {
+      window.localStorage.setItem(MOCK_SESSIONS_KEY, JSON.stringify([...sessions.entries()]));
+    } catch {
+      // Quota failures must not break the simulated run.
+    }
+  };
 
   const emit = (event: RunEvent) => {
     for (const listener of listeners) listener(event);
@@ -834,7 +969,10 @@ export function createMockTransport(): Transport {
           ) ?? false
         );
       });
-      if (!agent && usesControlFlow(workflow)) {
+      const agentNodes = workflow.nodes.filter(
+        (node) => node.kind === "core.agent" && node.enabled !== false,
+      );
+      if (!agent && agentNodes.length === 0 && usesControlFlow(workflow)) {
         const report = reportFor(workflow, [
           {
             code: "mock.control_flow_unsupported",
@@ -857,6 +995,11 @@ export function createMockTransport(): Transport {
         const sequenced = { ...event, seq: seq++ } as RunEvent;
         runEvents.push(sequenced);
         emit(sequenced);
+        const checkpoint = runs.get(runId);
+        if (checkpoint) {
+          runs.set(runId, { ...checkpoint, events: [...runEvents] });
+          persistRuns();
+        }
       };
       void (async () => {
         const outputs = new Map<string, Record<string, unknown>>();
@@ -897,6 +1040,7 @@ export function createMockTransport(): Transport {
             workflow,
             events: [...runEvents],
           });
+          persistRuns();
         };
         stopHandlers.set(runId, () => {
           cancelled = true;
@@ -908,6 +1052,24 @@ export function createMockTransport(): Transport {
           workflowName: workflow.name,
           nodeCount: workflow.nodes.length,
         });
+        runs.set(runId, {
+          run: {
+            runId,
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            status: "running",
+            cause: null,
+            detail: null,
+            startedAtMs: startedAt,
+            finishedAtMs: null,
+            durationMs: null,
+            nodeCount: workflow.nodes.length,
+            lastSeq: runEvents.length - 1,
+          },
+          workflow,
+          events: [...runEvents],
+        });
+        persistRuns();
         if (agent) {
           const label = agent.label?.trim() || "标准 ReAct Agent";
           emitRun({ type: "node.started", runId, nodeId: agent.id, kind: agent.kind, label, activation: 1 });
@@ -956,6 +1118,248 @@ export function createMockTransport(): Transport {
           });
           stopHandlers.delete(runId);
           if (!finished) finish("completed", null);
+          return;
+        }
+        if (agentNodes.length > 0) {
+          const createdAtMs = Date.now();
+          const session: TaskSession = {
+            sessionId: "session-" + runId,
+            runId,
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            workflowRevision: 1,
+            state: "running",
+            createdAtMs,
+            updatedAtMs: createdAtMs,
+            agents: {},
+            messages: [],
+            pendingReviews: [],
+            artifacts: [],
+          };
+          sessions.set(runId, session);
+          persistSessions();
+          const agentEvent = (event: AgentEvent) => {
+            emitRun({ type: "agent.event", runId, event });
+            persistSessions();
+          };
+          for (const node of agentNodes) {
+            if (cancelled) break;
+            const label = node.label?.trim() || specByKind.get("core.agent")?.title || "Agent";
+            const instanceId = "agent:" + runId + ":" + node.id;
+            const config = mockAgentConfig(node);
+            let instance = session.agents[instanceId];
+            if (!instance) {
+              instance = {
+                instanceId,
+                nodeId: node.id,
+                label,
+                scope: [],
+                state: "pending",
+                currentActivation: null,
+                activations: [],
+                config,
+                configRevisions: [],
+                usage: {
+                  iterations: 0,
+                  modelCalls: 0,
+                  toolCalls: 0,
+                  promptTokens: 0,
+                  completionTokens: 0,
+                  elapsedMs: 0,
+                },
+                pendingDirectives: [],
+                createdAtMs: Date.now(),
+                updatedAtMs: Date.now(),
+              };
+              session.agents[instanceId] = instance;
+              agentEvent({
+                type: "agent.registered",
+                agentInstanceId: instanceId,
+                nodeId: node.id,
+                label,
+                scope: [],
+                state: "pending",
+                config,
+              });
+            }
+            const activationIndex = instance.activations.length + 1;
+            const activationId = instanceId + "#activation-" + activationIndex;
+            instance.currentActivation = activationId;
+            instance.state = "running";
+            instance.updatedAtMs = Date.now();
+            instance.activations.push({
+              activationId,
+              index: activationIndex,
+              state: "running",
+              startedAtMs: Date.now(),
+              finishedAtMs: null,
+              configRevision: instance.config.revision,
+              iterations: 0,
+              userResponse: null,
+              agentMessageId: null,
+              error: null,
+            });
+            emitRun({
+              type: "node.started",
+              runId,
+              nodeId: node.id,
+              kind: node.kind,
+              label,
+              activation: activationIndex,
+            });
+            agentEvent({
+              type: "agent.activation.started",
+              agentInstanceId: instanceId,
+              activationId,
+              index: activationIndex,
+              configRevision: instance.config.revision,
+            });
+            agentEvent({
+              type: "agent.state",
+              agentInstanceId: instanceId,
+              activationId,
+              state: "running",
+              reason: "mock preview iteration",
+            });
+            // Keep mock agent work visible long enough for a human or an E2E
+            // test to pause it, while staying far below the 20s wait budget.
+            await delay(900);
+            agentEvent({
+              type: "agent.delta",
+              agentInstanceId: instanceId,
+              activationId,
+              delta: label + " is working on: " + String(node.params.instruction ?? "the assigned task"),
+            });
+            await delay(700);
+            while (!cancelled && (pausedRuns.has(runId) || pausedAgents.has(instanceId))) {
+              await delay(80);
+            }
+            const usage = {
+              iterations: 1,
+              modelCalls: 1,
+              toolCalls: 0,
+              promptTokens: 48,
+              completionTokens: 24,
+              elapsedMs: Date.now() - instance.updatedAtMs + 460,
+            };
+            const toolName = instance.config.toolset[0];
+            if (toolName) {
+              usage.toolCalls = 1;
+              const toolCallId = "call-" + instanceId + "-" + activationIndex;
+              agentEvent({
+                type: "agent.tool.started",
+                agentInstanceId: instanceId,
+                activationId,
+                toolCallId,
+                toolName,
+                arguments: JSON.stringify({ path: "mock-preview.txt" }),
+              });
+              await delay(120);
+              agentEvent({
+                type: "agent.tool.finished",
+                agentInstanceId: instanceId,
+                activationId,
+                toolCallId,
+                toolName,
+                ok: true,
+                durationMs: 120,
+                error: null,
+                result: JSON.stringify({ ok: true, path: "mock-preview.txt" }),
+              });
+            }
+            // A pause requested while the model/tool step was in flight takes
+            // effect before the result is committed, matching the runner rule.
+            while (!cancelled && (pausedRuns.has(runId) || pausedAgents.has(instanceId))) {
+              await delay(80);
+            }
+            if (cancelled) {
+              const activation = instance.activations[activationIndex - 1];
+              activation.state = "cancelled";
+              activation.finishedAtMs = Date.now();
+              activation.error = "run cancelled";
+              instance.state = "cancelled";
+              instance.updatedAtMs = Date.now();
+              agentEvent({
+                type: "agent.state",
+                agentInstanceId: instanceId,
+                activationId,
+                state: "cancelled",
+                reason: "run cancelled",
+              });
+              emitRun({
+                type: "node.cancelled",
+                runId,
+                nodeId: node.id,
+                kind: node.kind,
+                label,
+                activation: activationIndex,
+              });
+              break;
+            }
+            const userResponse = label + " completed the mock preview task.";
+            const message = {
+              schemaVersion: "1.0",
+              messageId: "msg-" + runId + "-" + node.id + "-" + activationIndex,
+              taskId: "task-" + runId + "-" + node.id,
+              sender: instanceId,
+              recipient: "broadcast",
+              type: "task.result",
+              status: "queued",
+              payload: {
+                summary: userResponse,
+                status: "completed",
+                data: { value: userResponse },
+              },
+              artifactRefs: [],
+              correlationId: null,
+              idempotencyKey: null,
+              createdAtMs: Date.now(),
+            };
+            session.messages.push(message);
+            instance.usage = usage;
+            instance.state = "completed";
+            instance.currentActivation = null;
+            instance.updatedAtMs = Date.now();
+            const activation = instance.activations[activationIndex - 1];
+            activation.state = "completed";
+            activation.finishedAtMs = Date.now();
+            activation.iterations = 1;
+            activation.userResponse = userResponse;
+            activation.agentMessageId = message.messageId;
+            agentEvent({ type: "agent.message", agentInstanceId: instanceId, message });
+            agentEvent({ type: "agent.usage", agentInstanceId: instanceId, usage });
+            agentEvent({
+              type: "agent.activation.finished",
+              agentInstanceId: instanceId,
+              activationId,
+              state: "completed",
+              usage,
+              userResponse,
+              messageId: message.messageId,
+              error: null,
+            });
+            emitRun({
+              type: "node.finished",
+              runId,
+              nodeId: node.id,
+              kind: node.kind,
+              label,
+              outputs: {
+                agentMessage: message,
+                userResponse,
+                artifacts: [],
+                executionState: { state: "completed" },
+                completed: true,
+              },
+              durationMs: 460,
+              activation: activationIndex,
+            });
+          }
+          session.state = cancelled ? "cancelled" : "completed";
+          session.updatedAtMs = Date.now();
+          persistSessions();
+          stopHandlers.delete(runId);
+          if (!finished) finish(cancelled ? "cancelled" : "completed", null);
           return;
         }
         for (const node of workflow.nodes) {
@@ -1087,6 +1491,115 @@ export function createMockTransport(): Transport {
       if (!stop) return false;
       stop();
       return true;
+    },
+
+    async pauseWorkflow(runId) {
+      const session = sessions.get(runId);
+      if (!session) return false;
+      pausedRuns.add(runId);
+      session.state = "paused";
+      session.updatedAtMs = Date.now();
+      persistSessions();
+      return true;
+    },
+
+    async resumeWorkflow(runId) {
+      const session = sessions.get(runId);
+      if (!session) return false;
+      pausedRuns.delete(runId);
+      session.state = "running";
+      session.updatedAtMs = Date.now();
+      persistSessions();
+      return true;
+    },
+
+    async pauseAgent(runId, agentInstanceId) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      pausedAgents.add(agentInstanceId);
+      instance.state = "paused";
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+    },
+
+    async resumeAgent(runId, agentInstanceId) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      pausedAgents.delete(agentInstanceId);
+      instance.state = "running";
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+    },
+
+    async cancelAgent(runId, agentInstanceId) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      pausedAgents.delete(agentInstanceId);
+      instance.state = "cancelled";
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+    },
+
+    async sendAgentDirective(runId, agentInstanceId, text) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      const trimmed = text.trim();
+      if (!trimmed) throw new Error("directive must not be empty");
+      instance.pendingDirectives.push(trimmed);
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+    },
+
+    async previewAgentConfig(runId, agentInstanceId, config) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      return mockConfigDiff(instance.config, config);
+    },
+
+    async applyAgentConfig(runId, agentInstanceId, config, expectedRevision) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      if (instance.config.revision !== expectedRevision) {
+        throw new Error(
+          "config revision " + expectedRevision + " is stale; current revision is " + instance.config.revision,
+        );
+      }
+      const before = instance.config;
+      const after = { ...config, revision: before.revision + 1 };
+      const revision: AgentConfigRevision = {
+        revision: after.revision,
+        status: "applied",
+        appliedAtMs: Date.now(),
+        before,
+        after,
+        changes: mockConfigDiff(before, after),
+        detail: "applied in the browser preview",
+      };
+      for (const previous of instance.configRevisions) {
+        if (previous.status === "pending") previous.status = "superseded";
+      }
+      instance.configRevisions.push(revision);
+      instance.config = after;
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+      return revision;
+    },
+
+    async rejectAgentConfig(runId, agentInstanceId, revision, detail) {
+      const instance = sessions.get(runId)?.agents[agentInstanceId];
+      if (!instance) throw new Error("agent " + agentInstanceId + " is not part of run " + runId);
+      const target = instance.configRevisions.find((entry) => entry.revision === revision);
+      if (!target) throw new Error("config revision " + revision + " was not found");
+      target.status = "rejected";
+      target.detail = detail;
+      instance.updatedAtMs = Date.now();
+      persistSessions();
+    },
+
+    async taskSession(runId) {
+      const session = sessions.get(runId);
+      if (!session) return null;
+      return JSON.parse(JSON.stringify(session)) as TaskSession;
     },
 
     async respondInteraction(requestId, approved) {

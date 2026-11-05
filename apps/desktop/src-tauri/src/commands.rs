@@ -7,7 +7,7 @@ use lingxi_spec::{NodeSpec, ValidationReport, Workflow};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::redact::redact_event;
+use crate::redact::{redact_event, redact_task_session};
 use crate::runs::{now_ms, RunDatabase, RunDetail, RunRecord};
 use crate::store::WorkflowSummary;
 use crate::templates::{TemplateBundle, TemplateSummary};
@@ -51,6 +51,37 @@ impl EventSink for TauriSink {
             }
             // Stop producing new work instead of pretending durable state.
             self.control.cancel();
+        }
+        // Agent state is checkpointed separately from the event log. Doing it
+        // after the event append keeps the last_seq and session snapshot in the
+        // same causal order; a failed checkpoint stops the run rather than
+        // silently losing recoverable agent state. run.finished is included so
+        // messages published after the last agent event (for example the final
+        // task.result of the last agent) reach the durable session snapshot.
+        if matches!(
+            &event,
+            RunEvent::Agent { .. } | RunEvent::RunFinished { .. }
+        ) {
+            if let Some(bus) = self.control.agents() {
+                let mut session = bus.session();
+                redact_task_session(&mut session);
+                if let Err(error) = self.db.save_task_session(&session) {
+                    if !self.failed.swap(true, Ordering::SeqCst) {
+                        eprintln!(
+                            "task session persistence failed for {}: {error}",
+                            event.run_id()
+                        );
+                        let _ = self.app.emit(
+                            PERSISTENCE_ERROR,
+                            PersistenceError {
+                                run_id: event.run_id().to_string(),
+                                message: error,
+                            },
+                        );
+                    }
+                    self.control.cancel();
+                }
+            }
         }
         let _ = self.app.emit(RUN_EVENT, &event);
     }
@@ -172,6 +203,148 @@ pub fn stop_workflow(run_id: String, state: State<'_, AppState>) -> bool {
         },
         Err(_) => false,
     }
+}
+
+fn run_control(state: &AppState, run_id: &str) -> Result<Arc<RunControl>, String> {
+    state
+        .runs
+        .lock()
+        .map_err(|_| "run registry is poisoned".to_string())?
+        .get(run_id)
+        .cloned()
+        .ok_or_else(|| format!("run {run_id} is not active"))
+}
+
+fn run_bus(
+    state: &AppState,
+    run_id: &str,
+) -> Result<Arc<lingxi_runtime::agent_bus::AgentBus>, String> {
+    run_control(state, run_id)?
+        .agents()
+        .ok_or_else(|| format!("run {run_id} has no agent task session"))
+}
+
+fn checkpoint_session(
+    state: &AppState,
+    bus: &lingxi_runtime::agent_bus::AgentBus,
+) -> Result<(), String> {
+    let mut session = bus.session();
+    redact_task_session(&mut session);
+    state.db.save_task_session(&session)
+}
+
+#[tauri::command]
+pub fn pause_workflow(run_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let control = run_control(&state, &run_id)?;
+    control.pause();
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn resume_workflow(run_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+    let control = run_control(&state, &run_id)?;
+    control.resume();
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn pause_agent(
+    run_id: String,
+    agent_instance_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bus = run_bus(&state, &run_id)?;
+    bus.pause_agent(&agent_instance_id).map_err(node_error)?;
+    checkpoint_session(&state, &bus)
+}
+
+#[tauri::command]
+pub fn resume_agent(
+    run_id: String,
+    agent_instance_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bus = run_bus(&state, &run_id)?;
+    bus.resume_agent(&agent_instance_id).map_err(node_error)?;
+    checkpoint_session(&state, &bus)
+}
+
+#[tauri::command]
+pub fn cancel_agent(
+    run_id: String,
+    agent_instance_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bus = run_bus(&state, &run_id)?;
+    bus.cancel_agent(&agent_instance_id).map_err(node_error)?;
+    checkpoint_session(&state, &bus)
+}
+
+#[tauri::command]
+pub fn send_agent_directive(
+    run_id: String,
+    agent_instance_id: String,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bus = run_bus(&state, &run_id)?;
+    bus.intervention(&agent_instance_id, &text)
+        .map_err(node_error)?;
+    checkpoint_session(&state, &bus)
+}
+
+#[tauri::command]
+pub fn preview_agent_config(
+    run_id: String,
+    agent_instance_id: String,
+    config: lingxi_runtime::agent_protocol::AgentConfigSnapshot,
+    state: State<'_, AppState>,
+) -> Result<Vec<lingxi_runtime::agent_protocol::ConfigChange>, String> {
+    config.validate().map_err(node_error)?;
+    let bus = run_bus(&state, &run_id)?;
+    let session = bus.session();
+    let agent = session
+        .agents
+        .get(&agent_instance_id)
+        .ok_or_else(|| format!("agent {agent_instance_id} is not registered"))?;
+    Ok(agent.config.diff(&config))
+}
+
+#[tauri::command]
+pub fn apply_agent_config(
+    run_id: String,
+    agent_instance_id: String,
+    config: lingxi_runtime::agent_protocol::AgentConfigSnapshot,
+    expected_revision: u64,
+    state: State<'_, AppState>,
+) -> Result<lingxi_runtime::agent_protocol::AgentConfigRevision, String> {
+    let bus = run_bus(&state, &run_id)?;
+    let revision = bus
+        .apply_config(&agent_instance_id, config, expected_revision)
+        .map_err(node_error)?;
+    checkpoint_session(&state, &bus)?;
+    Ok(revision)
+}
+
+#[tauri::command]
+pub fn reject_agent_config(
+    run_id: String,
+    agent_instance_id: String,
+    revision: u64,
+    detail: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let bus = run_bus(&state, &run_id)?;
+    bus.reject_config(&agent_instance_id, revision, &detail);
+    checkpoint_session(&state, &bus)
+}
+
+#[tauri::command]
+pub fn task_session(
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<Option<lingxi_runtime::agent_protocol::TaskSession>, String> {
+    state.db.task_session(&run_id)
 }
 
 #[tauri::command]

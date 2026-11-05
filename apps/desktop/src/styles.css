@@ -209,12 +209,21 @@ textarea {
   min-width: 0;
 }
 
-.toolbar__left,
+.toolbar__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
 .toolbar__right {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 0 0 auto;
 }
 
 .toolbar__name {
@@ -487,6 +496,27 @@ textarea {
 
 .canvas--running {
   box-shadow: inset 0 0 0 1px rgba(232, 161, 58, 0.28);
+}
+
+.canvas__lock {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 7;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border: 1px solid rgba(232, 161, 58, 0.38);
+  border-radius: 999px;
+  background: rgba(13, 17, 22, 0.9);
+  color: #e8a13a;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+
+.node--locked .node__params {
+  opacity: 0.72;
 }
 
 .canvas__empty {
@@ -1424,6 +1454,13 @@ textarea {
   }
 }
 
+@media (max-width: 1500px) {
+  .toolbar__counts,
+  .toolbar__badge {
+    display: none;
+  }
+}
+
 @media (max-width: 900px) {
   .app {
     grid-template-columns: 208px minmax(0, 1fr);
@@ -1902,3 +1939,31 @@ textarea {
 .dt-audio { border-color: #3fbfa7; }
 .dt-video { border-color: #a986e8; }
 .dt-document { border-color: #5aa9e6; }
+
+/* A crowded toolbar (selection actions + Agent controls) must never clip the
+   workflow name or the canvas/workbench switch. Below 1400px it wraps to a
+   second row instead of letting the right-hand action group cover the left. */
+@media (max-width: 1400px) {
+  .app {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    min-height: 54px;
+    padding: 6px 12px;
+  }
+
+  .toolbar__left {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    overflow: visible;
+  }
+
+  .toolbar__right {
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+}

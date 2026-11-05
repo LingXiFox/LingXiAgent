@@ -79,6 +79,7 @@ impl Engine {
                 assets: Arc::new(crate::assets::AssetStore::new(
                     std::env::temp_dir().join("lingxi-assets"),
                 )),
+                workspace: None,
             },
         }
     }
@@ -211,6 +212,11 @@ impl Engine {
         for index in order {
             let node = &workflow.nodes[index];
             if control.is_cancelled() {
+                cancelled = true;
+                break;
+            }
+            // Workflow-level pause stops the scheduler at a node boundary.
+            if !control.wait_if_paused().await {
                 cancelled = true;
                 break;
             }

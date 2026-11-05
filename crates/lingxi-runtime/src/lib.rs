@@ -3,6 +3,10 @@
 //! supplied through the registry, so plugins and built-ins share one path.
 
 pub mod agent;
+pub mod agent_bus;
+pub mod agent_node;
+pub mod agent_protocol;
+pub mod agent_runner;
 pub mod agent_template;
 pub mod anthropic;
 pub mod assets;
@@ -18,6 +22,8 @@ pub mod engine;
 pub mod error;
 pub mod event;
 pub mod interaction;
+pub mod lsp;
+pub mod lsp_node;
 pub mod mcp;
 pub mod media;
 pub mod permissions;
@@ -27,6 +33,8 @@ pub mod responses;
 pub mod services;
 pub mod skills;
 pub mod tools;
+pub mod workspace;
+pub mod workspace_tools;
 
 pub use assets::AssetStore;
 pub use capabilities::{ModelCapabilities, ReasoningLevel, Support};
@@ -52,3 +60,4 @@ pub use registry::{NodeExecutor, NodeOutput, NodeRegistry};
 pub use services::{RunServices, ServiceConfig, UsageRecord};
 pub use skills::{SkillDocument, SkillLibrary, SkillSummary};
 pub use tools::{BuiltinTools, ToolDefinition, ToolExecutor, ToolResult};
+pub use workspace::{FileEntry, FileSnapshot, Workspace, ABSENT_VERSION};

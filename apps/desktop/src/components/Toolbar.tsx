@@ -10,7 +10,12 @@ interface ToolbarProps {
   selectionCount: number;
   canUngroup: boolean;
   canTemplate: boolean;
+  canOpenAgent: boolean;
+  view: "canvas" | "workbench";
   onNameChange: (name: string) => void;
+  onViewChange: (view: "canvas" | "workbench") => void;
+  onOpenAgent: () => void;
+  onCompany: () => void;
   onNew: () => void;
   onDemo: () => void;
   onAgent: () => void;
@@ -37,7 +42,12 @@ export function Toolbar({
   selectionCount,
   canUngroup,
   canTemplate,
+  canOpenAgent,
+  view,
   onNameChange,
+  onViewChange,
+  onOpenAgent,
+  onCompany,
   onNew,
   onDemo,
   onAgent,
@@ -76,6 +86,28 @@ export function Toolbar({
           {nodeCount} 节点 · {edgeCount} 连线
         </span>
         {preview ? <span className="toolbar__badge">浏览器预览</span> : null}
+        <span className="toolbar__viewswitch" role="tablist" aria-label="顶层视图">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "canvas"}
+            className={"toolbar__view" + (view === "canvas" ? " is-active" : "")}
+            data-testid="view-canvas"
+            onClick={() => onViewChange("canvas")}
+          >
+            节点编辑器
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "workbench"}
+            className={"toolbar__view" + (view === "workbench" ? " is-active" : "")}
+            data-testid="view-workbench"
+            onClick={() => onViewChange("workbench")}
+          >
+            Agent 工作台
+          </button>
+        </span>
       </div>
 
       <div className="toolbar__right">
@@ -121,6 +153,17 @@ export function Toolbar({
             >
               存为模板
             </button>
+            {canOpenAgent ? (
+              <button
+                type="button"
+                className="btn btn--ghost btn--compact"
+                data-testid="toolbar-open-agent"
+                onClick={onOpenAgent}
+                title="打开该 Agent 的运行详情"
+              >
+                查看 Agent 执行
+              </button>
+            ) : null}
             <span className="toolbar__divider" />
           </span>
         ) : null}
@@ -129,6 +172,9 @@ export function Toolbar({
         </button>
         <button type="button" className="btn btn--ghost" data-testid="toolbar-demo" onClick={onDemo} disabled={running}>
           示例
+        </button>
+        <button type="button" className="btn btn--ghost" data-testid="toolbar-company" onClick={onCompany} disabled={running || busy}>
+          团队示例
         </button>
         <button type="button" className="btn btn--ghost" data-testid="toolbar-agent" onClick={onAgent} disabled={running || busy}>
           Agent

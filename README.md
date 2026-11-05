@@ -1,13 +1,13 @@
 # 泠溪 · LingXiAgent 3.0
 
-跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连；Phase 1.2.1 补上单实例保护与实时/持久化事件的统一脱敏；Phase 1.3 加入可展开、可编辑、可复用、由 Rust 分层执行的组合节点与本地模板；Phase 1.4 完成首个真实文本 Agent 闭环：Provider、Model、Prompt、Context、Tool、MCP、Skills、权限审批与端到端测试；Phase 1.5 加入中文可折叠节点库、OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立思考等级、模型能力面板，以及图片/音频/视频/文档的统一资产链路。工作流是可序列化 JSON，执行全部在 Rust 侧。
+跨平台、节点式 Agent 工作流平台。Phase 0 建立 Rust 运行时 + Tauri 2 桌面壳 + React Flow 画布；Phase 1.1 加入条件分支与可预算、可取消的受控循环；Phase 1.1.1 用带避障的自定义路由替换默认边渲染；Phase 1.2 加入事件序号、SQLite 运行历史与刷新重连；Phase 1.2.1 补上单实例保护与实时/持久化事件的统一脱敏；Phase 1.3 加入可展开、可编辑、可复用、由 Rust 分层执行的组合节点与本地模板；Phase 1.4 完成首个真实文本 Agent 闭环：Provider、Model、Prompt、Context、Tool、MCP、Skills、权限审批与端到端测试；Phase 1.5 加入中文可折叠节点库、OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立思考等级、模型能力面板，以及图片/音频/视频/文档的统一资产链路；Phase 1.6 加入一等 `core.agent` 节点、独立 AgentRunner、版本化协作协议与消息总线、双视图 Agent 工作台、安全暂停/配置修订/纠偏指令，以及 SQLite 任务会话恢复。工作流是可序列化 JSON，执行全部在 Rust 侧。
 
 ## 当前状态
 
 - 分支：`rewrite/3.0`（从 `rewrite/2.0` 的 `c886ba7` 起）
-- 阶段：Phase 1.5 — 多协议、多模态与中文可折叠节点库
-- 验收：macOS 真实 Tauri 通过（原生 WDIO 7 项）；Windows / Linux 的 CI 编译、clippy、单测通过（run 41846253370），运行行为**未验收**
-- 测试：`cargo test --workspace` 121 passed；Playwright 19 passed（5 项回归 + 14 项本阶段）；原生 Tauri WDIO 7 passed；前端单测 6 + 13 + 8 passed
+- 阶段：Phase 1.6 — 一等 Agent 节点、双视图工作台与运行期干预
+- 验收：macOS 真实 Tauri 通过（原生 WDIO 8 项）；Windows / Linux 的 CI 编译、clippy、单测结果见最终 CI，运行行为**未验收**
+- 测试：`cargo test --workspace` 146 passed；Playwright 25 passed（5 项回归 + 14 Phase 1.5 + 6 Phase 1.6）；原生 Tauri WDIO 8 passed；前端单测 6 + 13 + 8 passed
 
 ## 技术栈
 
@@ -26,7 +26,7 @@ crates/lingxi-spec/      工作流模型、节点规格、校验（纯数据，�
 crates/lingxi-runtime/   执行引擎、控制调度器、内置节点、事件、能力策略、交互总线
 apps/desktop/            React UI + Tauri 壳
   src/                   画布、节点库、日志、对话框、transport
-  src-tauri/             27 个 command、工作流存储、SQLite 运行库、事件桥、能力策略、资产导入
+  src-tauri/             37 个 command、工作流存储、SQLite 运行/任务会话库、事件桥、能力策略、资产导入
 Docs/phase-0/            基础架构、节点规格、接口、测试、已知问题
 Docs/phase-1.1/          控制流设计、测试与验收记录
 Docs/phase-1.1.1/        智能连线设计、测试与验收记录
@@ -35,6 +35,7 @@ Docs/phase-1.2.1/        单实例保护与脱敏一致性设计、测试与验�
 Docs/phase-1.3/          组合节点、子图协议、分层执行与模板设计/验收
 Docs/phase-1.4/          文本 Agent 闭环、Provider/工具/MCP/Skills 设计与验收
 Docs/phase-1.5/          多协议、多模态、资产层、中文节点库设计与验收
+Docs/phase-1.6/          Agent 节点、Runner、协议/总线、工作台、干预与恢复设计与验收
 Docs/reference/2.0/      2.0 历史文档（只读参考）
 ```
 
@@ -79,7 +80,7 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - 应用异常退出后，未完成运行标记为 `interrupted`，不伪装完成、不自动重跑；支持运行列表、详情与历史事件
 - 单实例保护：同一数据目录只允许一个桌面进程，第二个实例在打开运行库前安静退出，不破坏第一个实例的运行记录
 - 实时与持久化事件共用同一脱敏函数，顶层与嵌套输出一致；重复脱敏幂等；数据库写入失败显式告警并取消运行
-- 27 个可执行节点 + Composite：基础节点、Agent 节点（Provider/Model/Prompt/Context/Tool Set/Tool Dispatch/MCP/Skill/Reasoning）、三个协议 Provider（OpenAI Chat、OpenAI Responses、Anthropic Messages）与图片/音频/视频/文档输入节点
+- 29 个可执行节点：基础节点、旧 ReAct Agent 节点（Provider/Model/Prompt/Context/Tool Set/Tool Dispatch/MCP/Skill/Reasoning）、一等 `core.agent`、`core.lsp_server`、三个协议 Provider（OpenAI Chat、OpenAI Responses、Anthropic Messages）与图片/音频/视频/文档输入节点
 - 中文可折叠节点库：10 个分组、图标与计数、全部展开/收起、中英文与 kind 搜索、折叠状态持久化、44px rail；中文标签只作用于展示层，稳定 kind/端口/参数名不变
 - 模型能力与思考等级：`ModelCapabilities` 区分 native/preprocessed/unsupported/unknown；独立 `core.reasoning` 节点覆盖 off/auto/low/medium/high/xhigh，并按三条协议分别映射；不支持时运行前拒绝
 - 多模态资产：图片/音频/视频/文档由 Rust 读取、缩放/抽帧/抽取；`AssetStore` 内容寻址去重，工作流只保存 `AssetRef`，不写 base64 或绝对路径；视频默认抽帧并标时间戳，音频 native/transcribed 显式区分
@@ -93,6 +94,13 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - MCP：真实 stdio 与 Streamable HTTP JSON-RPC 客户端，工具名 `mcp__<namespace>__<tool>`；Skills：发现 `SKILL.md` 并注入系统上下文，不执行 Skill 脚本
 - 权限与凭据：`DeclaredCapabilityPolicy` 拒绝未声明能力；网络/进程/文件/工具目标在运行时逐目标审批并缓存到本次运行；`env:`/`keyring:` 凭据引用，明文不进入工作流、日志或 SQLite
 - 运行可靠性：流中断、MCP 崩溃、审批拒绝、取消、预算耗尽均有稳定错误码和回归测试；WebView 刷新后从 `active_run` 恢复事件流
+- 一等 `core.agent`：Capabilities / Instructions / Collaboration / Control 四组端口，独立 AgentRunner 负责多轮模型、工具、上下文、完成判定、预算、审批与消息；Agent 节点内部循环不归 Scheduler
+- 版本化协作协议：TaskEnvelope、AgentMessageEnvelope、ArtifactRef、AgentExecutionState；所有 Agent 消息经 Agent Message Bus 校验、去重、排序、持久化并受队列上限约束
+- 双视图工作台：总览 + 每个 Agent 标签，展示当前任务、激活历史、模型增量、工具调用、消息、成本、审批与配置版本；画布与工作台双向定位，切换视图不重启运行
+- 运行期干预：工作流/Agent 暂停、继续、取消，安全点后进入 `paused`；配置修订先预览再显式应用，过期 revision 拒绝；纠偏指令经总线在最近安全点注入
+- 任务会话持久化：SQLite `user_version = 2` 的 `task_sessions` 保存 Agent 实例、激活、配置版本、消息与审批；刷新不影响 Rust 执行，崩溃后标记 `interrupted` 并要求人工核对工具副作用
+- 受控工作区与 LSP：文件 `read(version) → write(expectedVersion)`，过期冲突拒绝；stdio LSP 真实 diagnostics/documentSymbol
+- 公司示例：PM → Coder → Tester，结构化 PRD handoff、测试失败返工、同一 Coder 实例二次激活、版本化文件交付
 
 ## 文档
 
@@ -114,6 +122,8 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - [Phase 1.4 测试与验收](Docs/phase-1.4/02-testing-and-acceptance.md)
 - [Phase 1.5 多协议与多模态设计](Docs/phase-1.5/01-design.md)
 - [Phase 1.5 测试与验收](Docs/phase-1.5/02-testing-and-acceptance.md)
+- [Phase 1.6 Agent 节点与工作台设计](Docs/phase-1.6/01-design.md)
+- [Phase 1.6 测试与验收](Docs/phase-1.6/02-testing-and-acceptance.md)
 - [Phase 0 测试与验收](Docs/phase-0/04-testing-and-acceptance.md)
 - [Phase 0 已知问题](Docs/phase-0/05-known-issues.md)
 

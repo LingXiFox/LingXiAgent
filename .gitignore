@@ -44,6 +44,7 @@ target/
 
 # LingXiAgent 3.0 — frontend dependencies
 node_modules/
+__pycache__/
 
 # Tauri generated bundle staging
 apps/desktop/src-tauri/gen/

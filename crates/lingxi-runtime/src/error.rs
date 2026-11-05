@@ -61,6 +61,29 @@ pub mod error_codes {
     pub const MEDIA_PROCESSING: &str = "media.processing_failed";
     pub const MEDIA_TOOL_MISSING: &str = "media.tool_missing";
     pub const PROVIDER_PERMISSION_REQUIRED: &str = "provider.permission_required";
+    pub const AGENT_INVALID_CONFIG: &str = "agent.invalid_config";
+    pub const AGENT_INVALID_BUDGET: &str = "agent.invalid_budget";
+    pub const AGENT_INVALID_MESSAGE: &str = "agent.invalid_message";
+    pub const AGENT_UNSUPPORTED_PROTOCOL: &str = "agent.unsupported_protocol";
+    pub const AGENT_INVALID_ARTIFACT: &str = "agent.invalid_artifact";
+    pub const AGENT_INVALID_RESULT: &str = "agent.invalid_result";
+    pub const AGENT_MESSAGE_TOO_LARGE: &str = "agent.message_too_large";
+    pub const AGENT_ITERATION_BUDGET: &str = "agent.iteration_budget";
+    pub const AGENT_TOOL_BUDGET: &str = "agent.tool_budget";
+    pub const AGENT_TOKEN_BUDGET: &str = "agent.token_budget";
+    pub const AGENT_TIMEOUT: &str = "agent.timeout";
+    pub const AGENT_PAUSED: &str = "agent.paused";
+    pub const BUS_DUPLICATE: &str = "bus.duplicate";
+    pub const BUS_UNKNOWN_RECIPIENT: &str = "bus.unknown_recipient";
+    pub const BUS_QUEUE_FULL: &str = "bus.queue_full";
+    pub const BUS_FORBIDDEN: &str = "bus.forbidden";
+    pub const WORKSPACE_PATH_ESCAPE: &str = "workspace.path_escape";
+    pub const WORKSPACE_NOT_FOUND: &str = "workspace.not_found";
+    pub const WORKSPACE_VERSION_CONFLICT: &str = "workspace.version_conflict";
+    pub const WORKSPACE_IO: &str = "workspace.io";
+    pub const LSP_NOT_FOUND: &str = "lsp.not_found";
+    pub const LSP_PROTOCOL: &str = "lsp.protocol";
+    pub const LSP_TIMEOUT: &str = "lsp.timeout";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

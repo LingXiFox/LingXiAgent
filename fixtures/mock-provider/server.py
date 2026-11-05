@@ -62,6 +62,27 @@ def has_tool_result(messages):
     return any(message.get("role") == "tool" for message in messages)
 
 
+def last_tool_result(messages):
+    """Return (name, parsed ToolResult payload) for the latest tool message."""
+    for message in reversed(messages):
+        if message.get("role") != "tool":
+            continue
+        try:
+            payload = json.loads(message.get("content", "{}"))
+        except (ValueError, TypeError):
+            return None, None
+        return payload.get("name"), payload
+    return None, None
+
+
+def message_text(messages):
+    parts = []
+    for message in messages:
+        if message.get("role") in ("system", "user", "tool"):
+            parts.append(str(message.get("content", "")))
+    return "\n".join(parts)
+
+
 def responses_output_text(value):
     output = []
     if value:
@@ -286,7 +307,7 @@ class Handler(BaseHTTPRequestHandler):
         if model == "mock-status-500":
             self.send_json(500, {"error": {"message": "server exploded"}})
             return True
-        if model == "mock-slow":
+        if model in ("mock-slow", "mock-agent-slow", "mock-agent-slow-tool"):
             time.sleep(3)
         return False
 
@@ -347,6 +368,203 @@ class Handler(BaseHTTPRequestHandler):
         elif model == "mock-always-tool":
             calls = [tool_call("calculator", {"expression": "1 + 1"})]
             text = ""
+        elif model == "mock-agent-slow-tool":
+            if has_tool_result(messages):
+                calls = [
+                    tool_call(
+                        "submit_result",
+                        {
+                            "status": "completed",
+                            "agentMessage": {"summary": "slow tool agent"},
+                            "userResponse": "Slow tool agent completed.",
+                            "artifacts": [],
+                        },
+                    )
+                ]
+                text = ""
+            else:
+                calls = [tool_call("calculator", {"expression": "6 * 7"})]
+                text = ""
+        elif model in ("mock-agent", "mock-agent-slow", "mock-agent-tool"):
+            # First-class AgentRunner behavior: submit a structured result through
+            # the submit_result tool. mock-agent-tool exercises a real tool first.
+            if model == "mock-agent-tool" and not has_tool_result(messages):
+                calls = [tool_call("calculator", {"expression": "128 * 256"})]
+                text = ""
+            else:
+                answer = next(
+                    (m.get("content") for m in messages if m.get("role") == "tool"),
+                    "none",
+                )
+                if model == "mock-agent-tool":
+                    try:
+                        answer = json.loads(str(answer))["result"]["value"]
+                    except (ValueError, KeyError, TypeError):
+                        pass
+                calls = [
+                    tool_call(
+                        "submit_result",
+                        {
+                            "status": "completed",
+                            "agentMessage": {"summary": "agent completed", "value": str(answer)},
+                            "userResponse": "Agent completed the task.",
+                            "artifacts": [],
+                        },
+                    )
+                ]
+                text = ""
+        elif model == "mock-agent-lsp":
+            if has_tool_result(messages):
+                calls = [
+                    tool_call(
+                        "submit_result",
+                        {
+                            "status": "completed",
+                            "agentMessage": {"summary": "lsp checked", "path": "src/demo.py"},
+                            "userResponse": "Language-server checks completed.",
+                            "artifacts": [],
+                        },
+                    )
+                ]
+            else:
+                calls = [tool_call("lsp_diagnostics", {"path": "src/demo.py"})]
+            text = ""
+        elif model == "mock-pm":
+            calls = [
+                tool_call(
+                    "submit_result",
+                    {
+                        "status": "completed",
+                        "agentMessage": {
+                            "summary": "PRD ready",
+                            "requirements": ["feature flag", "unit test"],
+                        },
+                        "userResponse": "PRD: implement the feature flag with a unit test.",
+                        "artifacts": [],
+                    },
+                )
+            ]
+            text = ""
+        elif model == "mock-coder":
+            tool_name, payload = last_tool_result(messages)
+            path = "company-demo/feature.txt"
+            if tool_name == "write_file":
+                calls = [
+                    tool_call(
+                        "submit_result",
+                        {
+                            "status": "completed",
+                            "agentMessage": {
+                                "summary": "implementation delivered",
+                                "path": path,
+                                "revision": "v2"
+                                if "tests failed" in message_text(messages).lower()
+                                or "v2" in message_text(messages)
+                                else "v1",
+                            },
+                            "userResponse": "Implementation delivered for review.",
+                            "artifacts": [],
+                        },
+                    )
+                ]
+            elif tool_name == "read_file":
+                snapshot = (payload or {}).get("result") or {}
+                calls = [
+                    tool_call(
+                        "write_file",
+                        {
+                            "path": path,
+                            "content": "v2",
+                            "expectedVersion": snapshot.get("version", "absent"),
+                        },
+                    )
+                ]
+            elif "tests failed" in message_text(messages).lower():
+                calls = [tool_call("read_file", {"path": path})]
+            else:
+                calls = [
+                    tool_call(
+                        "write_file",
+                        {"path": path, "content": "v1", "expectedVersion": "absent"},
+                    )
+                ]
+            text = ""
+        elif model == "mock-tester":
+            tool_name, payload = last_tool_result(messages)
+            path = "company-demo/feature.txt"
+            if tool_name == "read_file":
+                snapshot = (payload or {}).get("result") or {}
+                content = str(snapshot.get("content", ""))
+                if content.strip() == "v1":
+                    calls = [
+                        tool_call(
+                            "submit_result",
+                            {
+                                "status": "failed",
+                                "agentMessage": {
+                                    "summary": "tests failed",
+                                    "verdict": "fail",
+                                    "reason": "feature is still revision 1",
+                                },
+                                "userResponse": "Tests failed: the feature never changed; send it back for rework.",
+                                "artifacts": [],
+                            },
+                        )
+                    ]
+                else:
+                    calls = [
+                        tool_call(
+                            "submit_result",
+                            {
+                                "status": "completed",
+                                "agentMessage": {"summary": "tests passed", "verdict": "pass"},
+                                "userResponse": "Tests passed; the feature is ready for delivery.",
+                                "artifacts": [],
+                            },
+                        )
+                    ]
+            else:
+                calls = [tool_call("read_file", {"path": path})]
+            text = ""
+        elif model == "mock-agent-invalid":
+            calls = [
+                tool_call(
+                    "submit_result",
+                    {
+                        "status": "completed",
+                        "agentMessage": {"summary": "invalid"},
+                    },
+                )
+            ]
+            text = ""
+        elif model == "mock-agent-blocked":
+            calls = [
+                tool_call(
+                    "submit_result",
+                    {
+                        "status": "blocked",
+                        "agentMessage": {"summary": "needs input"},
+                        "userResponse": "I need more information before continuing.",
+                        "artifacts": [],
+                    },
+                )
+            ]
+            text = ""
+        elif model == "mock-agent-rework":
+            # Test model: return failed verdict the first time and pass once the
+            # user feedback mentions the rework.
+            text = ""
+            calls = [
+                tool_call(
+                    "submit_result",
+                    {
+                        "status": "completed",
+                        "agentMessage": {"summary": "verdict", "verdict": "fail"},
+                        "userResponse": "Tests failed; send it back for rework.",
+                        "artifacts": [],
+                    },
+                )
+            ]
         elif model == "mock-skill":
             skill_loaded = any(
                 message.get("role") == "system"

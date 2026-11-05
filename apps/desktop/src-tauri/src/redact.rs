@@ -5,6 +5,7 @@
 //! Redaction is applied before SQLite writes and before live events reach the
 //! webview, never only in the UI.
 
+use lingxi_runtime::event::AgentEvent;
 use lingxi_runtime::RunEvent;
 use serde_json::Value;
 
@@ -126,6 +127,7 @@ pub fn redact_event(event: &RunEvent) -> RunEvent {
                 *detail = redact_text(detail);
             }
         }
+        RunEvent::Agent { event, .. } => redact_agent_event(event),
     }
     if let Some(scope) = event.scope_mut() {
         for frame in scope {
@@ -133,6 +135,121 @@ pub fn redact_event(event: &RunEvent) -> RunEvent {
         }
     }
     event
+}
+
+/// Agent payloads can contain user prompts, task instructions, tool arguments
+/// and artifact summaries. They cross the same trust boundary as every other
+/// run event, so they pass through the same redaction.
+fn redact_agent_event(event: &mut AgentEvent) {
+    match event {
+        AgentEvent::Registered { label, config, .. } => {
+            *label = redact_text(label);
+            redact_config(config);
+        }
+        AgentEvent::StateChanged { reason, .. } => {
+            if let Some(reason) = reason {
+                *reason = redact_text(reason);
+            }
+        }
+        AgentEvent::ActivationStarted { .. } => {}
+        AgentEvent::ActivationFinished {
+            user_response,
+            error,
+            ..
+        } => {
+            if let Some(response) = user_response {
+                *response = redact_text(response);
+            }
+            if let Some(error) = error {
+                *error = redact_text(error);
+            }
+        }
+        AgentEvent::Message { message, .. } => {
+            redact_json(&mut message.payload);
+        }
+        AgentEvent::Delta { delta, .. } => {
+            *delta = redact_text(delta);
+        }
+        AgentEvent::ToolStarted { arguments, .. } => {
+            *arguments = redact_text(arguments);
+        }
+        AgentEvent::ToolFinished { error, result, .. } => {
+            if let Some(error) = error {
+                *error = redact_text(error);
+            }
+            *result = redact_text(result);
+        }
+        AgentEvent::ConfigChanged { revision, .. } => {
+            if let Some(detail) = &mut revision.detail {
+                *detail = redact_text(detail);
+            }
+            for change in &mut revision.changes {
+                redact_json(&mut change.before);
+                redact_json(&mut change.after);
+            }
+            redact_config(&mut revision.after);
+        }
+        AgentEvent::Directive { text, .. } => {
+            *text = redact_text(text);
+        }
+        AgentEvent::Review { review, .. } => {
+            review.reason = redact_text(&review.reason);
+            redact_json(&mut review.arguments);
+        }
+        AgentEvent::Usage { .. } => {}
+    }
+}
+
+/// Task sessions are persisted for recovery and workbench display. They carry
+/// prompts, tool arguments and model output, so they cross the same redaction
+/// boundary as run events before they reach SQLite.
+pub fn redact_task_session(session: &mut lingxi_runtime::agent_protocol::TaskSession) {
+    session.workflow_name = redact_text(&session.workflow_name);
+    for agent in session.agents.values_mut() {
+        agent.label = redact_text(&agent.label);
+        redact_config(&mut agent.config);
+        for activation in &mut agent.activations {
+            if let Some(response) = &mut activation.user_response {
+                *response = redact_text(response);
+            }
+            if let Some(error) = &mut activation.error {
+                *error = redact_text(error);
+            }
+            if let Some(message) = &mut activation.agent_message_id {
+                *message = redact_text(message);
+            }
+        }
+        for revision in &mut agent.config_revisions {
+            if let Some(detail) = &mut revision.detail {
+                *detail = redact_text(detail);
+            }
+            for change in &mut revision.changes {
+                redact_json(&mut change.before);
+                redact_json(&mut change.after);
+            }
+            redact_config(&mut revision.before);
+            redact_config(&mut revision.after);
+        }
+    }
+    for message in &mut session.messages {
+        redact_json(&mut message.payload);
+        for artifact in &mut message.artifact_refs {
+            artifact.name = redact_text(&artifact.name);
+            if let Some(uri) = &mut artifact.uri {
+                *uri = redact_text(uri);
+            }
+        }
+    }
+    for review in &mut session.pending_reviews {
+        review.reason = redact_text(&review.reason);
+        redact_json(&mut review.arguments);
+    }
+}
+
+fn redact_config(config: &mut lingxi_runtime::agent_protocol::AgentConfigSnapshot) {
+    config.role_prompt = redact_text(&config.role_prompt);
+    config.system_prompt = redact_text(&config.system_prompt);
+    config.model = redact_text(&config.model);
 }
 
 pub fn redact_text(input: &str) -> String {

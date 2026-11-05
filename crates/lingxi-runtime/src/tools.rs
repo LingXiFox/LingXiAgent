@@ -58,6 +58,7 @@ pub trait ToolExecutor: Send + Sync {
 #[derive(Default)]
 pub struct BuiltinTools {
     tools: BTreeMap<String, Box<dyn ToolExecutor>>,
+    workspace: Option<std::sync::Arc<crate::workspace::Workspace>>,
 }
 
 impl BuiltinTools {
@@ -69,19 +70,46 @@ impl BuiltinTools {
         tools
     }
 
+    /// Adds the controlled workspace tools. Without a workspace the agent has
+    /// no filesystem or process access at all.
+    pub fn with_workspace(workspace: std::sync::Arc<crate::workspace::Workspace>) -> Self {
+        let mut tools = Self::new();
+        tools.workspace = Some(workspace);
+        tools
+    }
+
+    pub fn workspace(&self) -> Option<&std::sync::Arc<crate::workspace::Workspace>> {
+        self.workspace.as_ref()
+    }
+
     fn register(&mut self, tool: Box<dyn ToolExecutor>) {
         self.tools.insert(tool.definition().name, tool);
     }
 
     pub fn definitions(&self, names: &[String]) -> Vec<ToolDefinition> {
-        names
-            .iter()
-            .filter_map(|name| self.tools.get(name.trim()).map(|tool| tool.definition()))
-            .collect()
+        let mut definitions = Vec::new();
+        for name in names {
+            let name = name.trim();
+            if let Some(tool) = self.tools.get(name) {
+                definitions.push(tool.definition());
+            } else if self.workspace.is_some() {
+                if let Some(definition) = crate::workspace_tools::definitions()
+                    .into_iter()
+                    .find(|definition| definition.name == name)
+                {
+                    definitions.push(definition);
+                }
+            }
+        }
+        definitions
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
+        let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
+        if self.workspace.is_some() {
+            names.extend(crate::workspace_tools::names());
+        }
+        names
     }
 
     pub async fn execute(
@@ -90,15 +118,23 @@ impl BuiltinTools {
         arguments: Value,
         cancel: &RunControl,
     ) -> Result<Value, NodeError> {
-        let tool = self.tools.get(name).ok_or_else(|| {
-            NodeError::new(
-                error_codes::TOOL_UNKNOWN,
-                format!("tool {name:?} is not available"),
-            )
-        })?;
-        let definition = tool.definition();
-        validate_arguments(&definition.parameters, &arguments)?;
-        tool.execute(arguments, cancel).await
+        if let Some(tool) = self.tools.get(name) {
+            let definition = tool.definition();
+            validate_arguments(&definition.parameters, &arguments)?;
+            return tool.execute(arguments, cancel).await;
+        }
+        if crate::workspace_tools::is_workspace_tool(name) {
+            if let Some(workspace) = &self.workspace {
+                if let Some(definition) = self.definitions(&[name.to_string()]).into_iter().next() {
+                    validate_arguments(&definition.parameters, &arguments)?;
+                }
+                return crate::workspace_tools::execute(workspace, name, arguments, cancel).await;
+            }
+        }
+        Err(NodeError::new(
+            error_codes::TOOL_UNKNOWN,
+            format!("tool {name:?} is not available in this run"),
+        ))
     }
 }
 

@@ -41,6 +41,7 @@ interface CanvasProps {
   onNodeDoubleClick: (nodeId: string) => void;
   onSelectionChange: (nodeIds: string[]) => void;
   onViewportChange: (viewport: Viewport) => void;
+  focus?: { nodeId: string; nonce: number } | null;
 }
 
 export function Canvas({
@@ -57,12 +58,26 @@ export function Canvas({
   onNodeDoubleClick,
   onSelectionChange,
   onViewportChange,
+  focus,
 }: CanvasProps) {
-  const { screenToFlowPosition, setViewport } = useReactFlow();
+  const { screenToFlowPosition, setViewport, getNode, setCenter } = useReactFlow();
   const nodeLookup = useStore((state) => state.nodeLookup);
   const routingIndex = useMemo(
     () => new ObstacleIndex(nodeObstacles(nodeLookup.values())),
     [nodeLookup, nodes],
+  );
+  const displayNodes = useMemo(
+    () =>
+      running
+        ? nodes.map((node) => ({
+            ...node,
+            draggable: false,
+            connectable: false,
+            deletable: false,
+            data: { ...node.data, readOnly: true },
+          }))
+        : nodes,
+    [nodes, running],
   );
 
   // Applying the stored viewport happens only on explicit loads (viewportKey),
@@ -72,6 +87,20 @@ export function Canvas({
     void setViewport({ x: viewport.x, y: viewport.y, zoom: viewport.zoom }, { duration: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewportKey]);
+
+  // Workbench -> canvas locating. Runs after the layer has rendered so the
+  // target node is in the React Flow store; a nonce makes repeated requests work.
+  useEffect(() => {
+    if (!focus) return;
+    const node = getNode(focus.nodeId);
+    if (!node) return;
+    const width = node.measured?.width ?? 260;
+    const height = node.measured?.height ?? 180;
+    void setCenter(node.position.x + width / 2, node.position.y + height / 2, {
+      zoom: 1.05,
+      duration: 260,
+    });
+  }, [focus, getNode, setCenter, nodes.length]);
 
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -96,12 +125,21 @@ export function Canvas({
     <div
       className={"canvas" + (running ? " canvas--running" : "")}
       data-testid="canvas"
-      onDrop={onDrop}
+      onDrop={(event) => {
+        // A run executes an immutable document snapshot; dropping a node here
+        // would change the canvas without changing the active run.
+        if (!running) onDrop(event);
+      }}
       onDragOver={onDragOver}
     >
+      {running ? (
+        <div className="canvas__lock" data-testid="canvas-lock">
+          运行中 · 结构已锁定
+        </div>
+      ) : null}
       <EdgeRoutingProvider index={routingIndex}>
         <ReactFlow
-          nodes={nodes}
+          nodes={displayNodes}
           edges={edges}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
@@ -122,7 +160,11 @@ export function Canvas({
           snapToGrid
           snapGrid={[16, 16]}
           proOptions={{ hideAttribution: true }}
-          deleteKeyCode={["Backspace", "Delete"]}
+          deleteKeyCode={running ? null : ["Backspace", "Delete"]}
+          nodesDraggable={!running}
+          nodesConnectable={!running}
+          edgesReconnectable={!running}
+          edgesFocusable={!running}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#262c35" />
           <Controls showInteractive={false} position="bottom-right" />

@@ -29,6 +29,7 @@ interface ParamFieldProps {
   params: Record<string, unknown>;
   assets: Record<string, AssetRef>;
   allowedValues?: string[];
+  readOnly?: boolean;
   onChange: (nodeId: string, name: string, value: unknown) => void;
   onAssetImported?: (asset: AssetRef) => void;
 }
@@ -56,6 +57,7 @@ function AssetField({
   param,
   value,
   assets,
+  readOnly,
   onChange,
   onAssetImported,
 }: {
@@ -64,6 +66,7 @@ function AssetField({
   param: ParamSpec;
   value: unknown;
   assets: Record<string, AssetRef>;
+  readOnly?: boolean;
   onChange: (nodeId: string, name: string, value: unknown) => void;
   onAssetImported?: (asset: AssetRef) => void;
 }) {
@@ -158,7 +161,7 @@ function AssetField({
           type="button"
           className="field__asset-add nodrag"
           data-testid={"asset-add-" + nodeId}
-          disabled={busy}
+          disabled={busy || readOnly}
           onClick={() => void pick()}
         >
           {busy ? tx("导入中…", "Importing…") : tx("添加文件", "Add file")}
@@ -214,6 +217,7 @@ function AssetField({
                   className="asset__remove nodrag"
                   data-testid={"asset-remove-" + nodeId + "-" + id}
                   title={tx("移除", "Remove")}
+                  disabled={readOnly}
                   onClick={() => onChange(nodeId, param.name, ids.filter((entry) => entry !== id))}
                 >
                   ×
@@ -235,6 +239,7 @@ function ParamField({
   params,
   assets,
   allowedValues,
+  readOnly,
   onChange,
   onAssetImported,
 }: ParamFieldProps) {
@@ -251,6 +256,7 @@ function ParamField({
         param={{ ...param, label }}
         value={value}
         assets={assets}
+        readOnly={readOnly}
         onChange={onChange}
         onAssetImported={onAssetImported}
       />
@@ -265,6 +271,7 @@ function ParamField({
           data-testid={"param-" + nodeId + "-" + param.name}
           type="checkbox"
           className="nodrag"
+          disabled={readOnly}
           checked={Boolean(value)}
           onChange={(event) => onChange(nodeId, param.name, event.target.checked)}
         />
@@ -285,6 +292,7 @@ function ParamField({
           id={inputId}
           data-testid={"param-" + nodeId + "-" + param.name}
           className="field__control nodrag"
+          disabled={readOnly}
           value={String(value ?? "")}
           onChange={(event) => onChange(nodeId, param.name, event.target.value)}
         >
@@ -312,6 +320,7 @@ function ParamField({
           data-testid={"param-" + nodeId + "-" + param.name}
           className="field__control field__control--area nodrag"
           rows={3}
+          disabled={readOnly}
           value={String(value ?? "")}
           onChange={(event) => onChange(nodeId, param.name, event.target.value)}
         />
@@ -328,6 +337,7 @@ function ParamField({
           data-testid={"param-" + nodeId + "-" + param.name}
           type="number"
           className="field__control nodrag"
+          disabled={readOnly}
           value={value === undefined || value === null ? "" : String(value)}
           onChange={(event) => {
             const raw = event.target.value;
@@ -346,6 +356,7 @@ function ParamField({
         data-testid={"param-" + nodeId + "-" + param.name}
         type="text"
         className="field__control nodrag"
+        disabled={readOnly}
         value={String(value ?? "")}
         onChange={(event) => onChange(nodeId, param.name, event.target.value)}
       />
@@ -535,6 +546,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
         "node" +
         (selected ? " node--selected" : "") +
         (enabled ? "" : " node--disabled") +
+        (data.readOnly ? " node--locked" : "") +
         (run ? " node--" + run.state : "")
       }
       data-testid={"node-" + id}
@@ -568,6 +580,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
           type="button"
           className={"node__power nodrag" + (enabled ? " node__power--on" : "")}
           data-testid={"node-toggle-" + id}
+          disabled={data.readOnly}
           title={enabled ? tx("停用节点", "Disable node") : tx("启用节点", "Enable node")}
           onClick={() => data.onToggleEnabled(id)}
         >
@@ -639,6 +652,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
               params={params}
               assets={assets ?? {}}
               allowedValues={param.name === "level" ? reasoningLevels : undefined}
+              readOnly={data.readOnly}
               onChange={data.onParamChange}
               onAssetImported={data.onAssetImported}
             />

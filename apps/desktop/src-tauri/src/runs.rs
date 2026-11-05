@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS run_events (
     PRIMARY KEY (run_id, seq)
 );
 CREATE INDEX IF NOT EXISTS run_events_run_seq ON run_events(run_id, seq);
+
+CREATE TABLE IF NOT EXISTS task_sessions (
+    run_id              TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+    session_id          TEXT NOT NULL,
+    state               TEXT NOT NULL,
+    workflow_revision   INTEGER NOT NULL,
+    session_json        TEXT NOT NULL,
+    updated_at_ms       INTEGER NOT NULL
+);
+PRAGMA user_version = 2;
 "#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,6 +321,135 @@ impl RunDatabase {
         events_locked(&connection, run_id, after_seq)
     }
 
+    /// Persist the whole TaskSession as one versioned document so a restart
+    /// never reconstructs agent state from log lines.
+    pub fn save_task_session(
+        &self,
+        session: &lingxi_runtime::agent_protocol::TaskSession,
+    ) -> Result<(), String> {
+        let payload = serde_json::to_string(session)
+            .map_err(|error| format!("cannot encode task session: {error}"))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "run database is poisoned".to_string())?;
+        connection
+            .execute(
+                "INSERT INTO task_sessions (run_id, session_id, state, workflow_revision, session_json, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                     session_id = excluded.session_id,
+                     state = excluded.state,
+                     workflow_revision = excluded.workflow_revision,
+                     session_json = excluded.session_json,
+                     updated_at_ms = excluded.updated_at_ms",
+                params![
+                    session.run_id,
+                    session.session_id,
+                    session.state,
+                    session.workflow_revision as i64,
+                    payload,
+                    now_ms() as i64,
+                ],
+            )
+            .map_err(|error| format!("cannot save task session: {error}"))?;
+        Ok(())
+    }
+
+    pub fn task_session(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<lingxi_runtime::agent_protocol::TaskSession>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "run database is poisoned".to_string())?;
+        let payload: Option<String> = connection
+            .query_row(
+                "SELECT session_json FROM task_sessions WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("cannot read task session: {error}"))?;
+        payload
+            .map(|value| {
+                serde_json::from_str(&value)
+                    .map_err(|error| format!("stored task session is invalid: {error}"))
+            })
+            .transpose()
+    }
+
+    /// After a crash no agent step can be replayed safely. Mark in-flight work
+    /// interrupted, and require manual review for any activation that had
+    /// already performed a tool call with unknown side effects.
+    pub fn recover_task_sessions(&self) -> Result<usize, String> {
+        let sessions: Vec<String> = {
+            let connection = self
+                .connection
+                .lock()
+                .map_err(|_| "run database is poisoned".to_string())?;
+            let mut statement = connection
+                .prepare("SELECT session_json FROM task_sessions WHERE state NOT IN ('completed', 'failed', 'cancelled')")
+                .map_err(|error| format!("cannot prepare session recovery: {error}"))?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("cannot query stored sessions: {error}"))?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("cannot read stored sessions: {error}"))?
+        };
+        let mut recovered = 0;
+        for payload in sessions {
+            let mut session: lingxi_runtime::agent_protocol::TaskSession =
+                serde_json::from_str(&payload)
+                    .map_err(|error| format!("stored task session is invalid: {error}"))?;
+            let now = now_ms();
+            let mut interrupted = false;
+            for agent in session.agents.values_mut() {
+                if !matches!(
+                    agent.state.as_str(),
+                    "running" | "pausing" | "paused" | "waiting_approval"
+                ) {
+                    continue;
+                }
+                agent.state = "interrupted".to_string();
+                agent.updated_at_ms = now;
+                interrupted = true;
+                for activation in &mut agent.activations {
+                    if activation.state != "running" {
+                        continue;
+                    }
+                    activation.state = "interrupted".to_string();
+                    activation.finished_at_ms = Some(now);
+                    activation.error =
+                        Some("desktop process exited before the activation finished".into());
+                    if agent.usage.tool_calls > 0 {
+                        session.pending_reviews.push(
+                            lingxi_runtime::agent_protocol::PendingReview {
+                                review_id: format!("review-{}", uuid::Uuid::new_v4()),
+                                agent_instance_id: agent.instance_id.clone(),
+                                activation_id: activation.activation_id.clone(),
+                                tool_name: "unknown".into(),
+                                tool_call_id: String::new(),
+                                reason: "The desktop process exited during a tool-using activation. Verify the external side effect before retrying.".into(),
+                                arguments: serde_json::Value::Null,
+                                created_at_ms: now,
+                                resolved: false,
+                            },
+                        );
+                    }
+                }
+            }
+            if interrupted {
+                session.state = "interrupted".to_string();
+                session.updated_at_ms = now;
+                self.save_task_session(&session)?;
+                recovered += 1;
+            }
+        }
+        Ok(recovered)
+    }
+
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
         self.connection
             .lock()
@@ -481,6 +620,9 @@ fn event_type(event: &RunEvent) -> &'static str {
         RunEvent::InteractionRequested { .. } => "interaction.requested",
         RunEvent::InteractionResolved { .. } => "interaction.resolved",
         RunEvent::RunFinished { .. } => "run.finished",
+        // Agent protocol events are persisted individually so the workbench
+        // can rebuild a TaskSession without replaying the whole run.
+        RunEvent::Agent { .. } => "agent.event",
     }
 }
 

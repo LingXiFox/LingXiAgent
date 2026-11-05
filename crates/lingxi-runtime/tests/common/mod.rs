@@ -246,6 +246,15 @@ pub fn engine_with_assets(
     interactions: Arc<dyn InteractionBroker>,
     assets: Arc<lingxi_runtime::AssetStore>,
 ) -> Engine {
+    engine_with_workspace(skills_root, interactions, assets, None)
+}
+
+pub fn engine_with_workspace(
+    skills_root: Option<std::path::PathBuf>,
+    interactions: Arc<dyn InteractionBroker>,
+    assets: Arc<lingxi_runtime::AssetStore>,
+    workspace: Option<Arc<lingxi_runtime::Workspace>>,
+) -> Engine {
     Engine::with_services(
         Arc::new(lingxi_runtime::NodeRegistry::builtin()),
         Arc::new(AllowAllPolicy),
@@ -258,6 +267,7 @@ pub fn engine_with_assets(
             )]),
             skills_root,
             assets,
+            workspace,
         },
     )
 }

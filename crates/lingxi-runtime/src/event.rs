@@ -44,6 +44,104 @@ pub enum LogLevel {
     Error,
 }
 
+/// Events scoped to one AgentInstance/Activation. They carry the same run-wide
+/// sequence as every other event so the workbench can merge them without a
+/// second clock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
+pub enum AgentEvent {
+    #[serde(rename = "agent.registered")]
+    Registered {
+        agent_instance_id: String,
+        node_id: String,
+        label: String,
+        scope: Vec<ScopeFrame>,
+        state: String,
+        config: Box<crate::agent_protocol::AgentConfigSnapshot>,
+    },
+    #[serde(rename = "agent.state")]
+    StateChanged {
+        agent_instance_id: String,
+        activation_id: Option<String>,
+        state: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    #[serde(rename = "agent.activation.started")]
+    ActivationStarted {
+        agent_instance_id: String,
+        activation_id: String,
+        index: u64,
+        config_revision: u64,
+    },
+    #[serde(rename = "agent.activation.finished")]
+    ActivationFinished {
+        agent_instance_id: String,
+        activation_id: String,
+        state: String,
+        usage: crate::agent_protocol::AgentUsage,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_response: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    #[serde(rename = "agent.message")]
+    Message {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent_instance_id: Option<String>,
+        message: crate::agent_protocol::AgentMessageEnvelope,
+    },
+    #[serde(rename = "agent.delta")]
+    Delta {
+        agent_instance_id: String,
+        activation_id: String,
+        delta: String,
+    },
+    #[serde(rename = "agent.tool.started")]
+    ToolStarted {
+        agent_instance_id: String,
+        activation_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        arguments: String,
+    },
+    #[serde(rename = "agent.tool.finished")]
+    ToolFinished {
+        agent_instance_id: String,
+        activation_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        ok: bool,
+        duration_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+        result: String,
+    },
+    #[serde(rename = "agent.config")]
+    ConfigChanged {
+        agent_instance_id: String,
+        revision: Box<crate::agent_protocol::AgentConfigRevision>,
+    },
+    #[serde(rename = "agent.directive")]
+    Directive {
+        agent_instance_id: String,
+        activation_id: String,
+        text: String,
+    },
+    #[serde(rename = "agent.review")]
+    Review {
+        agent_instance_id: String,
+        review: crate::agent_protocol::PendingReview,
+    },
+    #[serde(rename = "agent.usage")]
+    Usage {
+        agent_instance_id: String,
+        usage: crate::agent_protocol::AgentUsage,
+    },
+}
+
 /// Everything the UI needs to render a run. Events are emitted in order from a
 /// single task, so consumers may rely on run.started arriving first and
 /// run.finished arriving last.
@@ -204,6 +302,14 @@ pub enum RunEvent {
         node_id: String,
         decision: InteractionDecision,
     },
+    #[serde(rename = "agent.event")]
+    Agent {
+        run_id: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        scope: Vec<ScopeFrame>,
+        event: Box<AgentEvent>,
+    },
     #[serde(rename = "run.finished")]
     RunFinished {
         run_id: String,
@@ -230,6 +336,7 @@ impl RunEvent {
             | RunEvent::ToolFinished { run_id, .. }
             | RunEvent::InteractionRequested { run_id, .. }
             | RunEvent::InteractionResolved { run_id, .. }
+            | RunEvent::Agent { run_id, .. }
             | RunEvent::RunFinished { run_id, .. } => run_id,
         }
     }
@@ -250,6 +357,7 @@ impl RunEvent {
             | RunEvent::ToolFinished { seq, .. }
             | RunEvent::InteractionRequested { seq, .. }
             | RunEvent::InteractionResolved { seq, .. }
+            | RunEvent::Agent { seq, .. }
             | RunEvent::RunFinished { seq, .. } => *seq,
         }
     }
@@ -268,6 +376,7 @@ impl RunEvent {
             | RunEvent::ToolFinished { seq, .. }
             | RunEvent::InteractionRequested { seq, .. }
             | RunEvent::InteractionResolved { seq, .. }
+            | RunEvent::Agent { seq, .. }
             | RunEvent::RunFinished { seq, .. } => *seq = value,
         }
     }
@@ -286,7 +395,8 @@ impl RunEvent {
             | RunEvent::ToolStarted { scope, .. }
             | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
-            | RunEvent::InteractionResolved { scope, .. } => scope,
+            | RunEvent::InteractionResolved { scope, .. }
+            | RunEvent::Agent { scope, .. } => scope,
         }
     }
 
@@ -303,7 +413,8 @@ impl RunEvent {
             | RunEvent::ToolStarted { scope, .. }
             | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
-            | RunEvent::InteractionResolved { scope, .. } => Some(scope),
+            | RunEvent::InteractionResolved { scope, .. }
+            | RunEvent::Agent { scope, .. } => Some(scope),
         }
     }
 
@@ -320,7 +431,8 @@ impl RunEvent {
             | RunEvent::ToolStarted { scope, .. }
             | RunEvent::ToolFinished { scope, .. }
             | RunEvent::InteractionRequested { scope, .. }
-            | RunEvent::InteractionResolved { scope, .. } => *scope = frames,
+            | RunEvent::InteractionResolved { scope, .. }
+            | RunEvent::Agent { scope, .. } => *scope = frames,
         }
     }
 }

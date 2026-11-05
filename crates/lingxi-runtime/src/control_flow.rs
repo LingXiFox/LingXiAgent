@@ -183,6 +183,12 @@ impl<'a> Scheduler<'a> {
                 self.cancelled = true;
                 break;
             }
+            // Workflow-level pause stops new activations between nodes. Agents
+            // already running observe the same pause at their own safe points.
+            if !self.control.wait_if_paused().await {
+                self.cancelled = true;
+                break;
+            }
             if self.loop_expired() {
                 if self.loop_state.is_some() {
                     self.fail_loop_timeout();

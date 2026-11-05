@@ -3,7 +3,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import type { Transport } from "./transport";
 import type {
+  AgentConfigRevision,
   AssetRef,
+  ConfigChange,
   HostInteraction,
   ModelCapabilities,
   NodeSpec,
@@ -13,6 +15,7 @@ import type {
   RunRecord,
   RunStartResponse,
   SkillSummary,
+  TaskSession,
   TemplateBundle,
   TemplateSummary,
   ValidationReport,
@@ -36,6 +39,28 @@ export const tauriTransport: Transport = {
   runWorkflow: (workflow) =>
     invoke<RunStartResponse>("run_workflow", { workflow }),
   stopWorkflow: (runId) => invoke<boolean>("stop_workflow", { runId }),
+  pauseWorkflow: (runId) => invoke<boolean>("pause_workflow", { runId }),
+  resumeWorkflow: (runId) => invoke<boolean>("resume_workflow", { runId }),
+  pauseAgent: (runId, agentInstanceId) =>
+    invoke<void>("pause_agent", { runId, agentInstanceId }),
+  resumeAgent: (runId, agentInstanceId) =>
+    invoke<void>("resume_agent", { runId, agentInstanceId }),
+  cancelAgent: (runId, agentInstanceId) =>
+    invoke<void>("cancel_agent", { runId, agentInstanceId }),
+  sendAgentDirective: (runId, agentInstanceId, text) =>
+    invoke<void>("send_agent_directive", { runId, agentInstanceId, text }),
+  previewAgentConfig: (runId, agentInstanceId, config) =>
+    invoke<ConfigChange[]>("preview_agent_config", { runId, agentInstanceId, config }),
+  applyAgentConfig: (runId, agentInstanceId, config, expectedRevision) =>
+    invoke<AgentConfigRevision>("apply_agent_config", {
+      runId,
+      agentInstanceId,
+      config,
+      expectedRevision,
+    }),
+  rejectAgentConfig: (runId, agentInstanceId, revision, detail) =>
+    invoke<void>("reject_agent_config", { runId, agentInstanceId, revision, detail }),
+  taskSession: (runId) => invoke<TaskSession | null>("task_session", { runId }),
   respondInteraction: (requestId, approved) =>
     invoke<boolean>("respond_interaction", { requestId, approved }),
   workflowList: () => invoke<WorkflowSummary[]>("workflow_list"),

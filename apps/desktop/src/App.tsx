@@ -7,6 +7,8 @@ import {
   useNodesState,
 } from "@xyflow/react";
 
+import { AgentWorkbench } from "./components/AgentWorkbench";
+import "./styles-workbench.css";
 import { Canvas } from "./components/Canvas";
 import { CanvasBar } from "./components/CanvasBar";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -46,6 +48,8 @@ import {
   type WorkflowMeta,
 } from "./lib/workflow";
 import type {
+  AgentConfigSnapshot,
+  AgentInstance,
   AssetRef,
   HostInteraction,
   NodeSpec,
@@ -54,6 +58,7 @@ import type {
   RunEvent,
   RunStatus,
   Subgraph,
+  TaskSession,
   TemplateSummary,
   ValidationReport,
   ViewportDoc,
@@ -119,6 +124,76 @@ function demoWorkflow(): WorkflowDoc {
     toDocEdge("demo-gate", "exit", "demo-log", "value", "control"),
   ];
   document.viewport = { x: 20, y: 140, zoom: 0.8 };
+  return document;
+}
+
+/** Company-style PM -> Coder -> Tester demo. It needs the local protocol mock
+ *  (fixtures/mock-provider/server.py) or equivalent real provider settings;
+ *  node parameters stay editable, so the same graph runs against a real model
+ *  after changing baseUrl / credentialRef / model. */
+function companyWorkflow(): WorkflowDoc {
+  const document = newWorkflow("公司式 Agent 团队");
+  const node = (
+    id: string,
+    kind: string,
+    label: string,
+    x: number,
+    y: number,
+    params: Record<string, unknown>,
+  ): WorkflowNodeDoc => ({
+    id,
+    kind,
+    label,
+    position: { x, y },
+    params,
+    enabled: true,
+  });
+  const common = {
+    protocol: "openai_chat",
+    baseUrl: "http://127.0.0.1:11434",
+    credentialRef: "test-key",
+    maxIterations: 8,
+  };
+  document.nodes = [
+    node("pm", "core.agent", "产品经理", 20, 160, {
+      ...common,
+      model: "mock-pm",
+      rolePrompt: "你是产品经理，只输出结构化 PRD。",
+      instruction: "Write a concise PRD and hand it to engineering.",
+    }),
+    node("coder", "core.agent", "程序员", 340, 160, {
+      ...common,
+      model: "mock-coder",
+      toolset: "read_file,write_file",
+      rolePrompt: "你是程序员，按 PRD 实现并写出可验证的代码。",
+      instruction: "Implement the PRD, then hand the implementation to QA.",
+    }),
+    node("tester", "core.agent", "测试", 660, 160, {
+      ...common,
+      model: "mock-tester",
+      toolset: "read_file",
+      rolePrompt: "你是测试，验证实现并给出 pass / fail 结论。",
+      instruction: "Verify the implementation and report a pass or fail verdict.",
+    }),
+    node("gate", "core.loop_gate", "返工循环", 340, 420, {
+      maxIterations: 4,
+      timeoutMs: 120000,
+    }),
+    node("delivery", "core.log", "最终交付", 660, 470, { prefix: "delivery: " }),
+  ];
+  document.edges = [
+    toDocEdge("pm", "completed", "gate", "start", "control"),
+    toDocEdge("gate", "continue", "coder", "start", "control"),
+    toDocEdge("coder", "completed", "tester", "start", "control"),
+    toDocEdge("tester", "failed", "gate", "next", "control"),
+    toDocEdge("tester", "completed", "gate", "stop", "control"),
+    toDocEdge("gate", "exit", "delivery", "run", "control"),
+    toDocEdge("pm", "agentMessage", "coder", "task", "data"),
+    toDocEdge("coder", "agentMessage", "tester", "task", "data"),
+    toDocEdge("tester", "agentMessage", "coder", "messages", "data"),
+    toDocEdge("tester", "userResponse", "delivery", "value", "data"),
+  ];
+  document.viewport = { x: 20, y: 140, zoom: 0.82 };
   return document;
 }
 
@@ -370,6 +445,23 @@ export default function App() {
   const [templateError, setTemplateError] = useState<string | null>(null);
   const [templateRootId, setTemplateRootId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [view, setViewState] = useState<"canvas" | "workbench">(() => {
+    if (typeof window === "undefined") return "canvas";
+    return window.localStorage.getItem("lingxi.view") === "workbench" ? "workbench" : "canvas";
+  });
+  const [session, setSession] = useState<TaskSession | null>(null);
+  const [agentEvents, setAgentEvents] = useState<RunEvent[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const selectAgent = useCallback((instanceId: string | null) => {
+    setSelectedAgent(instanceId);
+    try {
+      if (instanceId) window.localStorage.setItem("lingxi.agent", instanceId);
+      else window.localStorage.removeItem("lingxi.agent");
+    } catch {
+      // Storage can be unavailable; selection still works for this view.
+    }
+  }, []);
+  const [focus, setFocus] = useState<{ nodeId: string; nonce: number } | null>(null);
   // Terminal events can arrive before runWorkflow resolves; remember them so the
   // late `setStatus("running")` does not overwrite the real outcome.
   const finishedRunsRef = useRef(new Map<string, RunStatus>());
@@ -399,6 +491,8 @@ export default function App() {
   const recoveringRef = useRef(true);
   const reconnectedLogRef = useRef<string | null>(null);
   const applyEventRef = useRef<(event: RunEvent) => void>(() => {});
+  const sessionTimerRef = useRef<number | null>(null);
+  const sessionRequestRef = useRef(0);
 
   nodesRef.current = nodes;
   edgesRef.current = edges;
@@ -429,6 +523,51 @@ export default function App() {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2400);
   }, []);
+
+  const setView = useCallback((next: "canvas" | "workbench") => {
+    setViewState(next);
+    try {
+      window.localStorage.setItem("lingxi.view", next);
+    } catch {
+      // Storage can be unavailable in locked-down webviews; the view still works.
+    }
+  }, []);
+
+  const refreshSession = useCallback(async (runId: string | null) => {
+    if (!runId) return;
+    const request = ++sessionRequestRef.current;
+    try {
+      const next = await api.taskSession(runId);
+      if (request !== sessionRequestRef.current) return;
+      setSession(next);
+      if (next) {
+        let stored: string | null = null;
+        try {
+          stored = window.localStorage.getItem("lingxi.agent");
+        } catch {
+          stored = null;
+        }
+        setSelectedAgent((current) => {
+          if (current && next.agents[current]) return current;
+          if (stored && next.agents[stored]) return stored;
+          return null;
+        });
+      }
+    } catch (error) {
+      pushLog("warn", "agent session refresh failed: " + String(error));
+    }
+  }, [pushLog]);
+
+  const scheduleSessionRefresh = useCallback(
+    (runId: string) => {
+      if (sessionTimerRef.current !== null) return;
+      sessionTimerRef.current = window.setTimeout(() => {
+        sessionTimerRef.current = null;
+        void refreshSession(runId);
+      }, 120);
+    },
+    [refreshSession],
+  );
 
   const handleParamChange = useCallback(
     (nodeId: string, name: string, value: unknown) => {
@@ -713,6 +852,9 @@ export default function App() {
       setPending(null);
       runIdRef.current = null;
       setStatus("idle");
+      setSession(null);
+      setAgentEvents([]);
+      setSelectedAgent(null);
     },
     [buildFlowNodes, setEdges, setNodes],
   );
@@ -735,6 +877,13 @@ export default function App() {
       switch (event.type) {
         case "run.started":
           runIdRef.current = event.runId;
+          if (sessionTimerRef.current !== null) {
+            window.clearTimeout(sessionTimerRef.current);
+            sessionTimerRef.current = null;
+          }
+          setSession(null);
+          setAgentEvents([]);
+          setSelectedAgent(null);
           pushLog("info", "run started · " + event.workflowName + " · " + event.nodeCount + " nodes");
           setNodes((current) =>
             current.map((node) =>
@@ -859,10 +1008,36 @@ export default function App() {
           setStatus(event.status);
           runIdRef.current = null;
           setPending(null);
+          scheduleSessionRefresh(event.runId);
           break;
+        case "agent.event": {
+          setAgentEvents((current) => [...current.slice(-799), event]);
+          if (event.event.type === "agent.registered") {
+            setSession((current) =>
+              current
+                ? current
+                : {
+                    sessionId: "session-" + event.runId,
+                    runId: event.runId,
+                    workflowId: "",
+                    workflowName: "",
+                    workflowRevision: 1,
+                    state: "running",
+                    createdAtMs: Date.now(),
+                    updatedAtMs: Date.now(),
+                    agents: {},
+                    messages: [],
+                    pendingReviews: [],
+                    artifacts: [],
+                  },
+            );
+          }
+          scheduleSessionRefresh(event.runId);
+          break;
+        }
       }
     },
-    [flash, pushLog, setNodeRun, setNodes],
+    [flash, pushLog, scheduleSessionRefresh, setNodeRun, setNodes],
   );
   applyEventRef.current = applyEvent;
 
@@ -992,6 +1167,20 @@ export default function App() {
             );
           }
           snapshot.events.forEach((event) => enqueueEvent(event));
+          const recovered = await api.taskSession(snapshot.run.runId);
+          if (!cancelled && recovered) {
+            setSession(recovered);
+            setAgentEvents(
+              snapshot.events.filter((event): event is RunEvent => event.type === "agent.event"),
+            );
+            let stored: string | null = null;
+            try {
+              stored = window.localStorage.getItem("lingxi.agent");
+            } catch {
+              stored = null;
+            }
+            if (stored && recovered.agents[stored]) setSelectedAgent(stored);
+          }
         }
       } catch (error) {
         pushLog("error", "run recovery failed: " + String(error));
@@ -1040,7 +1229,7 @@ export default function App() {
     pushLog("info", "new workflow");
   }, [pushLog, setEdges, setNodes]);
 
-  const [confirmAction, setConfirmAction] = useState<"new" | "demo" | null>(null);
+  const [confirmAction, setConfirmAction] = useState<"new" | "demo" | "company" | null>(null);
 
   const handleNew = useCallback(() => {
     if (nodesRef.current.length > 0) {
@@ -1059,6 +1248,19 @@ export default function App() {
     pushLog("info", "loaded demo workflow · counter → condition → loop gate");
   }, [applyDoc, pushLog]);
 
+  const handleCompany = useCallback(() => {
+    if (statusRef.current === "running" || recoveringRef.current) {
+      flash("运行或恢复期间不能替换画布");
+      return;
+    }
+    if (nodesRef.current.length > 0) {
+      setConfirmAction("company");
+      return;
+    }
+    applyDoc(companyWorkflow());
+    pushLog("info", "loaded company demo · product manager → coder → tester with rework");
+  }, [applyDoc, flash, pushLog]);
+
   const confirmReplace = useCallback(() => {
     const action = confirmAction;
     setConfirmAction(null);
@@ -1069,6 +1271,11 @@ export default function App() {
     if (action === "demo") {
       applyDoc(demoWorkflow());
       pushLog("info", "loaded demo workflow · counter → condition → loop gate");
+      return;
+    }
+    if (action === "company") {
+      applyDoc(companyWorkflow());
+      pushLog("info", "loaded company demo · product manager → coder → tester with rework");
     }
   }, [applyDoc, confirmAction, pushLog, resetCanvas]);
 
@@ -1395,13 +1602,18 @@ export default function App() {
       runIdRef.current = response.runId;
       setStatus(finishedRunsRef.current.get(response.runId) ?? "running");
       setLogOpen(true);
+      if (nodesRef.current.some((node) => node.data.kind === "core.agent")) {
+        setSelectedAgent(null);
+        setView("workbench");
+      }
+      void refreshSession(response.runId);
     } catch (error) {
       pushLog("error", "run failed: " + String(error));
       setStatus("failed");
     } finally {
       setBusy(false);
     }
-  }, [buildDoc, flash, pushLog]);
+  }, [buildDoc, flash, pushLog, refreshSession, setView]);
 
   const handleStop = useCallback(async () => {
     const runId = runIdRef.current;
@@ -1426,6 +1638,146 @@ export default function App() {
       }
     },
     [pending, pushLog],
+  );
+
+  const locateAgent = useCallback(
+    (agent: AgentInstance) => {
+      const document = buildDoc();
+      const path = agent.scope.map((frame) => frame.subgraphId);
+      if (!layerWorkflow(document, path)) {
+        flash("找不到该 Agent 所在的组合层级");
+        return;
+      }
+      layerPathRef.current = path;
+      setLayerPathState(path);
+      instancePathRef.current = agent.scope.map((frame) => frame.instanceId);
+      setInstancePathState(instancePathRef.current);
+      adoptLayer(document, path);
+      setSelectedNodeIds([agent.nodeId]);
+      setNodes((current) =>
+        current.map((node) => ({ ...node, selected: node.id === agent.nodeId })),
+      );
+      setFocus({ nodeId: agent.nodeId, nonce: Date.now() });
+      setView("canvas");
+    },
+    [adoptLayer, buildDoc, flash, setNodes, setView],
+  );
+
+  const openAgentFromCanvas = useCallback(() => {
+    const nodeId = selectedNodeIds[0];
+    if (!nodeId) return;
+    const scope = instancePathRef.current;
+    const agent = session
+      ? Object.values(session.agents).find(
+          (candidate) =>
+            candidate.nodeId === nodeId &&
+            candidate.scope.length === scope.length &&
+            candidate.scope.every((frame, index) => frame.instanceId === scope[index]),
+        )
+      : undefined;
+    if (!agent) {
+      flash("该 Agent 还没有运行记录");
+      return;
+    }
+    selectAgent(agent.instanceId);
+    setView("workbench");
+  }, [flash, selectAgent, selectedNodeIds, session, setView]);
+
+  const pauseAgent = useCallback(
+    async (agentInstanceId: string) => {
+      const runId = runIdRef.current;
+      if (!runId) return;
+      try {
+        await api.pauseAgent(runId, agentInstanceId);
+        pushLog("info", "pause requested · " + agentInstanceId);
+        scheduleSessionRefresh(runId);
+      } catch (error) {
+        pushLog("error", "pause failed: " + String(error));
+      }
+    },
+    [pushLog, scheduleSessionRefresh],
+  );
+
+  const resumeAgent = useCallback(
+    async (agentInstanceId: string) => {
+      const runId = runIdRef.current;
+      if (!runId) return;
+      try {
+        await api.resumeAgent(runId, agentInstanceId);
+        pushLog("info", "resume requested · " + agentInstanceId);
+        scheduleSessionRefresh(runId);
+      } catch (error) {
+        pushLog("error", "resume failed: " + String(error));
+      }
+    },
+    [pushLog, scheduleSessionRefresh],
+  );
+
+  const cancelAgent = useCallback(
+    async (agentInstanceId: string) => {
+      const runId = runIdRef.current;
+      if (!runId) return;
+      try {
+        await api.cancelAgent(runId, agentInstanceId);
+        pushLog("warn", "agent cancel requested · " + agentInstanceId);
+        scheduleSessionRefresh(runId);
+      } catch (error) {
+        pushLog("error", "cancel agent failed: " + String(error));
+      }
+    },
+    [pushLog, scheduleSessionRefresh],
+  );
+
+  const pauseWorkflow = useCallback(async () => {
+    const runId = runIdRef.current;
+    if (!runId) return;
+    try {
+      await api.pauseWorkflow(runId);
+      pushLog("info", "workflow pause requested");
+    } catch (error) {
+      pushLog("error", "pause workflow failed: " + String(error));
+    }
+  }, [pushLog]);
+
+  const resumeWorkflow = useCallback(async () => {
+    const runId = runIdRef.current;
+    if (!runId) return;
+    try {
+      await api.resumeWorkflow(runId);
+      pushLog("info", "workflow resume requested");
+    } catch (error) {
+      pushLog("error", "resume workflow failed: " + String(error));
+    }
+  }, [pushLog]);
+
+  const sendDirective = useCallback(
+    async (agentInstanceId: string, text: string) => {
+      const runId = runIdRef.current;
+      if (!runId) throw new Error("no active run");
+      await api.sendAgentDirective(runId, agentInstanceId, text);
+      await refreshSession(runId);
+    },
+    [refreshSession],
+  );
+
+  const previewAgentConfig = useCallback(
+    async (agentInstanceId: string, config: AgentConfigSnapshot) => {
+      const runId = runIdRef.current;
+      if (!runId) throw new Error("no active run");
+      return api.previewAgentConfig(runId, agentInstanceId, config);
+    },
+    [],
+  );
+
+  const applyAgentConfig = useCallback(
+    async (agentInstanceId: string, config: AgentConfigSnapshot, expectedRevision: number) => {
+      const runId = runIdRef.current;
+      if (!runId) throw new Error("no active run");
+      const revision = await api.applyAgentConfig(runId, agentInstanceId, config, expectedRevision);
+      await refreshSession(runId);
+      return revision;
+    },
+    [refreshSession],
   );
 
   useEffect(() => {
@@ -1465,10 +1817,11 @@ export default function App() {
     : undefined;
   const canUngroup = Boolean(selectedSingle?.data.subgraphId);
   const canTemplate = canUngroup;
+  const canOpenAgent = selectedSingle?.data.kind === "core.agent";
   const breadcrumbLabels = ["顶层", ...layerPath.map((id) => subgraphs[id]?.name ?? id)];
 
   return (
-    <div className="app">
+    <div className={"app" + (view === "workbench" ? " app--workbench" : "")}>
       <NodeLibrary
         specs={specs}
         templates={templates}
@@ -1487,7 +1840,12 @@ export default function App() {
         selectionCount={selectedNodeIds.length}
         canUngroup={canUngroup}
         canTemplate={canTemplate}
+        canOpenAgent={canOpenAgent}
+        view={view}
         onNameChange={(name) => setMeta((current) => ({ ...current, name }))}
+        onViewChange={setView}
+        onOpenAgent={openAgentFromCanvas}
+        onCompany={handleCompany}
         onNew={handleNew}
         onDemo={handleDemo}
         onAgent={() => void handleAgent()}
@@ -1504,32 +1862,53 @@ export default function App() {
         onSaveTemplate={openTemplateDialog}
       />
 
-      <main className="stage">
-        <CanvasBar
-          labels={breadcrumbLabels}
-          depth={layerPath.length}
-          selectedCount={selectedNodeIds.length}
-          onNavigate={navigateTo}
-        />
-        <ReactFlowProvider>
-          <Canvas
-            nodes={nodes}
-            edges={edges}
-            running={status === "running"}
-            viewport={activeViewport}
-            viewportKey={viewportKey}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onDropNode={addNode}
-            onDropTemplate={(id, position) => void addTemplate(id, position)}
-            onNodeDoubleClick={enterComposite}
-            onSelectionChange={setSelectedNodeIds}
-            onViewportChange={handleViewportChange}
+      <main className={"stage" + (view === "workbench" ? " stage--workbench" : "")}>
+        <div className={"canvas-view" + (view === "canvas" ? "" : " canvas-view--hidden")}>
+          <CanvasBar
+            labels={breadcrumbLabels}
+            depth={layerPath.length}
+            selectedCount={selectedNodeIds.length}
+            onNavigate={navigateTo}
           />
-        </ReactFlowProvider>
-        {problemsOpen && report ? (
-          <ProblemsPanel report={report} onClose={() => setProblemsOpen(false)} />
+          <ReactFlowProvider>
+            <Canvas
+              nodes={nodes}
+              edges={edges}
+              running={status === "running"}
+              viewport={activeViewport}
+              viewportKey={viewportKey}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              onDropNode={addNode}
+              onDropTemplate={(id, position) => void addTemplate(id, position)}
+              onNodeDoubleClick={enterComposite}
+              onSelectionChange={setSelectedNodeIds}
+              onViewportChange={handleViewportChange}
+              focus={focus}
+            />
+          </ReactFlowProvider>
+          {problemsOpen && report ? (
+            <ProblemsPanel report={report} onClose={() => setProblemsOpen(false)} />
+          ) : null}
+        </div>
+        {view === "workbench" ? (
+          <AgentWorkbench
+            session={session}
+            events={agentEvents}
+            status={status}
+            selected={selectedAgent}
+            onSelect={selectAgent}
+            onPauseAgent={(id) => void pauseAgent(id)}
+            onResumeAgent={(id) => void resumeAgent(id)}
+            onCancelAgent={(id) => void cancelAgent(id)}
+            onPauseWorkflow={() => void pauseWorkflow()}
+            onResumeWorkflow={() => void resumeWorkflow()}
+            onDirective={sendDirective}
+            onPreviewConfig={previewAgentConfig}
+            onApplyConfig={applyAgentConfig}
+            onLocateNode={locateAgent}
+          />
         ) : null}
       </main>
 
@@ -1613,13 +1992,25 @@ export default function App() {
 
       <ConfirmDialog
         open={confirmAction !== null}
-        title={confirmAction === "demo" ? "载入示例" : "新建工作流"}
-        message={
+        title={
           confirmAction === "demo"
+            ? "载入示例"
+            : confirmAction === "company"
+              ? "载入团队示例"
+              : "新建工作流"
+        }
+        message={
+          confirmAction === "demo" || confirmAction === "company"
             ? "载入示例会替换当前画布，未保存的修改将丢失。"
             : "新建会清空当前画布，未保存的修改将丢失。"
         }
-        confirmLabel={confirmAction === "demo" ? "载入示例" : "清空并新建"}
+        confirmLabel={
+          confirmAction === "demo"
+            ? "载入示例"
+            : confirmAction === "company"
+              ? "载入团队示例"
+              : "清空并新建"
+        }
         onConfirm={confirmReplace}
         onCancel={() => setConfirmAction(null)}
       />

@@ -66,6 +66,39 @@ function eventText(event: RunEvent): string {
         "ms" +
         (event.error ? " · " + event.error : "")
       );
+    case "agent.event": {
+      const agent = event.event;
+      switch (agent.type) {
+        case "agent.registered":
+          return "agent registered · " + agent.label + " · r" + agent.config.revision;
+        case "agent.state":
+          return "agent " + agent.agentInstanceId + " → " + agent.state +
+            (agent.reason ? " · " + agent.reason : "");
+        case "agent.activation.started":
+          return "agent activation " + agent.index + " started";
+        case "agent.activation.finished":
+          return "agent activation " + agent.state +
+            (agent.error ? " · " + agent.error : "");
+        case "agent.message":
+          return "agent message · " + agent.message.type + " · " +
+            agent.message.sender + " → " + agent.message.recipient;
+        case "agent.tool.started":
+          return "agent tool ▶ " + agent.toolName;
+        case "agent.tool.finished":
+          return "agent tool " + (agent.ok ? "✓ " : "✕ ") + agent.toolName +
+            " · " + agent.durationMs + "ms" + (agent.error ? " · " + agent.error : "");
+        case "agent.config":
+          return "agent config · r" + agent.revision.revision + " · " + agent.revision.status;
+        case "agent.directive":
+          return "agent directive · " + agent.text;
+        case "agent.review":
+          return "agent review · " + agent.review.toolName;
+        case "agent.usage":
+          return "agent usage · " + agent.usage.modelCalls + " calls";
+        case "agent.delta":
+          return "agent stream · " + agent.delta;
+      }
+    }
   }
 }
 

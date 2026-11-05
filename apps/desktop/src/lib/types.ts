@@ -56,6 +56,8 @@ export interface PortSpec {
   label: string;
   dataType: DataType;
   required: boolean;
+  /** Optional visual group on dense nodes such as core.agent. */
+  group?: string | null;
   /** Missing on older payloads means a data port. */
   control?: boolean;
 }
@@ -216,6 +218,237 @@ export interface ScopeFrame {
   label: string;
 }
 
+export interface AgentUsage {
+  iterations: number;
+  modelCalls: number;
+  toolCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  elapsedMs: number;
+}
+
+export interface AgentConfigSnapshot {
+  revision: number;
+  model: string;
+  temperature: number;
+  reasoning: string;
+  rolePrompt: string;
+  systemPrompt: string;
+  maxIterations: number;
+  maxToolCalls: number;
+  maxTotalTokens: number;
+  timeoutMs: number;
+  toolset: string[];
+  skills: string[];
+  lsp: string[];
+}
+
+export interface ConfigChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface AgentConfigRevision {
+  revision: number;
+  status: "draft" | "pending" | "applied" | "rejected" | "superseded";
+  appliedAtMs?: number | null;
+  before: AgentConfigSnapshot;
+  after: AgentConfigSnapshot;
+  changes: ConfigChange[];
+  detail?: string | null;
+}
+
+export interface ArtifactRefDoc {
+  id: string;
+  name: string;
+  kind: string;
+  mime?: string | null;
+  size?: number | null;
+  digest?: string | null;
+  uri?: string | null;
+}
+
+export interface AgentBudgetDoc {
+  maxIterations: number;
+  maxToolCalls: number;
+  maxTotalTokens: number;
+  timeoutMs: number;
+}
+
+export interface TaskEnvelopeDoc {
+  schemaVersion: string;
+  taskId: string;
+  sessionId?: string | null;
+  parentTaskId?: string | null;
+  sender: string;
+  recipient?: string | null;
+  instruction: string;
+  artifacts: ArtifactRefDoc[];
+  budget?: AgentBudgetDoc | null;
+  correlationId?: string | null;
+  idempotencyKey?: string | null;
+  createdAtMs: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface AgentMessageEnvelope {
+  schemaVersion: string;
+  messageId: string;
+  taskId: string;
+  sender: string;
+  recipient: string;
+  type: string;
+  status: string;
+  payload: unknown;
+  artifactRefs: ArtifactRefDoc[];
+  correlationId?: string | null;
+  idempotencyKey?: string | null;
+  createdAtMs: number;
+}
+
+export interface PendingReview {
+  reviewId: string;
+  agentInstanceId: string;
+  activationId: string;
+  toolName: string;
+  toolCallId?: string | null;
+  reason: string;
+  arguments: string;
+  createdAtMs: number;
+  resolved: boolean;
+}
+
+export interface ActivationRecord {
+  activationId: string;
+  index: number;
+  state: string;
+  startedAtMs: number;
+  finishedAtMs?: number | null;
+  configRevision: number;
+  iterations: number;
+  userResponse?: string | null;
+  agentMessageId?: string | null;
+  error?: string | null;
+}
+
+export interface AgentInstance {
+  instanceId: string;
+  nodeId: string;
+  label: string;
+  scope: ScopeFrame[];
+  state: string;
+  currentActivation?: string | null;
+  activations: ActivationRecord[];
+  config: AgentConfigSnapshot;
+  configRevisions: AgentConfigRevision[];
+  usage: AgentUsage;
+  pendingDirectives: string[];
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface TaskSession {
+  sessionId: string;
+  runId: string;
+  workflowId: string;
+  workflowName: string;
+  workflowRevision: number;
+  state: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  agents: Record<string, AgentInstance>;
+  messages: AgentMessageEnvelope[];
+  pendingReviews: PendingReview[];
+  artifacts: ArtifactRefDoc[];
+}
+
+export type AgentEvent =
+  | {
+      type: "agent.registered";
+      agentInstanceId: string;
+      nodeId: string;
+      label: string;
+      scope: ScopeFrame[];
+      state: string;
+      config: AgentConfigSnapshot;
+    }
+  | {
+      type: "agent.state";
+      agentInstanceId: string;
+      activationId?: string | null;
+      state: string;
+      reason?: string | null;
+    }
+  | {
+      type: "agent.activation.started";
+      agentInstanceId: string;
+      activationId: string;
+      index: number;
+      configRevision: number;
+    }
+  | {
+      type: "agent.activation.finished";
+      agentInstanceId: string;
+      activationId: string;
+      state: string;
+      usage: AgentUsage;
+      userResponse?: string | null;
+      messageId?: string | null;
+      error?: string | null;
+    }
+  | {
+      type: "agent.message";
+      agentInstanceId?: string | null;
+      message: AgentMessageEnvelope;
+    }
+  | {
+      type: "agent.delta";
+      agentInstanceId: string;
+      activationId: string;
+      delta: string;
+    }
+  | {
+      type: "agent.tool.started";
+      agentInstanceId: string;
+      activationId: string;
+      toolCallId: string;
+      toolName: string;
+      arguments: string;
+    }
+  | {
+      type: "agent.tool.finished";
+      agentInstanceId: string;
+      activationId: string;
+      toolCallId: string;
+      toolName: string;
+      ok: boolean;
+      durationMs: number;
+      error?: string | null;
+      result: string;
+    }
+  | {
+      type: "agent.config";
+      agentInstanceId: string;
+      revision: AgentConfigRevision;
+    }
+  | {
+      type: "agent.directive";
+      agentInstanceId: string;
+      activationId: string;
+      text: string;
+    }
+  | {
+      type: "agent.review";
+      agentInstanceId: string;
+      review: PendingReview;
+    }
+  | {
+      type: "agent.usage";
+      agentInstanceId: string;
+      usage: AgentUsage;
+    };
+
 interface RunEventBase {
   runId: string;
   /** Monotonic within a run; used for replay deduplication and gap recovery. */
@@ -321,6 +554,10 @@ export type RunEvent =
       durationMs: number;
       error: string | null;
       result: string;
+    })
+  | (RunEventBase & {
+      type: "agent.event";
+      event: AgentEvent;
     })
   | (RunEventBase & {
       type: "run.finished";

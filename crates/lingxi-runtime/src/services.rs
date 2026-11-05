@@ -44,6 +44,8 @@ pub struct ServiceConfig {
     pub skills_root: Option<PathBuf>,
     /// Immutable, content-addressed media store shared by all runs.
     pub assets: Arc<AssetStore>,
+    /// Optional controlled workspace for file and process tools.
+    pub workspace: Option<Arc<crate::workspace::Workspace>>,
 }
 
 impl std::fmt::Debug for ServiceConfig {
@@ -52,6 +54,10 @@ impl std::fmt::Debug for ServiceConfig {
             .debug_struct("ServiceConfig")
             .field("skills_root", &self.skills_root)
             .field("assets", &self.assets.root())
+            .field(
+                "workspace",
+                &self.workspace.as_ref().map(|workspace| workspace.root()),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -76,6 +82,7 @@ pub struct RunServices {
     context_handles: Mutex<BTreeMap<String, String>>,
     providers: Mutex<BTreeMap<String, ProviderConfig>>,
     toolsets: Mutex<BTreeMap<String, Vec<ToolDefinition>>>,
+    lsp_servers: Mutex<BTreeMap<String, crate::lsp::LspConfig>>,
     usage: Mutex<HashMap<String, UsageRecord>>,
     response_sessions: Mutex<HashMap<String, ResponseSession>>,
 }
@@ -92,11 +99,15 @@ impl RunServices {
                 .clone()
                 .map(SkillLibrary::new)
                 .or_else(SkillLibrary::from_environment),
-            builtins: BuiltinTools::new(),
+            builtins: match &config.workspace {
+                Some(workspace) => BuiltinTools::with_workspace(Arc::clone(workspace)),
+                None => BuiltinTools::new(),
+            },
             contexts: Mutex::new(ContextStore::default()),
             context_handles: Mutex::new(BTreeMap::new()),
             providers: Mutex::new(BTreeMap::new()),
             toolsets: Mutex::new(BTreeMap::new()),
+            lsp_servers: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(HashMap::new()),
             response_sessions: Mutex::new(HashMap::new()),
         }
@@ -110,6 +121,10 @@ impl RunServices {
 
     pub fn builtin_tools(&self) -> &BuiltinTools {
         &self.builtins
+    }
+
+    pub fn workspace(&self) -> Option<&Arc<crate::workspace::Workspace>> {
+        self.builtins.workspace()
     }
 
     pub fn skills(&self) -> Option<&SkillLibrary> {
@@ -157,6 +172,24 @@ impl RunServices {
                 NodeError::new(
                     error_codes::TOOLSET_UNKNOWN_HANDLE,
                     format!("tool set handle {handle:?} is not known in this run"),
+                )
+            })
+    }
+
+    pub fn register_lsp(&self, config: crate::lsp::LspConfig) -> String {
+        let handle = format!("lsp-{}", uuid::Uuid::new_v4());
+        Self::lock(&self.lsp_servers).insert(handle.clone(), config);
+        handle
+    }
+
+    pub fn lsp_config(&self, handle: &str) -> Result<crate::lsp::LspConfig, NodeError> {
+        Self::lock(&self.lsp_servers)
+            .get(handle)
+            .cloned()
+            .ok_or_else(|| {
+                NodeError::new(
+                    error_codes::LSP_NOT_FOUND,
+                    format!("LSP handle {handle:?} is not known in this run"),
                 )
             })
     }

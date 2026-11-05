@@ -945,12 +945,23 @@ fn validate_control_flow(
     }
 
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); count];
+    // Control edges decide activation order. Data edges normally do too, but a
+    // collaboration message may legitimately point backwards inside a
+    // controlled loop (a tester handing feedback to the coder it reviewed).
+    // Such an asynchronous message must not be mistaken for a second feedback
+    // path that bypasses the loop gate.
+    let mut sequencing_adjacency: Vec<Vec<usize>> = vec![Vec::new(); count];
     for edge in &workflow.edges {
         if let (Some(&source), Some(&target)) = (
             index.get(edge.source.as_str()),
             index.get(edge.target.as_str()),
         ) {
             adjacency[source].push(target);
+            if edge.kind == crate::model::EdgeKind::Control
+                || !is_collaboration_input(workflow, context, edge)
+            {
+                sequencing_adjacency[source].push(target);
+            }
         }
     }
 
@@ -1037,7 +1048,7 @@ fn validate_control_flow(
 
         let gate = gates[0];
         let gate_node = &workflow.nodes[gate];
-        if has_cycle_without(component, gate, &adjacency) {
+        if has_cycle_without(component, gate, &sequencing_adjacency) {
             issues.push(ValidationIssue::error(
                 codes::LOOP_UNCONTROLLED_CYCLE,
                 join_path(prefix, &format!("nodes[{gate}].kind")),
@@ -1129,6 +1140,27 @@ fn positive_integer(value: &Value) -> Option<u64> {
     } else {
         None
     }
+}
+
+fn is_collaboration_input(
+    workflow: &Workflow,
+    context: &ValidationContext<'_>,
+    edge: &crate::model::Edge,
+) -> bool {
+    if edge.kind != crate::model::EdgeKind::Data {
+        return false;
+    }
+    workflow
+        .nodes
+        .iter()
+        .find(|node| node.id == edge.target)
+        .and_then(|node| context.spec(node))
+        .and_then(|spec| {
+            spec.inputs
+                .iter()
+                .find(|port| port.name == edge.target_port)
+        })
+        .is_some_and(|port| port.group.as_deref() == Some("Collaboration"))
 }
 
 fn has_cycle_without(component: &[usize], gate: usize, adjacency: &[Vec<usize>]) -> bool {

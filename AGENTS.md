@@ -5,18 +5,18 @@
 ## 1. 产品与架构约束
 
 - **产品定位**：ComfyUI 式、可插拔、可交互的节点工作流平台。工作流由用户自由组合节点，不内置固定 Agent Loop。
-- **UI 保持极简**：中央可拖拽/缩放/连线画布；左侧节点库；右上角运行与终止；底部可收起的实时日志。配置优先放在节点内部。不要擅自增加常驻聊天区、右侧属性栏或仪表盘。
+- **UI 保持极简**：中央可拖拽/缩放/连线画布；左侧节点库；右上角运行与终止；底部可收起的实时日志。配置优先放在节点内部。一等 Agent 的运行观察与干预使用独立的顶层 Agent 工作台视图（总览 + 每 Agent 标签），这是 Phase 1.6 明确授权的例外；仍不要擅自增加常驻聊天区、右侧属性栏或仪表盘。
 - **技术栈**：Rust workspace + Tauri 2 + React/TypeScript + `@xyflow/react`。`crates/lingxi-spec` 定义文档与节点契约；`crates/lingxi-runtime` 负责校验和执行；`apps/desktop/src-tauri` 仅为桌面适配层；`apps/desktop/src` 只负责编辑和展示。
 - **依赖方向**：`lingxi-spec` ← `lingxi-runtime` ← Tauri 宿主。核心库不得依赖 Tauri、React 或 macOS 专属 API。前端不得实现另一套工作流调度器；拖拽、缩放等高频操作不得逐帧调用 Rust IPC。
 - **跨平台是硬要求**：面向 macOS / Windows / Linux。平台差异封装在独立适配层，不要把某一系统的专属 API 渗透到核心。CI 编译通过不等于实机运行验收通过。
-- **演进而非伪装完成**：当前 Phase 1.5 支持无环 DAG、受控循环、组合子图、SQLite 运行恢复、完整文本 Agent 闭环，以及 OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立 Reasoning、模型能力检查和图片/音频/视频/文档资产链路；并发调度、动态插件、文件事务、共享资源总线、原生视频输入与内置语音识别尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
+- **演进而非伪装完成**：当前 Phase 1.6 支持无环 DAG、受控循环、组合子图、SQLite 运行恢复、一等 `core.agent`、独立 AgentRunner、版本化协作协议与消息总线、双视图 Agent 工作台、安全暂停/配置修订/纠偏指令、TaskSession 恢复，以及 OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立 Reasoning、模型能力检查和图片/音频/视频/文档资产链路；Agent 并发调度、checkpoint 结构迁移、动态插件、共享资源总线、原生视频输入与内置语音识别尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
 
 ## 2. 节点、循环与资源安全
 
 - **节点是最小执行单元**；通过 NodeSpec 声明类型化输入/输出、参数和能力，执行器在 Rust 侧注册。工作流 JSON 不得包含 React Flow 的内部临时状态。
-- **Agent Loop 由节点构建**。当前用 Loop Gate 组合单层循环：必须存在流向 SCC 外的 `exit` 边，反馈路径必须经过 Gate，且显式配置 `maxIterations` 与 `timeoutMs`；静态只证明循环受控，终止由运行期预算强制。不可通过简单移除 `graph.cycle` 检查来“支持循环”。
+- **Agent Loop 由节点构建**。可以用 Loop Gate 组合单层循环：必须存在流向 SCC 外的 `exit` 边，反馈路径必须经过 Gate，且显式配置 `maxIterations` 与 `timeoutMs`；静态只证明循环受控，终止由运行期预算强制。也可以使用一等 `core.agent`，由其内部 AgentRunner 完成多轮模型/工具循环；Runner 仍是节点执行器，不得把固定 Agent Loop 塞进 Scheduler。不可通过简单移除 `graph.cycle` 检查来“支持循环”。
 - **工作流不配置文件并发细节**。并发由调度器执行，资源冲突由工具与总线处理。共享文件写入必须遵循 `read(version) → write(expected_version)` 的原子比较与提交；过期版本拒绝、要求重新读取，禁止静默覆盖或擅自合并。
-- **能力声明不等于授权**。`DeclaredCapabilityPolicy` 只放行节点声明的 capability，并拒绝未知能力；网络、进程、文件与工具目标由 `PermissionManager` 在运行时逐目标审批，按 run + target 缓存。Provider 模型发现与推理使用同一个网络审批，目标为 `protocol://host:port`；MCP 审批必须列出可执行文件、参数、cwd 与相关环境键，不得把子进程审批说成沙箱。不得用预授权绕过用户审批，Composite 内部也不得绕过。文件事务与共享资源总线仍未实现；任何可能直接写共享文件的执行路径都不得绕过它们。
+- **能力声明不等于授权**。`DeclaredCapabilityPolicy` 只放行节点声明的 capability，并拒绝未知能力；网络、进程、文件与工具目标由 `PermissionManager` 在运行时逐目标审批，按 run + target 缓存。Provider 模型发现与推理使用同一个网络审批，目标为 `protocol://host:port`；MCP 审批必须列出可执行文件、参数、cwd 与相关环境键，不得把子进程审批说成沙箱。不得用预授权绕过用户审批，Composite 内部也不得绕过。受控工作区已提供版本化 `read(version) → write(expectedVersion)`，其他共享文件路径不得绕过它；共享资源总线仍未实现。
 - **资产不是路径字符串**。工作流只保存 `AssetRef`/资产 ID，不保存 base64、绝对路径或文件句柄；导入、读取、缩放、抽帧和文档抽取必须在 Rust 的受控 `AssetStore` 中完成。不得让前端或工作流拼任意路径，不得静默丢弃不支持的原生媒体，也不得在未支持时假装原生输入。
 - **凭据与密钥**不得进入工作流 JSON、日志、截图、测试夹具和提交。拒绝未经授权的危险操作，错误必须有可定位的稳定错误码。
 - **插件方案保持开放**：保留 2.0 的能力声明、隔离和契约测试思想，但不要未经评估便认定 C ABI、WASM 或子进程 RPC 是唯一方案；影响兼容性的决定应记录 ADR。

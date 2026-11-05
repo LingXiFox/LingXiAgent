@@ -1,6 +1,9 @@
 import type {
+  AgentConfigRevision,
+  AgentConfigSnapshot,
   AssetKind,
   AssetRef,
+  ConfigChange,
   HostInteraction,
   ModelCapabilities,
   NodeSpec,
@@ -14,6 +17,7 @@ import type {
   TemplateBundle,
   TemplateSummary,
   ValidationReport,
+  TaskSession,
   WorkflowDoc,
   WorkflowSummary,
 } from "./types";
@@ -25,6 +29,30 @@ export interface Transport {
   validateWorkflow(workflow: WorkflowDoc): Promise<ValidationReport>;
   runWorkflow(workflow: WorkflowDoc): Promise<RunStartResponse>;
   stopWorkflow(runId: string): Promise<boolean>;
+  pauseWorkflow(runId: string): Promise<boolean>;
+  resumeWorkflow(runId: string): Promise<boolean>;
+  pauseAgent(runId: string, agentInstanceId: string): Promise<void>;
+  resumeAgent(runId: string, agentInstanceId: string): Promise<void>;
+  cancelAgent(runId: string, agentInstanceId: string): Promise<void>;
+  sendAgentDirective(runId: string, agentInstanceId: string, text: string): Promise<void>;
+  previewAgentConfig(
+    runId: string,
+    agentInstanceId: string,
+    config: AgentConfigSnapshot,
+  ): Promise<ConfigChange[]>;
+  applyAgentConfig(
+    runId: string,
+    agentInstanceId: string,
+    config: AgentConfigSnapshot,
+    expectedRevision: number,
+  ): Promise<AgentConfigRevision>;
+  rejectAgentConfig(
+    runId: string,
+    agentInstanceId: string,
+    revision: number,
+    detail: string,
+  ): Promise<void>;
+  taskSession(runId: string): Promise<TaskSession | null>;
   respondInteraction(requestId: string, approved: boolean): Promise<boolean>;
   workflowList(): Promise<WorkflowSummary[]>;
   saveWorkflow(name: string, workflow: WorkflowDoc): Promise<WorkflowSummary>;

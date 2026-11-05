@@ -54,23 +54,33 @@ pub(crate) fn replace_file(temp: &Path, destination: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    fn scratch_dir() -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|value| value.as_nanos())
             .unwrap_or_default();
-        let dir =
-            std::env::temp_dir().join(format!("lingxi-fsutil-{}-{unique}", std::process::id()));
+        // Parallel tests can sample the same nanosecond; the sequence keeps
+        // each test's directory independent. Both files must also live in the
+        // same directory, because that is what makes the rename atomic.
+        let sequence = SCRATCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "lingxi-fsutil-{}-{unique}-{sequence}",
+            std::process::id()
+        ));
         fs::create_dir_all(&dir).expect("create scratch dir");
-        dir.join(name)
+        dir
     }
 
     #[test]
     fn replaces_an_existing_file_and_cleans_the_temp() {
-        let destination = scratch("workflow.json");
-        let temp = scratch("workflow.json.tmp");
+        let dir = scratch_dir();
+        let destination = dir.join("workflow.json");
+        let temp = dir.join("workflow.json.tmp");
         fs::write(&destination, b"old").expect("write old");
         fs::write(&temp, b"new").expect("write new");
 
@@ -78,13 +88,14 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("read"), b"new");
         assert!(!temp.exists());
-        let _ = fs::remove_dir_all(destination.parent().expect("parent"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_failed_replacement_leaves_the_original_intact() {
-        let destination = scratch("workflow.json");
-        let missing_temp = scratch("missing.tmp");
+        let dir = scratch_dir();
+        let destination = dir.join("workflow.json");
+        let missing_temp = dir.join("missing.tmp");
         fs::write(&destination, b"original").expect("write original");
 
         let error = replace_file(&missing_temp, &destination).expect_err("must fail");
@@ -94,6 +105,6 @@ mod tests {
             io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied | io::ErrorKind::Other
         ));
         assert_eq!(fs::read(&destination).expect("read"), b"original");
-        let _ = fs::remove_dir_all(destination.parent().expect("parent"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

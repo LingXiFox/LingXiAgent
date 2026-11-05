@@ -46,6 +46,12 @@ impl AppState {
         if recovered > 0 {
             eprintln!("marked {recovered} unfinished run(s) as interrupted after restart");
         }
+        let recovered_sessions = db.recover_task_sessions()?;
+        if recovered_sessions > 0 {
+            eprintln!(
+                "marked {recovered_sessions} unfinished task session(s) as interrupted after restart"
+            );
+        }
         let registry = Arc::new(NodeRegistry::builtin());
         let permissions = Arc::new(lingxi_runtime::permissions::PermissionManager::new());
         let assets = Arc::new(lingxi_runtime::AssetStore::new(data_dir.join("assets")));
@@ -69,6 +75,10 @@ impl AppState {
                 credentials: credentials.clone(),
                 skills_root: skills_root.clone(),
                 assets: assets.clone(),
+                workspace: Some(Arc::new(
+                    lingxi_runtime::Workspace::open(data_dir.join("agent-workspace"))
+                        .map_err(|error| format!("cannot open agent workspace: {error}"))?,
+                )),
             },
         ));
         Ok(Self {
@@ -133,6 +143,16 @@ pub fn run() {
             commands::validate_workflow,
             commands::run_workflow,
             commands::stop_workflow,
+            commands::pause_workflow,
+            commands::resume_workflow,
+            commands::pause_agent,
+            commands::resume_agent,
+            commands::cancel_agent,
+            commands::send_agent_directive,
+            commands::preview_agent_config,
+            commands::apply_agent_config,
+            commands::reject_agent_config,
+            commands::task_session,
             commands::respond_interaction,
             commands::workflow_list,
             commands::save_workflow,

@@ -139,6 +139,10 @@ pub struct PortSpec {
     /// True when this port carries an execution trigger rather than plain data.
     #[serde(default, skip_serializing_if = "is_false")]
     pub control: bool,
+    /// Optional editor grouping. Ports with the same group are rendered inside
+    /// one collapsible section; the wire order of `inputs` remains authoritative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 impl PortSpec {
@@ -149,7 +153,13 @@ impl PortSpec {
             data_type,
             required: false,
             control: false,
+            group: None,
         }
+    }
+
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
     }
 
     pub fn required(mut self) -> Self {

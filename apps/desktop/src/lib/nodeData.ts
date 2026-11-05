@@ -17,6 +17,8 @@ export interface LingXiNodeData extends Record<string, unknown> {
   enabled: boolean;
   spec: NodeSpec;
   run?: NodeRunInfo;
+  /** Set while a run owns the current snapshot; the canvas must not mutate it. */
+  readOnly?: boolean;
   /** Root asset table, used by asset params for previews and metadata. */
   assets?: Record<string, AssetRef>;
   protocol?: ProviderProtocol;
