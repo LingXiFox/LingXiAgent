@@ -60,7 +60,7 @@ Phase 1.7 新增覆盖的核心断言：
 | `pnpm test:events` | 6 passed |
 | `pnpm test:routing` | 13 passed |
 | `pnpm test:composite` | 8 passed |
-| `pnpm -C apps/desktop build` | tsc + Vite 成功；222 modules，主 JS **505.21 kB**（gzip 157.55 kB），CSS **64.36 kB**（gzip 11.68 kB） |
+| `pnpm -C apps/desktop build` | tsc + Vite 成功；222 modules，主 JS **506.78 kB**（gzip 157.81 kB），CSS **64.67 kB**（gzip 11.74 kB） |
 
 ### 2.3 Playwright（浏览器 UI，mock transport）
 
@@ -79,7 +79,7 @@ PLAYWRIGHT_CHANNEL=chromium pnpm -C apps/desktop exec playwright test --config p
 | 3 | 项目侧栏缩放与折叠 | 拖动分隔条后宽度变化并持久化，折叠后项目树隐藏 |
 | 4 | 发送快捷键配置 | 自定义组合键发送；modifier 模式下 Enter 仍插入换行 |
 | 5 | 粘贴附件预览 | 粘贴图片后 composer 显示预览、可移除，发送前不落运行 |
-| 6 | 浏览项目树并按版本编辑文件 | 展开目录、打开 `src/index.ts`、保存后版本推进 |
+| 6 | 浏览项目树并按版本编辑文件 | 展开目录、打开 `src/index.ts`、保存后版本推进；文件面板可定位文件，终端标签展示真实工具输出入口 |
 | 7 | 工作台 Agent 与真实节点双向映射 | 定位节点进入对应组合层，画布再回到同一 Agent 标签 |
 | 8 | 不重新打开项目创建第二个会话 | 会话列表出现两条、切换不丢项目上下文 |
 | 9 | 从工作区节点内部绑定项目文件夹 | ProjectField 选择目录后项目树出现，回调不丢失 |
@@ -192,7 +192,7 @@ pnpm -C apps/desktop test:e2e:tauri
 | `cargo fmt --all -- --check` | **通过** |
 | `cargo clippy --workspace --all-targets -- -D warnings` | **通过** |
 | `cargo test --workspace` | **160 passed / 0 failed** |
-| `pnpm -C apps/desktop build` | 通过；222 modules，主 JS 505.21 kB（gzip 157.55 kB），CSS 64.36 kB（gzip 11.68 kB） |
+| `pnpm -C apps/desktop build` | 通过；222 modules，主 JS 506.78 kB（gzip 157.81 kB），CSS 64.67 kB（gzip 11.74 kB） |
 | 前端单元测试 | events 6、routing 13、composite 8，全部通过 |
 | Playwright 浏览器 E2E | **34 passed**（5 回归 + 14 Phase 1.5 + 6 Phase 1.6 + 9 Phase 1.7） |
 | 原生 Tauri WDIO | **22 passed**（Phase 1.5 3 + Phase 1.6 8 + Phase 1.7 7 + runtime 4） |

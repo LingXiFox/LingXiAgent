@@ -138,8 +138,15 @@ test.describe("LingXiAgent phase 1.7 project workbench", () => {
     await panel.getByRole("button", { name: "保存（版本检查）" }).click();
     await expect(panel).toContainText("已保存");
 
+    await panel.getByTestId("reveal-file").click();
+    await expect(panel.getByTestId("reveal-file")).toBeVisible();
+
     await panel.getByRole("button", { name: "Git", exact: true }).click();
     await expect(panel).toContainText("工作区变更");
+
+    await page.getByTestId("open-terminal").click();
+    await expect(page.getByTestId("terminal-panel")).toContainText("命令与测试输出");
+    await expect(page.getByTestId("terminal-panel")).toContainText("不是可交互 shell");
   });
 
   test("maps a workbench Agent to its real nodes and back", async ({ page }) => {

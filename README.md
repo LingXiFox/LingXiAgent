@@ -97,7 +97,7 @@ Linux 需要 `libwebkit2gtk-4.1-dev` 等系统包，详见 `Docs/phase-0/04-test
 - 运行可靠性：流中断、MCP 崩溃、审批拒绝、取消、预算耗尽均有稳定错误码和回归测试；WebView 刷新后从 `active_run` 恢复事件流
 - 一等 `core.agent`：Capabilities / Instructions / Collaboration / Control 四组端口，独立 AgentRunner 负责多轮模型、工具、上下文、完成判定、预算、审批与消息；Agent 节点内部循环不归 Scheduler
 - 版本化协作协议：TaskEnvelope、AgentMessageEnvelope、ArtifactRef、AgentExecutionState；所有 Agent 消息经 Agent Message Bus 校验、去重、排序、持久化并受队列上限约束
-- 双视图工作台：总览 + 每个 Agent 标签，展示当前任务、激活历史、模型增量、工具调用、消息、成本、审批与配置版本；画布与工作台双向定位，切换视图不重启运行
+- 双视图工作台：总览 + 每个 Agent 标签，展示当前任务、激活历史、模型增量、工具调用、消息、成本、审批与配置版本；辅助面板含文件/Git/规则/运行配置/终端，画布与工作台双向定位，切换视图不重启运行
 - 运行期干预：工作流/Agent 暂停、继续、取消，安全点后进入 `paused`；配置修订先预览再显式应用，过期 revision 拒绝；纠偏指令经总线在最近安全点注入
 - 任务会话持久化：SQLite `user_version = 3` 新增 `projects`、`conversations`、`conversation_messages`、`conversation_runs`、`permission_audit`；`task_sessions` 继续保存 Agent 实例、激活、配置版本、消息与审批；刷新不影响 Rust 执行，崩溃后标记 `interrupted` 并要求人工核对工具副作用
 - 受控工作区与 LSP：文件 `read(version) → write(expectedVersion)`，过期冲突拒绝；stdio LSP 真实 diagnostics/documentSymbol

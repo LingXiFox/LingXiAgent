@@ -218,7 +218,7 @@ export function ProjectWorkbench({
   const [gitLog, setGitLog] = useState<GitCommit[]>([]);
   const [gitDiff, setGitDiff] = useState("");
   const [rules, setRules] = useState<InstructionDocument[]>([]);
-  const [panel, setPanel] = useState<"files" | "git" | "rules" | "config" | null>(null);
+  const [panel, setPanel] = useState<"files" | "git" | "rules" | "config" | "terminal" | null>(null);
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
   const [sendMode, setSendMode] = useState<"enter" | "modifier">(() => {
@@ -839,9 +839,14 @@ export function ProjectWorkbench({
             ) : (
               <p className="project-empty">打开一个已存在的项目文件夹后，文件、会话和 Agent 都会绑定到它。</p>
             )}
-            <button type="button" className="btn btn--ghost btn--compact" onClick={() => setPanel("rules")}>
-              项目规则
-            </button>
+            <div className="sidebar-actions">
+              <button type="button" className="btn btn--ghost btn--compact" onClick={() => setPanel("rules")}>
+                项目规则
+              </button>
+              <button type="button" className="btn btn--ghost btn--compact" onClick={() => setPanel("terminal")} data-testid="open-terminal">
+                终端
+              </button>
+            </div>
           </>
         ) : (
           <button type="button" className="btn btn--ghost btn--compact sidebar-expand" onClick={() => setSidebarOpen(true)} title="展开侧栏" data-testid="sidebar-expand">
@@ -1216,6 +1221,7 @@ export function ProjectWorkbench({
                 <button type="button" className={panel === "git" ? "is-active" : ""} onClick={() => setPanel("git")}>Git</button>
                 <button type="button" className={panel === "rules" ? "is-active" : ""} onClick={() => setPanel("rules")}>规则</button>
                 <button type="button" className={panel === "config" ? "is-active" : ""} onClick={() => setPanel("config")}>运行配置</button>
+                <button type="button" className={panel === "terminal" ? "is-active" : ""} onClick={() => setPanel("terminal")}>终端</button>
                 <button type="button" className="aux-panel__close" onClick={() => setPanel(null)}>×</button>
               </div>
               {panel === "files" ? (
@@ -1225,6 +1231,9 @@ export function ProjectWorkbench({
                       <div className="file-head">
                         <strong>{file.path}</strong>
                         <small>版本 {file.version.slice(0, 10)}</small>
+                        <button type="button" className="text-button" data-testid="reveal-file" onClick={() => void api.projectReveal(projectId ?? "", file.path).catch((error) => setFileError(String(error)))}>
+                          定位
+                        </button>
                       </div>
                       <textarea className="file-editor" value={fileDraft} onChange={(event) => setFileDraft(event.target.value)} />
                       <div className="agent-card__actions">
@@ -1327,6 +1336,31 @@ export function ProjectWorkbench({
                       </div>
                     </section>
                   ) : null}
+                </div>
+              ) : null}
+              {panel === "terminal" ? (
+                <div className="aux-panel__body terminal-panel" data-testid="terminal-panel">
+                  <h3>命令与测试输出</h3>
+                  <p className="muted">只展示当前 Agent 的真实工具调用；这里不是可交互 shell。</p>
+                  {!active ? (
+                    <p className="muted">选择一个已运行的 Agent 后查看它的命令与测试输出。</p>
+                  ) : toolCards.length === 0 ? (
+                    <p className="muted">当前 Agent 还没有工具调用。命令、测试和文件操作的真实输出会在这里出现。</p>
+                  ) : (
+                    <div className="terminal-stack">
+                      {toolCards.map((tool) => (
+                        <details className={"tool-card" + (tool.ok === false ? " is-failed" : "")} key={tool.toolCallId} data-testid="terminal-tool" open={tool.ok === false}>
+                          <summary>
+                            <span>{tool.ok === false ? "✕" : tool.ok ? "✓" : "…"}</span>
+                            <strong>{tool.name}</strong>
+                            <code>{tool.arguments.slice(0, 110)}</code>
+                            {tool.durationMs !== undefined ? <small>{tool.durationMs}ms</small> : null}
+                          </summary>
+                          <pre>{tool.result || tool.error || "执行中…"}</pre>
+                        </details>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : null}
             </aside>

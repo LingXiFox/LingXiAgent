@@ -626,6 +626,32 @@ body.is-resizing-sidebar {
   color: var(--text-faint);
 }
 
+.file-head .text-button {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.sidebar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.terminal-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+}
+
+.terminal-panel pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .file-editor {
   width: 100%;
   min-height: 260px;
