@@ -1,6 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
 async function ready(page: Page) {
+  // Seed the advanced canvas only when nothing was chosen yet. A reload after a
+  // run must still observe the workbench persisted by the previous view.
+  await page.addInitScript(() => {
+    if (!window.localStorage.getItem("lingxi.view")) {
+      window.localStorage.setItem("lingxi.view", "canvas");
+    }
+  });
   await page.goto("/");
   await expect(page.getByTestId("canvas")).toBeVisible();
   await expect(page.locator('[data-testid^="library-item-"]').first()).toBeVisible();

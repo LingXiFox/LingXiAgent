@@ -1,6 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 async function ready(page: Page) {
+  // The product now opens on the workbench; these regression tests target the
+  // advanced canvas explicitly.
+  await page.addInitScript(() => window.localStorage.setItem("lingxi.view", "canvas"));
   await page.goto("/");
   await expect(page.getByTestId("canvas")).toBeVisible();
   await expect(page.locator('[data-testid^="library-item-"]').first()).toBeVisible();

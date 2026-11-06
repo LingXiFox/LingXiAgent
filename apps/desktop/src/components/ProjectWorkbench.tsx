@@ -4,6 +4,8 @@ import { api } from "../lib/api";
 import type { UiRunStatus } from "../lib/log";
 import type {
   AgentConfigRevision,
+  AssetKind,
+  AssetRef,
   AgentConfigSnapshot,
   AgentInstance,
   AgentUsage,
@@ -133,7 +135,8 @@ interface ProjectWorkbenchProps {
   onNewConversation: () => Promise<void>;
   onNewTeam: () => Promise<void>;
   onSelectConversation: (conversationId: string) => Promise<void>;
-  onSend: (text: string, agentNodeId?: string | null) => Promise<void>;
+  onAssetImported: (asset: AssetRef) => void;
+  onSend: (text: string, agentNodeId?: string | null, attachments?: AssetRef[]) => Promise<void>;
   onStop: () => Promise<void>;
   onQuickConfig: (params: Record<string, unknown>) => Promise<void>;
   onPauseAgent: (agentInstanceId: string) => void;
@@ -171,6 +174,7 @@ export function ProjectWorkbench({
   onNewConversation,
   onNewTeam,
   onSelectConversation,
+  onAssetImported,
   onSend,
   onStop,
   onQuickConfig,
@@ -193,6 +197,11 @@ export function ProjectWorkbench({
   );
   const active = agents.find((agent) => agent.instanceId === selected) ?? null;
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    if (typeof window === "undefined") return 250;
+    const stored = Number(window.localStorage.getItem("lingxi.sidebarWidth"));
+    return Number.isFinite(stored) && stored >= 210 && stored <= 460 ? stored : 250;
+  });
   // The normal-user view opens on the conversation, not on the dashboard.
   // 总览 stays one click away and remains the team view for power users.
   const [overview, setOverview] = useState(false);
@@ -212,6 +221,14 @@ export function ProjectWorkbench({
   const [panel, setPanel] = useState<"files" | "git" | "rules" | "config" | null>(null);
   const [composer, setComposer] = useState("");
   const [sending, setSending] = useState(false);
+  const [sendMode, setSendMode] = useState<"enter" | "modifier">(() => {
+    if (typeof window === "undefined") return "enter";
+    return window.localStorage.getItem("lingxi.composerSend") === "modifier" ? "modifier" : "enter";
+  });
+  const [attachments, setAttachments] = useState<AssetRef[]>([]);
+  const [attachmentPreviews, setAttachmentPreviews] = useState<Record<string, string>>({});
+  const [attachmentError, setAttachmentError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
   const [directive, setDirective] = useState("");
   const [draft, setDraft] = useState<AgentConfigSnapshot | null>(null);
   const [preview, setPreview] = useState<ConfigChange[] | null>(null);
@@ -219,9 +236,13 @@ export function ProjectWorkbench({
   const [configNote, setConfigNote] = useState("");
   const [actionError, setActionError] = useState("");
   const [activationChoice, setActivationChoice] = useState<Record<string, string>>({});
+  // Turning on YOLO is a deliberate, confirmed action; the select alone is
+  // never enough because this mode changes what Rust may execute unattended.
+  const [pendingYolo, setPendingYolo] = useState(false);
   const [seen, setSeen] = useState<Record<string, number>>({});
   const projectId = project?.projectId ?? null;
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const projectKey = projectId ?? "";
   useEffect(() => {
@@ -444,16 +465,114 @@ export function ProjectWorkbench({
     }
   };
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("lingxi.composerSend", sendMode);
+    }
+  }, [sendMode]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("lingxi.sidebarWidth", String(sidebarWidth));
+    }
+  }, [sidebarWidth]);
+
+  const beginSidebarResize = (event: { clientX: number; preventDefault: () => void }) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    const move = (moveEvent: PointerEvent) => {
+      setSidebarWidth(Math.max(210, Math.min(460, startWidth + moveEvent.clientX - startX)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("is-resizing-sidebar");
+    };
+    document.body.classList.add("is-resizing-sidebar");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const attachmentKind = (file: File): AssetKind => {
+    if (file.type.startsWith("image/")) return "image";
+    if (file.type.startsWith("audio/")) return "audio";
+    if (file.type.startsWith("video/")) return "video";
+    return "document";
+  };
+
+  const addFiles = async (files: File[]) => {
+    setAttachmentError("");
+    const room = 6 - attachments.length;
+    if (room <= 0) {
+      setAttachmentError("每次最多 6 个附件");
+      return;
+    }
+    for (const file of files.slice(0, room)) {
+      if (file.size > 8 * 1024 * 1024) {
+        setAttachmentError(file.name + " 超过 8 MiB，未导入");
+        continue;
+      }
+      try {
+        const kind = attachmentKind(file);
+        const asset = await api.assetImportFile(file, kind);
+        onAssetImported(asset);
+        setAttachments((current) =>
+          current.some((entry) => entry.id === asset.id) ? current : [...current, asset],
+        );
+        if (kind === "image") {
+          void api
+            .assetPreview(asset.id, asset.mime)
+            .then((url) => setAttachmentPreviews((current) => ({ ...current, [asset.id]: url })))
+            .catch(() => undefined);
+        }
+      } catch (error) {
+        setAttachmentError("附件导入失败：" + String(error));
+      }
+    }
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((current) => current.filter((entry) => entry.id !== id));
+    setAttachmentPreviews((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  };
+
   const sendComposer = async () => {
     const text = composer.trim();
     if (!text || sending) return;
+    if (status === "running" && attachments.length > 0) {
+      setAttachmentError("运行中只能发送文字纠偏指令；附件请在下一次运行前添加");
+      return;
+    }
     setSending(true);
+    setAttachmentError("");
     try {
-      await onSend(text, active?.nodeId ?? null);
+      await onSend(text, active?.nodeId ?? null, attachments);
       setComposer("");
+      setAttachments([]);
+      setAttachmentPreviews({});
+    } catch (error) {
+      setAttachmentError("发送失败：" + String(error));
     } finally {
       setSending(false);
     }
+  };
+
+  const changePermission = (next: string) => {
+    if (next === "yolo" && permissionMode !== "yolo") {
+      setPendingYolo(true);
+      return;
+    }
+    void onQuickConfig({ permissionMode: next });
+  };
+
+  const enableYolo = () => {
+    setPendingYolo(false);
+    void onQuickConfig({ permissionMode: "yolo" });
   };
 
   const sendDirective = async () => {
@@ -592,6 +711,22 @@ export function ProjectWorkbench({
             </ol>
           )}
         </section>
+        <section className="agent-card" data-testid="overview-artifacts">
+          <h3>交付物</h3>
+          {!session || session.artifacts.length === 0 ? (
+            <p className="muted">本次运行还没有交付物。Artifact 只在 Rust 真实产出后出现。</p>
+          ) : (
+            <ul className="artifact-list">
+              {session.artifacts.map((artifact) => (
+                <li key={artifact.id}>
+                  <strong>{artifact.name}</strong>
+                  <span>{artifact.kind}{artifact.mime ? ` · ${artifact.mime}` : ""}</span>
+                  {artifact.size ? <small>{artifact.size} bytes</small> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
         <section className="agent-card">
           <h3>待处理审批 / 核对</h3>
           {reviews.length === 0 ? "没有待处理项。" : (
@@ -611,12 +746,15 @@ export function ProjectWorkbench({
 
   return (
     <section className="project-workbench" data-testid="agent-workbench">
-      <aside className={"project-sidebar" + (sidebarOpen ? "" : " is-collapsed")}>
+      <aside
+        className={"project-sidebar" + (sidebarOpen ? "" : " is-collapsed")}
+        style={sidebarOpen ? { width: sidebarWidth, flexBasis: sidebarWidth } : undefined}
+      >
         {sidebarOpen ? (
           <>
             <div className="project-sidebar__head">
               <strong>项目</strong>
-              <button type="button" className="btn btn--ghost btn--compact" onClick={() => setSidebarOpen(false)} title="收起侧栏">
+              <button type="button" className="btn btn--ghost btn--compact" onClick={() => setSidebarOpen(false)} title="收起侧栏" data-testid="sidebar-collapse">
                 «
               </button>
             </div>
@@ -706,11 +844,21 @@ export function ProjectWorkbench({
             </button>
           </>
         ) : (
-          <button type="button" className="btn btn--ghost btn--compact sidebar-expand" onClick={() => setSidebarOpen(true)} title="展开侧栏">
+          <button type="button" className="btn btn--ghost btn--compact sidebar-expand" onClick={() => setSidebarOpen(true)} title="展开侧栏" data-testid="sidebar-expand">
             »
           </button>
         )}
       </aside>
+      {sidebarOpen ? (
+        <div
+          className="project-sidebar__resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整侧栏宽度"
+          data-testid="sidebar-resizer"
+          onPointerDown={beginSidebarResize}
+        />
+      ) : null}
 
       <section className="project-main">
         <div className="workbench__tabs" role="tablist" data-testid="agent-tabs">
@@ -870,6 +1018,12 @@ export function ProjectWorkbench({
                       )}
                     </div>
                   ) : null}
+                  {active ? (
+                    <details className="agent-card raw-events" data-testid="agent-raw-events">
+                      <summary>原始事件 · {agentEvents.length} 条（最近 40）</summary>
+                      <pre>{JSON.stringify(agentEvents.slice(-40), null, 2)}</pre>
+                    </details>
+                  ) : null}
                   {active && active.activations.length > 0 && activation ? (
                     <div className="agent-card agent-facts-card">
                       <h3>执行状态</h3>
@@ -885,24 +1039,113 @@ export function ProjectWorkbench({
               )}
             </div>
 
-            <footer className="composer" data-testid="agent-composer">
+            <footer
+              className={"composer" + (dragActive ? " is-dragging" : "")}
+              data-testid="agent-composer"
+              onDragOver={(event) => {
+                if (event.dataTransfer.types.includes("Files")) {
+                  event.preventDefault();
+                  setDragActive(true);
+                }
+              }}
+              onDragLeave={() => setDragActive(false)}
+              onDrop={(event) => {
+                if (event.dataTransfer.files.length > 0) {
+                  event.preventDefault();
+                  setDragActive(false);
+                  void addFiles(Array.from(event.dataTransfer.files));
+                }
+              }}
+            >
+              {attachments.length > 0 ? (
+                <div className="composer__attachments" data-testid="composer-attachments">
+                  {attachments.map((asset) => (
+                    <div className="composer__attachment" key={asset.id} data-testid={"composer-attachment-" + asset.kind}>
+                      {attachmentPreviews[asset.id] ? (
+                        <img src={attachmentPreviews[asset.id]} alt={asset.name} />
+                      ) : (
+                        <span className="composer__attachment-kind">{asset.kind}</span>
+                      )}
+                      <div>
+                        <strong>{asset.name}</strong>
+                        <small>{Math.max(1, Math.round(asset.size / 1024))} KiB · {asset.mime}</small>
+                      </div>
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => removeAttachment(asset.id)}
+                        aria-label={"移除 " + asset.name}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               <textarea
                 rows={3}
                 value={composer}
-                placeholder={status === "running" ? "运行中发送会作为纠偏指令进入当前 Agent" : "描述任务，Enter 发送，Shift+Enter 换行"}
+                placeholder={
+                  status === "running"
+                    ? "运行中发送会作为纠偏指令进入当前 Agent"
+                    : sendMode === "enter"
+                      ? "描述任务，Enter 发送，Shift+Enter 换行；可拖入文件或粘贴图片"
+                      : "描述任务，Ctrl/Cmd+Enter 发送，Enter 换行；可拖入文件或粘贴图片"
+                }
                 onChange={(event) => setComposer(event.target.value)}
+                onPaste={(event) => {
+                  const files = Array.from(event.clipboardData.files);
+                  if (files.length > 0) {
+                    event.preventDefault();
+                    void addFiles(files);
+                  }
+                }}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
+                  const send =
+                    event.key === "Enter" &&
+                    (sendMode === "enter" ? !event.shiftKey : event.metaKey || event.ctrlKey);
+                  if (send) {
                     event.preventDefault();
                     void sendComposer();
                   }
                 }}
                 data-testid="composer-input"
               />
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                hidden
+                data-testid="composer-file-input"
+                onChange={(event) => {
+                  const files = Array.from(event.target.files ?? []);
+                  event.target.value = "";
+                  void addFiles(files);
+                }}
+              />
               <div className="composer__bar">
+                <button
+                  type="button"
+                  className="btn btn--ghost btn--compact"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={status === "running"}
+                  title="添加图片、文档或其他附件"
+                  data-testid="composer-attach"
+                >
+                  + 附件
+                </button>
+                <select
+                  value={sendMode}
+                  onChange={(event) => setSendMode(event.target.value === "modifier" ? "modifier" : "enter")}
+                  data-testid="composer-send-mode"
+                  title="发送快捷键"
+                >
+                  <option value="enter">Enter 发送</option>
+                  <option value="modifier">Ctrl/Cmd+Enter 发送</option>
+                </select>
                 <select
                   value={permissionMode}
-                  onChange={(event) => void onQuickConfig({ permissionMode: event.target.value })}
+                  onChange={(event) => changePermission(event.target.value)}
                   data-testid="permission-mode"
                   title="权限模式由 Rust 执行层强制"
                 >
@@ -958,6 +1201,9 @@ export function ProjectWorkbench({
                 <p className="composer__warning" data-testid="yolo-warning">
                   YOLO 会自动执行授权项目内的文件修改、构建与脚本，可能产生真实副作用。凭据、越界路径、破坏性 git 与高风险程序仍会被拦截；随时可切回 Ask。
                 </p>
+              ) : null}
+              {attachmentError ? (
+                <p className="error-text" data-testid="composer-attachment-error">{attachmentError}</p>
               ) : null}
               {quickEditError ? <p className="error-text">{quickEditError}</p> : null}
             </footer>
@@ -1087,6 +1333,37 @@ export function ProjectWorkbench({
           ) : null}
         </div>
       </section>
+      {pendingYolo ? (
+        <div className="wb-modal-backdrop" role="presentation" onClick={() => setPendingYolo(false)}>
+          <section
+            className="wb-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="启用 YOLO 权限"
+            data-testid="yolo-confirm"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2>启用 YOLO 权限？</h2>
+            <p>
+              启用后，Rust 执行层会自动允许当前项目内的文件修改、构建命令与脚本，不再逐项询问。
+              这些操作可能产生真实副作用。
+            </p>
+            <ul>
+              <li>仍会拦截：凭据读取、越界路径、破坏性 git、高风险程序。</li>
+              <li>对当前会话的后续运行持续生效，直到切回 Ask 或 Workspace。</li>
+              <li>随时可以切回 Ask，但已经获准的操作不会回滚。</li>
+            </ul>
+            <div className="wb-modal__actions">
+              <button type="button" className="btn btn--ghost btn--compact" onClick={() => setPendingYolo(false)} data-testid="yolo-confirm-cancel">
+                取消
+              </button>
+              <button type="button" className="btn btn--danger btn--compact" onClick={enableYolo} data-testid="yolo-confirm-enable">
+                继续启用 YOLO
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </section>
   );
 }

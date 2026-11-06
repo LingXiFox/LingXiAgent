@@ -54,6 +54,7 @@ export const tauriTransport: Transport = {
       userMessage: options?.userMessage ?? null,
       permissionMode: options?.permissionMode ?? null,
       agentNodeId: options?.agentNodeId ?? null,
+      attachments: options?.attachments ?? null,
     }),
   stopWorkflow: (runId) => invoke<boolean>("stop_workflow", { runId }),
   pauseWorkflow: (runId) => invoke<boolean>("pause_workflow", { runId }),
@@ -111,8 +112,14 @@ export const tauriTransport: Transport = {
       capabilities: capabilities ?? null,
     }),
   assetImport: (path, kind) => invoke<AssetRef>("asset_import", { path, kind }),
-  assetImportFile: async () => {
-    throw new Error("desktop builds use the native file picker");
+  assetImportFile: async (file, kind) => {
+    const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+    return invoke<AssetRef>("asset_import_bytes", {
+      name: file.name || "pasted-image",
+      mime: file.type || null,
+      kind,
+      bytes,
+    });
   },
   assetPreview: (id, mime) => invoke<string>("asset_preview", { id, mime }),
   respondHostInteraction: (requestId, approved) =>

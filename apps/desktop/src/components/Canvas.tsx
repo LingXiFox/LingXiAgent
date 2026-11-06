@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type DragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, type DragEvent } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -42,6 +42,7 @@ interface CanvasProps {
   onSelectionChange: (nodeIds: string[]) => void;
   onViewportChange: (viewport: Viewport) => void;
   focus?: { nodeId: string; nonce: number } | null;
+  active: boolean;
 }
 
 export function Canvas({
@@ -59,8 +60,9 @@ export function Canvas({
   onSelectionChange,
   onViewportChange,
   focus,
+  active,
 }: CanvasProps) {
-  const { screenToFlowPosition, setViewport, getNode, setCenter } = useReactFlow();
+  const { screenToFlowPosition, setViewport, getNode, setCenter, fitView } = useReactFlow();
   const nodeLookup = useStore((state) => state.nodeLookup);
   const routingIndex = useMemo(
     () => new ObstacleIndex(nodeObstacles(nodeLookup.values())),
@@ -87,6 +89,20 @@ export function Canvas({
     void setViewport({ x: viewport.x, y: viewport.y, zoom: viewport.zoom }, { duration: 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewportKey]);
+
+  // The canvas is kept mounted but hidden behind the workbench, so its first
+  // fitView can measure a zero-sized surface. Refit when the canvas becomes
+  // visible again; initial mounts keep the stored viewport behavior.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const becameVisible = active && !wasActive.current;
+    wasActive.current = active;
+    if (!becameVisible) return;
+    const handle = window.setTimeout(() => {
+      void fitView({ padding: 0.25, maxZoom: 1, duration: 0 });
+    }, 30);
+    return () => window.clearTimeout(handle);
+  }, [active, fitView]);
 
   // Workbench -> canvas locating. Runs after the layer has rendered so the
   // target node is in the React Flow store; a nonce makes repeated requests work.

@@ -239,6 +239,7 @@ pub fn run() {
             commands::model_capabilities,
             commands::respond_host_interaction,
             commands::asset_import,
+            commands::asset_import_bytes,
             commands::asset_preview,
             commands::skill_list,
             commands::agent_template,

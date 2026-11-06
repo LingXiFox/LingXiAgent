@@ -499,8 +499,10 @@ export default function App() {
   const [templateRootId, setTemplateRootId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [view, setViewState] = useState<"canvas" | "workbench">(() => {
-    if (typeof window === "undefined") return "canvas";
-    return window.localStorage.getItem("lingxi.view") === "workbench" ? "workbench" : "canvas";
+    if (typeof window === "undefined") return "workbench";
+    // Phase 1.7: the normal-user entry point is the project workbench. The
+    // canvas stays one click away, and an explicit prior choice is preserved.
+    return window.localStorage.getItem("lingxi.view") === "canvas" ? "canvas" : "workbench";
   });
   const [session, setSession] = useState<TaskSession | null>(null);
   const [agentEvents, setAgentEvents] = useState<RunEvent[]>([]);
@@ -1947,6 +1949,7 @@ export default function App() {
     userMessage?: string;
     permissionMode?: PermissionMode;
     agentNodeId?: string | null;
+    attachments?: AssetRef[];
   }) => {
     if (recoveringRef.current || statusRef.current === "running") return;
     if (nodesRef.current.length === 0) {
@@ -1968,6 +1971,7 @@ export default function App() {
               userMessage: options?.userMessage ?? null,
               permissionMode: options?.permissionMode ?? permissionModeRef.current,
               agentNodeId: options?.agentNodeId ?? null,
+              attachments: options?.attachments ?? null,
             }
           : undefined,
       );
@@ -1995,7 +1999,7 @@ export default function App() {
   }, [buildDoc, flash, pushLog, refreshSession, saveConversationDraft, setView]);
 
   const sendMessage = useCallback(
-    async (text: string, agentNodeId?: string | null) => {
+    async (text: string, agentNodeId?: string | null, attachments?: AssetRef[]) => {
       const message = text.trim();
       if (!message) return;
       if (statusRef.current === "running") {
@@ -2023,7 +2027,11 @@ export default function App() {
         }
         return;
       }
-      await handleRun({ userMessage: message, agentNodeId: agentNodeId ?? null });
+      await handleRun({
+        userMessage: message,
+        agentNodeId: agentNodeId ?? null,
+        attachments,
+      });
     },
     [
       flash,
@@ -2306,6 +2314,7 @@ export default function App() {
               onSelectionChange={setSelectedNodeIds}
               onViewportChange={handleViewportChange}
               focus={focus}
+              active={view === "canvas"}
             />
           </ReactFlowProvider>
           {problemsOpen && report ? (
@@ -2327,6 +2336,7 @@ export default function App() {
             model={model}
             reasoning={reasoning}
             quickEditError={quickEditError}
+            onAssetImported={handleAssetImported}
             onSelect={selectAgent}
             onOpenProject={openProjectFolder}
             onSelectProject={openProjectRecord}

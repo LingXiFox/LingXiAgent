@@ -3,7 +3,9 @@
 //! Every inter-Agent message passes through this type. The bus validates the
 //! versioned envelope, checks sender/recipient membership, deduplicates,
 //! persists messages in the session snapshot and enforces per-recipient queue
-//! limits. Agents never receive direct access to another agent's context.
+//! limits. The external user endpoint may receive results but has no inbox:
+//! those messages are persisted and emitted for the UI, not queued.
+//! Agents never receive direct access to another agent's context.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -439,7 +441,9 @@ impl AgentBus {
                     ),
                 ));
             }
-            if !session.agents.contains_key(&message.recipient) && message.recipient != "broadcast"
+            if !session.agents.contains_key(&message.recipient)
+                && message.recipient != "broadcast"
+                && message.recipient != "user"
             {
                 return Err(NodeError::new(
                     error_codes::BUS_UNKNOWN_RECIPIENT,
@@ -456,6 +460,11 @@ impl AgentBus {
                     .filter(|id| id.as_str() != message.sender)
                     .cloned()
                     .collect()
+            } else if message.recipient == "user" {
+                // The user is an external observer. The message is persisted in
+                // the session and emitted as an event, but there is no agent
+                // runtime to drain an inbox for it.
+                Vec::new()
             } else {
                 vec![message.recipient.clone()]
             }
@@ -858,6 +867,28 @@ mod tests {
             .send(request("agent-pm", "intruder", "key-1"))
             .expect_err("must reject");
         assert_eq!(error.code, error_codes::BUS_UNKNOWN_RECIPIENT);
+    }
+
+    #[test]
+    fn results_can_be_addressed_to_the_external_user_without_an_inbox() {
+        let bus = bus();
+        for index in 0..3 {
+            let mut message = AgentMessageEnvelope::new(
+                "task-1",
+                "agent-pm",
+                "user",
+                message_kinds::RESULT,
+                json!({"summary": "done", "status": "completed"}),
+            );
+            message.idempotency_key = format!("result-{index}");
+            bus.send(message).expect("user can receive results");
+        }
+        assert!(bus.receive("user", 10).is_empty());
+        assert_eq!(
+            bus.session().messages.len(),
+            3,
+            "user-addressed messages stay in the session transcript"
+        );
     }
 
     #[test]

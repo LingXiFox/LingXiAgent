@@ -210,6 +210,8 @@ export interface RunOptions {
   userMessage?: string | null;
   permissionMode?: PermissionMode | null;
   agentNodeId?: string | null;
+  /** Asset ids already registered in the workflow asset table. */
+  attachments?: AssetRef[] | null;
 }
 
 export interface ProjectRecord {

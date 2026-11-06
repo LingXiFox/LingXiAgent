@@ -127,6 +127,11 @@ fn agent_spec() -> NodeSpec {
         .param(ParamSpec::text("toolset", "Tools (comma separated)", "calculator"))
         .param(ParamSpec::text("skills", "Skills (comma separated)", ""))
         .param(ParamSpec::text("lsp", "LSP Set (comma separated)", ""))
+        .param(
+            ParamSpec::asset("attachments", "Attachments").help(
+                "Asset ids from the composer or node picker. Resolved through the workflow asset table; ids only, never paths.",
+            ),
+        )
         .param(ParamSpec::number("maxTokens", "Max Output Tokens", 1024.0))
         .capability(lingxi_spec::node::capabilities::NETWORK)
         .capability(lingxi_spec::node::capabilities::FILESYSTEM)
@@ -679,10 +684,11 @@ fn build_input(
     } else {
         Vec::new()
     };
-    let media = ctx
+    let mut media = ctx
         .input("media")
         .and_then(|value| serde_json::from_value::<Vec<ContentPart>>(value.clone()).ok())
         .unwrap_or_default();
+    media.extend(attachment_parts(ctx)?);
     let provider_handle = provider_handle(ctx)?;
     let lsp = config
         .lsp
@@ -711,6 +717,53 @@ fn build_input(
         history: ctx.services.history(&ctx.node.id),
     })
 }
+/// Turns the composer/node attachment ids into explicit content parts. The
+/// workflow stores ids only; bytes stay in the content-addressed asset store.
+fn attachment_parts(ctx: &NodeContext<'_>) -> Result<Vec<ContentPart>, NodeError> {
+    let Some(value) = ctx.param("attachments") else {
+        return Ok(Vec::new());
+    };
+    let ids: Vec<String> = serde_json::from_value(value.clone()).map_err(|_| {
+        NodeError::new(
+            error_codes::INVALID_PARAM,
+            "parameter \"attachments\" expects an array of asset ids",
+        )
+    })?;
+    let mut parts = Vec::with_capacity(ids.len());
+    for id in ids {
+        let asset = ctx.assets.get(&id).ok_or_else(|| {
+            NodeError::new(
+                error_codes::ASSET_INVALID,
+                format!("attachment asset {id:?} is not in the workflow asset table"),
+            )
+        })?;
+        parts.push(match asset.kind {
+            lingxi_spec::AssetKind::Image => ContentPart::Image {
+                asset: asset.clone(),
+                detail: None,
+            },
+            lingxi_spec::AssetKind::Audio => ContentPart::Audio {
+                asset: asset.clone(),
+                mode: Default::default(),
+                transcript: None,
+            },
+            lingxi_spec::AssetKind::Video => ContentPart::Video {
+                asset: asset.clone(),
+                mode: Default::default(),
+                frames: Vec::new(),
+                time_range: None,
+            },
+            lingxi_spec::AssetKind::Document => ContentPart::Document {
+                asset: asset.clone(),
+                mode: Default::default(),
+                text: None,
+                pages: Vec::new(),
+            },
+        });
+    }
+    Ok(parts)
+}
+
 fn provider_handle(ctx: &NodeContext<'_>) -> Result<String, NodeError> {
     if let Some(handle) = input_text(ctx, "provider") {
         return Ok(handle);

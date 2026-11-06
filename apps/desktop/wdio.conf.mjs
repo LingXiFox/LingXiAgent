@@ -55,7 +55,7 @@ function companyToolCall(model, messages) {
     name: "submit_result",
     arguments: payload,
   });
-  if (["mock-agent", "mock-agent-slow", "mock-agent-tool", "mock-agent-slow-tool"].includes(model)) {
+  if (["mock-agent", "mock-agent-slow", "mock-agent-tool", "mock-agent-slow-tool", "mock-vision"].includes(model)) {
     if (["mock-agent-tool", "mock-agent-slow-tool"].includes(model) && last?.name !== "calculator") {
       return { name: "calculator", arguments: { expression: "6 * 7" } };
     }

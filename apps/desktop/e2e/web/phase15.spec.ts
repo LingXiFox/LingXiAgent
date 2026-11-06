@@ -5,6 +5,7 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 const FIXTURES = path.resolve(process.cwd(), "e2e/fixtures");
 
 async function ready(page: Page) {
+  await page.addInitScript(() => window.localStorage.setItem("lingxi.view", "canvas"));
   await page.goto("/");
   await expect(page.getByTestId("canvas")).toBeVisible();
   await expect(page.locator('[data-testid^="library-item-"]').first()).toBeVisible();

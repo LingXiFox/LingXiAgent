@@ -91,12 +91,13 @@ function projectWorkflow(name, projectId, model, mode, toolset) {
   };
 }
 
-async function startRun(workflow, conversationId, message, mode) {
+async function startRun(workflow, conversationId, message, mode, attachments = null) {
   const started = await invoke("run_workflow", {
     workflow,
     conversationId,
     userMessage: message,
     permissionMode: mode,
+    attachments,
   });
   assert.equal(started.started, true, JSON.stringify(started.report));
   assert.ok(started.runId);
@@ -297,7 +298,7 @@ describe("LingXiAgent native project workspace E2E", () => {
     assert.ok(!audit.some((entry) => entry.decision === "denied"));
   });
 
-  it("D: keeps one conversation and its history across two runs", async () => {
+  it("D: keeps one conversation and its history across three runs", async () => {
     const root = tempProject("continuity");
     const { opened, conversation } = await projectConversation(root, "Native continuity");
     const workflow = projectWorkflow(
@@ -313,21 +314,70 @@ describe("LingXiAgent native project workspace E2E", () => {
     const second = await startRun(workflow, conversation.conversationId, "Second task.", "workspace");
     const secondDetail = await approvePersistedInteractions(second);
     assert.equal(secondDetail.run.status, "completed");
-    assert.notEqual(first, second);
+    const third = await startRun(workflow, conversation.conversationId, "Third task.", "workspace");
+    const thirdDetail = await approvePersistedInteractions(third);
+    assert.equal(thirdDetail.run.status, "completed");
+    assert.equal(new Set([first, second, third]).size, 3);
 
     const messages = await invoke("conversation_messages", {
       conversationId: conversation.conversationId,
     });
-    assert.deepEqual(messages.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.deepEqual(
+      messages.map((message) => message.role),
+      ["user", "assistant", "user", "assistant", "user", "assistant"],
+    );
     assert.equal(messages[0].content, "First task.");
     assert.equal(messages[2].content, "Second task.");
+    assert.equal(messages[4].content, "Third task.");
     assert.notEqual(messages[0].runId, messages[2].runId);
+    assert.notEqual(messages[2].runId, messages[4].runId);
     assert.ok(messages.every((message) => message.conversationId === conversation.conversationId));
     const conversations = await invoke("conversation_list", {
       projectId: opened.project.projectId,
       limit: 20,
     });
-    assert.equal(conversations.length, 1, "two runs must not fork into two sessions");
+    assert.equal(conversations.length, 1, "three runs must not fork into three sessions");
+  });
+
+  it("G: imports a composer attachment and injects it into the run snapshot", async () => {
+    const root = tempProject("attachment");
+    const { opened, conversation } = await projectConversation(root, "Native attachment");
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const asset = await invoke("asset_import_bytes", {
+      name: "pixel.png",
+      mime: "image/png",
+      kind: "image",
+      bytes: Array.from(png),
+    });
+    assert.ok(asset.id.startsWith("asset-"));
+    assert.equal(asset.kind, "image");
+    const preview = await invoke("asset_preview", { id: asset.id, mime: asset.mime });
+    assert.ok(preview.startsWith("data:image/png;base64,"));
+
+    // The attachment path checks declared capability before sending. Use the
+    // vision-capable mock id so the image reaches the provider request while
+    // the mock still emits a structured agent result.
+    const workflow = projectWorkflow(
+      "Native Phase17 Attachment",
+      opened.project.projectId,
+      "mock-vision",
+      "workspace",
+      "",
+    );
+    const runId = await startRun(
+      workflow,
+      conversation.conversationId,
+      "Inspect the attached image.",
+      "workspace",
+      [asset],
+    );
+    const detail = await approvePersistedInteractions(runId);
+    assert.equal(detail.run.status, "completed");
+    const agent = detail.workflow.nodes.find((entry) => entry.id === "agent");
+    assert.deepEqual(agent.params.attachments, [asset.id]);
   });
 
   it("E: rejects a workflow that points at a project outside the session catalog", async () => {

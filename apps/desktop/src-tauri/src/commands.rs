@@ -187,11 +187,15 @@ pub fn validate_workflow(workflow: Workflow, state: State<'_, AppState>) -> Vali
     state.engine.validate(&workflow)
 }
 
+// The flat argument list is the Tauri IPC contract (and what the frontend
+// invokes); grouping it would change every call site for a lint-only reason.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn run_workflow(
     mut workflow: Workflow,
     conversation_id: Option<String>,
     user_message: Option<String>,
+    attachments: Option<Vec<lingxi_spec::AssetRef>>,
     permission_mode: Option<String>,
     agent_node_id: Option<String>,
     app: AppHandle,
@@ -206,6 +210,15 @@ pub async fn run_workflow(
         }
         _ => agent_node_id.or_else(|| first_agent_node_id(&workflow)),
     };
+    if let Some(attachments) = attachments.as_deref() {
+        // Attachments arrive beside the workflow rather than inside it. The
+        // run snapshot must carry their references so validation and the
+        // runtime see the same self-contained document.
+        for asset in attachments {
+            workflow.assets.insert(asset.id.clone(), asset.clone());
+        }
+        inject_attachments(&mut workflow, addressed_agent.as_deref(), attachments);
+    }
     let report = state.engine.validate(&workflow);
     if !report.ok {
         return Ok(RunStartResponse {
@@ -404,6 +417,31 @@ fn inject_user_message(
         .params
         .insert("instruction".to_string(), Value::String(instruction));
     Some(target.id.clone())
+}
+
+/// Attachments are ids on the run snapshot, never paths or base64. The
+/// workflow asset table already holds the corresponding AssetRef metadata.
+fn inject_attachments(
+    workflow: &mut Workflow,
+    agent_node_id: Option<&str>,
+    attachments: &[lingxi_spec::AssetRef],
+) {
+    if attachments.is_empty() {
+        return;
+    }
+    let target = match agent_node_id {
+        Some(id) => find_node_mut(workflow, id),
+        None => first_agent_mut(workflow),
+    };
+    let Some(node) = target else {
+        return;
+    };
+    let ids = attachments
+        .iter()
+        .map(|asset| Value::String(asset.id.clone()))
+        .collect::<Vec<_>>();
+    node.params
+        .insert("attachments".to_string(), Value::Array(ids));
 }
 
 fn workflow_permission_mode(workflow: &Workflow) -> PermissionMode {
@@ -882,6 +920,30 @@ pub async fn asset_import(
     state
         .assets
         .import_path(std::path::Path::new(&path), kind, "user-picker")
+        .map_err(node_error)
+}
+
+/// Imports bytes from a composer drag/drop or image paste. The frontend never
+/// receives filesystem access; it hands over one bounded blob and gets an
+/// opaque AssetRef back.
+#[tauri::command]
+pub async fn asset_import_bytes(
+    name: String,
+    mime: Option<String>,
+    kind: String,
+    bytes: Vec<u8>,
+    state: State<'_, AppState>,
+) -> Result<lingxi_spec::AssetRef, String> {
+    let kind = match kind.as_str() {
+        "image" => lingxi_spec::AssetKind::Image,
+        "audio" => lingxi_spec::AssetKind::Audio,
+        "video" => lingxi_spec::AssetKind::Video,
+        "document" => lingxi_spec::AssetKind::Document,
+        other => return Err(format!("unknown asset kind {other:?}")),
+    };
+    state
+        .assets
+        .import_bytes(&name, kind, "composer", bytes, mime.as_deref())
         .map_err(node_error)
 }
 
