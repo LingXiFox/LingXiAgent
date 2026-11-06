@@ -1,6 +1,6 @@
 # Phase 1.7 测试与验收
 
-状态：代码与自动化验收完成，提交与 CI 待本阶段收口
+状态：代码与自动化验收完成；CI [run 42214292747](https://github.com/LingXiFox/LingXiAgent/actions/runs/42214292747) 4/4 jobs 全绿
 分支：`rewrite/3.0`
 基线：Phase 1.6 收口提交（`d80069e` 之后的 Phase 1.6 实现与文档）
 
@@ -141,7 +141,7 @@ Phase 1.7 原生用例：
 | 工作台 Agent ↔ 画布节点双向定位 | 通过 | Playwright 4；走查第 6 步 |
 | 刷新后项目、会话、时间线恢复 | 通过 | 走查第 7 步 |
 | 无固定 Agent Loop、执行在 Rust | 通过 | native A/D；前端不执行调度 |
-| Windows / Linux | 编译/单测待 CI；运行**未验收** | 见第 5 节 |
+| Windows / Linux | CI 编译、clippy、单测通过；运行**未验收** | 见第 4/5 节 |
 | 真实外部模型 | **未验证** | 无凭据，只使用本地 wire-format mock |
 | 原生文件夹选择对话框 | **未自动验收** | 自动化通过 `project_open` 打开同一目录；系统文件对话框需人工操作 |
 
@@ -150,10 +150,10 @@ Phase 1.7 原生用例：
 | 平台 | 编译 / 静态检查 / 单测 | 真实桌面运行 |
 | --- | --- | --- |
 | macOS | 本地通过 | **通过**（原生 21 项 + 真实工作台走查） |
-| Windows | CI 待本次提交后运行 | **未验收** |
-| Linux | CI 待本次提交后运行 | **未验收** |
+| Windows | **通过**（CI run 42214292747） | **未验收** |
+| Linux | **通过**（CI run 42214292747） | **未验收** |
 
-CI 的 Rust job 在 macOS、Ubuntu 24.04、Windows 上执行 format、clippy、`cargo test --workspace`；前端 job 执行构建、三组单元测试与 Playwright 固定 Chromium。CI 编译通过不等同于 Windows/Linux 实机运行验收，平台相关 keyring、WebView、路径与进程行为仍需实机复核。
+CI [run 42214292747](https://github.com/LingXiFox/LingXiAgent/actions/runs/42214292747)：**success，4/4 jobs**。Rust job 在 macOS、Ubuntu 24.04、Windows 上执行 clippy 与 `cargo test --workspace`，其中 Ubuntu 额外执行 `cargo fmt --all -- --check`；前端 job 执行构建、三组单元测试与 31 项 Playwright（固定 Chromium）。CI 编译通过不等同于 Windows/Linux 实机运行验收，平台相关 keyring、WebView、路径与进程行为仍需实机复核。
 
 ## 5. 已知问题与边界
 
@@ -194,4 +194,4 @@ pnpm -C apps/desktop test:e2e:tauri
 | Playwright 浏览器 E2E | **31 passed**（5 回归 + 14 Phase 1.5 + 6 Phase 1.6 + 6 Phase 1.7） |
 | 原生 Tauri WDIO | **21 passed**（Phase 1.5 3 + Phase 1.6 8 + Phase 1.7 6 + runtime 4） |
 | 真实工作台走查 | **1 passed**（2.5s） |
-| GitHub Actions CI | 待本次提交后运行 |
+| GitHub Actions CI | **success**，4/4 jobs（[run 42214292747](https://github.com/LingXiFox/LingXiAgent/actions/runs/42214292747)） |
