@@ -45,7 +45,60 @@ CREATE TABLE IF NOT EXISTS task_sessions (
     session_json        TEXT NOT NULL,
     updated_at_ms       INTEGER NOT NULL
 );
-PRAGMA user_version = 2;
+
+CREATE TABLE IF NOT EXISTS projects (
+    project_id          TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    root                TEXT NOT NULL,
+    created_at_ms       INTEGER NOT NULL,
+    updated_at_ms       INTEGER NOT NULL,
+    last_opened_at_ms   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id     TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    title               TEXT NOT NULL,
+    workflow_json       TEXT NOT NULL,
+    created_at_ms       INTEGER NOT NULL,
+    updated_at_ms       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversations_project ON conversations(project_id, updated_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    message_id          TEXT PRIMARY KEY,
+    conversation_id     TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    run_id              TEXT,
+    agent_node_id       TEXT,
+    agent_instance_id   TEXT,
+    role                TEXT NOT NULL,
+    content             TEXT NOT NULL,
+    created_at_ms       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversation_messages_order ON conversation_messages(conversation_id, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS conversation_runs (
+    run_id              TEXT PRIMARY KEY REFERENCES runs(run_id) ON DELETE CASCADE,
+    conversation_id     TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    created_at_ms       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conversation_runs_conversation ON conversation_runs(conversation_id, created_at_ms);
+
+CREATE TABLE IF NOT EXISTS permission_audit (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              TEXT NOT NULL,
+    node_id             TEXT NOT NULL,
+    mode                TEXT NOT NULL,
+    capability          TEXT NOT NULL,
+    target              TEXT NOT NULL,
+    decision            TEXT NOT NULL,
+    detail              TEXT NOT NULL,
+    at_ms               INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS permission_audit_run ON permission_audit(run_id, id);
+CREATE UNIQUE INDEX IF NOT EXISTS permission_audit_identity
+    ON permission_audit(run_id, node_id, at_ms, capability, target, decision);
+PRAGMA user_version = 3;
 "#;
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +123,55 @@ pub struct RunDetail {
     pub run: RunRecord,
     pub workflow: Workflow,
     pub events: Vec<RunEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRecord {
+    pub project_id: String,
+    pub name: String,
+    pub root: String,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub last_opened_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationRecord {
+    pub conversation_id: String,
+    pub project_id: String,
+    pub title: String,
+    pub workflow: Workflow,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationMessage {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub run_id: Option<String>,
+    pub agent_node_id: Option<String>,
+    pub agent_instance_id: Option<String>,
+    pub role: String,
+    pub content: String,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionAuditRecord {
+    pub id: i64,
+    pub run_id: String,
+    pub node_id: String,
+    pub mode: String,
+    pub capability: String,
+    pub target: String,
+    pub decision: String,
+    pub detail: String,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +482,308 @@ impl RunDatabase {
             .transpose()
     }
 
+    pub fn upsert_project(
+        &self,
+        project_id: &str,
+        name: &str,
+        root: &str,
+    ) -> Result<ProjectRecord, String> {
+        let now = now_ms() as i64;
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT INTO projects (project_id, name, root, created_at_ms, updated_at_ms, last_opened_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?4)
+                 ON CONFLICT(project_id) DO UPDATE SET
+                     name = excluded.name,
+                     root = excluded.root,
+                     updated_at_ms = excluded.updated_at_ms,
+                     last_opened_at_ms = excluded.last_opened_at_ms",
+                params![project_id, redact_text(name), root, now],
+            )
+            .map_err(|error| format!("cannot save project: {error}"))?;
+        connection
+            .query_row(
+                "SELECT project_id, name, root, created_at_ms, updated_at_ms, last_opened_at_ms
+                 FROM projects WHERE project_id = ?1",
+                params![project_id],
+                row_to_project,
+            )
+            .map_err(|error| format!("cannot read saved project: {error}"))
+    }
+
+    pub fn list_projects(&self) -> Result<Vec<ProjectRecord>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT project_id, name, root, created_at_ms, updated_at_ms, last_opened_at_ms
+                 FROM projects ORDER BY last_opened_at_ms DESC, name ASC",
+            )
+            .map_err(|error| format!("cannot list projects: {error}"))?;
+        let rows = statement
+            .query_map([], row_to_project)
+            .map_err(|error| format!("cannot read project list: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot decode project: {error}"))
+    }
+
+    pub fn project(&self, project_id: &str) -> Result<Option<ProjectRecord>, String> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT project_id, name, root, created_at_ms, updated_at_ms, last_opened_at_ms
+                 FROM projects WHERE project_id = ?1",
+                params![project_id],
+                row_to_project,
+            )
+            .optional()
+            .map_err(|error| format!("cannot read project: {error}"))
+    }
+
+    pub fn remove_project(&self, project_id: &str) -> Result<bool, String> {
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "DELETE FROM projects WHERE project_id = ?1",
+                params![project_id],
+            )
+            .map_err(|error| format!("cannot remove project: {error}"))?;
+        Ok(changed > 0)
+    }
+
+    pub fn create_conversation(
+        &self,
+        conversation_id: &str,
+        project_id: &str,
+        title: &str,
+        workflow: &Workflow,
+    ) -> Result<ConversationRecord, String> {
+        let workflow_json = serde_json::to_string(workflow)
+            .map_err(|error| format!("cannot encode conversation workflow: {error}"))?;
+        let now = now_ms() as i64;
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT INTO conversations (conversation_id, project_id, title, workflow_json, created_at_ms, updated_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                params![conversation_id, project_id, redact_text(title), workflow_json, now],
+            )
+            .map_err(|error| format!("cannot create conversation: {error}"))?;
+        conversation_locked(&connection, conversation_id)?
+            .ok_or_else(|| "conversation disappeared after insert".to_string())
+    }
+
+    pub fn list_conversations(
+        &self,
+        project_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<ConversationRecord>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT conversation_id, project_id, title, workflow_json, created_at_ms, updated_at_ms
+                 FROM conversations
+                 WHERE (?1 IS NULL OR project_id = ?1)
+                 ORDER BY updated_at_ms DESC LIMIT ?2",
+            )
+            .map_err(|error| format!("cannot list conversations: {error}"))?;
+        let rows = statement
+            .query_map(
+                params![project_id, limit.max(1) as i64],
+                row_to_conversation,
+            )
+            .map_err(|error| format!("cannot read conversations: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot decode conversation: {error}"))
+    }
+
+    pub fn conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Option<ConversationRecord>, String> {
+        let connection = self.lock()?;
+        conversation_locked(&connection, conversation_id)
+    }
+
+    pub fn save_conversation_workflow(
+        &self,
+        conversation_id: &str,
+        workflow: &Workflow,
+        title: Option<&str>,
+    ) -> Result<ConversationRecord, String> {
+        let workflow_json = serde_json::to_string(workflow)
+            .map_err(|error| format!("cannot encode conversation workflow: {error}"))?;
+        let now = now_ms() as i64;
+        let connection = self.lock()?;
+        let changed = connection
+            .execute(
+                "UPDATE conversations SET workflow_json = ?1, title = COALESCE(?2, title), updated_at_ms = ?3
+                 WHERE conversation_id = ?4",
+                params![workflow_json, title.map(redact_text), now, conversation_id],
+            )
+            .map_err(|error| format!("cannot save conversation workflow: {error}"))?;
+        if changed == 0 {
+            return Err(format!("conversation {conversation_id} does not exist"));
+        }
+        conversation_locked(&connection, conversation_id)?
+            .ok_or_else(|| "conversation disappeared after save".to_string())
+    }
+
+    // One argument per persisted column; a draft struct would only move the
+    // same fields across the SQLite boundary.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_conversation_message(
+        &self,
+        conversation_id: &str,
+        message_id: &str,
+        run_id: Option<&str>,
+        agent_node_id: Option<&str>,
+        agent_instance_id: Option<&str>,
+        role: &str,
+        content: &str,
+    ) -> Result<ConversationMessage, String> {
+        let now = now_ms() as i64;
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO conversation_messages
+                     (message_id, conversation_id, run_id, agent_node_id, agent_instance_id, role, content, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    message_id,
+                    conversation_id,
+                    run_id,
+                    agent_node_id,
+                    agent_instance_id,
+                    role,
+                    redact_text(content),
+                    now
+                ],
+            )
+            .map_err(|error| format!("cannot save conversation message: {error}"))?;
+        connection
+            .execute(
+                "UPDATE conversations SET updated_at_ms = ?1 WHERE conversation_id = ?2",
+                params![now, conversation_id],
+            )
+            .map_err(|error| format!("cannot touch conversation: {error}"))?;
+        connection
+            .query_row(
+                "SELECT message_id, conversation_id, run_id, agent_node_id, agent_instance_id, role, content, created_at_ms
+                 FROM conversation_messages WHERE message_id = ?1",
+                params![message_id],
+                row_to_message,
+            )
+            .map_err(|error| format!("cannot read conversation message: {error}"))
+    }
+
+    pub fn conversation_messages(
+        &self,
+        conversation_id: &str,
+    ) -> Result<Vec<ConversationMessage>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT message_id, conversation_id, run_id, agent_node_id, agent_instance_id, role, content, created_at_ms
+                 FROM conversation_messages WHERE conversation_id = ?1
+                 ORDER BY created_at_ms ASC, rowid ASC",
+            )
+            .map_err(|error| format!("cannot list conversation messages: {error}"))?;
+        let rows = statement
+            .query_map(params![conversation_id], row_to_message)
+            .map_err(|error| format!("cannot read conversation messages: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot decode conversation message: {error}"))
+    }
+
+    pub fn link_conversation_run(&self, conversation_id: &str, run_id: &str) -> Result<(), String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO conversation_runs (run_id, conversation_id, created_at_ms)
+                 VALUES (?1, ?2, ?3)",
+                params![run_id, conversation_id, now_ms() as i64],
+            )
+            .map_err(|error| format!("cannot link run to conversation: {error}"))?;
+        Ok(())
+    }
+
+    pub fn conversation_for_run(&self, run_id: &str) -> Result<Option<String>, String> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT conversation_id FROM conversation_runs WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| format!("cannot read conversation for run: {error}"))
+    }
+
+    // Mirrors the permission_audit columns; see add_conversation_message.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_permission_audit(
+        &self,
+        run_id: &str,
+        node_id: &str,
+        mode: &str,
+        capability: &str,
+        target: &str,
+        decision: &str,
+        detail: &str,
+    ) -> Result<(), String> {
+        let connection = self.lock()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO permission_audit (run_id, node_id, mode, capability, target, decision, detail, at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    run_id,
+                    node_id,
+                    mode,
+                    capability,
+                    redact_text(target),
+                    decision,
+                    redact_text(detail),
+                    now_ms() as i64
+                ],
+            )
+            .map_err(|error| format!("cannot record permission audit: {error}"))?;
+        Ok(())
+    }
+
+    pub fn permission_audit(
+        &self,
+        run_id: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<PermissionAuditRecord>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, run_id, node_id, mode, capability, target, decision, detail, at_ms
+                 FROM permission_audit WHERE (?1 IS NULL OR run_id = ?1)
+                 ORDER BY id DESC LIMIT ?2",
+            )
+            .map_err(|error| format!("cannot list permission audit: {error}"))?;
+        let rows = statement
+            .query_map(params![run_id, limit.max(1) as i64], |row| {
+                Ok(PermissionAuditRecord {
+                    id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    node_id: row.get(2)?,
+                    mode: row.get(3)?,
+                    capability: row.get(4)?,
+                    target: row.get(5)?,
+                    decision: row.get(6)?,
+                    detail: row.get(7)?,
+                    at_ms: row.get::<_, i64>(8)?.max(0) as u64,
+                })
+            })
+            .map_err(|error| format!("cannot read permission audit: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot decode permission audit: {error}"))
+    }
+
     /// After a crash no agent step can be replayed safely. Mark in-flight work
     /// interrupted, and require manual review for any activation that had
     /// already performed a tool call with unknown side effects.
@@ -562,6 +966,59 @@ fn interrupt_run(connection: &mut Connection, run_id: &str, detail: &str) -> Res
         .commit()
         .map_err(|error| format!("cannot commit interruption: {error}"))?;
     Ok(true)
+}
+
+fn row_to_project(row: &Row<'_>) -> rusqlite::Result<ProjectRecord> {
+    Ok(ProjectRecord {
+        project_id: row.get(0)?,
+        name: row.get(1)?,
+        root: row.get(2)?,
+        created_at_ms: row.get::<_, i64>(3)?.max(0) as u64,
+        updated_at_ms: row.get::<_, i64>(4)?.max(0) as u64,
+        last_opened_at_ms: row.get::<_, i64>(5)?.max(0) as u64,
+    })
+}
+
+fn row_to_conversation(row: &Row<'_>) -> rusqlite::Result<ConversationRecord> {
+    let workflow_json: String = row.get(3)?;
+    let workflow =
+        serde_json::from_str(&workflow_json).unwrap_or_else(|_| Workflow::new("Recovered"));
+    Ok(ConversationRecord {
+        conversation_id: row.get(0)?,
+        project_id: row.get(1)?,
+        title: row.get(2)?,
+        workflow,
+        created_at_ms: row.get::<_, i64>(4)?.max(0) as u64,
+        updated_at_ms: row.get::<_, i64>(5)?.max(0) as u64,
+    })
+}
+
+fn row_to_message(row: &Row<'_>) -> rusqlite::Result<ConversationMessage> {
+    Ok(ConversationMessage {
+        message_id: row.get(0)?,
+        conversation_id: row.get(1)?,
+        run_id: row.get(2)?,
+        agent_node_id: row.get(3)?,
+        agent_instance_id: row.get(4)?,
+        role: row.get(5)?,
+        content: row.get(6)?,
+        created_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+    })
+}
+
+fn conversation_locked(
+    connection: &Connection,
+    conversation_id: &str,
+) -> Result<Option<ConversationRecord>, String> {
+    connection
+        .query_row(
+            "SELECT conversation_id, project_id, title, workflow_json, created_at_ms, updated_at_ms
+             FROM conversations WHERE conversation_id = ?1",
+            params![conversation_id],
+            row_to_conversation,
+        )
+        .optional()
+        .map_err(|error| format!("cannot read conversation {conversation_id}: {error}"))
 }
 
 fn row_to_record(row: &Row<'_>) -> rusqlite::Result<RunRecord> {
@@ -858,6 +1315,75 @@ mod tests {
         assert_eq!(raw, "token=[REDACTED]");
         let detail = db.run_detail("run-1").unwrap().unwrap();
         assert_eq!(detail.run.detail.as_deref(), Some("token=[REDACTED]"));
+    }
+
+    #[test]
+    fn conversations_persist_messages_and_workflow_revisions() {
+        let db = RunDatabase::open_in_memory().unwrap();
+        db.upsert_project("proj-1", "Demo", "/tmp/demo").unwrap();
+        let mut draft = Workflow::new("Agent session");
+        let created = db
+            .create_conversation("conv-1", "proj-1", "First session", &draft)
+            .unwrap();
+        assert_eq!(created.project_id, "proj-1");
+        assert_eq!(db.list_conversations(Some("proj-1"), 10).unwrap().len(), 1);
+
+        db.add_conversation_message(
+            "conv-1",
+            "msg-1",
+            None,
+            Some("agent"),
+            None,
+            "user",
+            "hello",
+        )
+        .unwrap();
+        // A retried activation must not duplicate the same message id.
+        db.add_conversation_message(
+            "conv-1",
+            "msg-1",
+            None,
+            Some("agent"),
+            None,
+            "user",
+            "hello",
+        )
+        .unwrap();
+        db.add_conversation_message(
+            "conv-1",
+            "msg-2",
+            Some("run-1"),
+            Some("agent"),
+            Some("agent:run-1:agent"),
+            "assistant",
+            "ready",
+        )
+        .unwrap();
+        let messages = db.conversation_messages("conv-1").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(
+            messages[1].agent_instance_id.as_deref(),
+            Some("agent:run-1:agent")
+        );
+
+        draft.name = "Agent session v2".into();
+        let saved = db
+            .save_conversation_workflow("conv-1", &draft, Some("Renamed session"))
+            .unwrap();
+        assert_eq!(saved.title, "Renamed session");
+        assert_eq!(saved.workflow.name, "Agent session v2");
+
+        db.create_run("run-1", &draft, 100).unwrap();
+        db.link_conversation_run("conv-1", "run-1").unwrap();
+        assert_eq!(
+            db.conversation_for_run("run-1").unwrap().as_deref(),
+            Some("conv-1")
+        );
+
+        db.remove_project("proj-1").unwrap();
+        assert_eq!(db.list_conversations(None, 10).unwrap().len(), 0);
+        assert_eq!(db.conversation_messages("conv-1").unwrap().len(), 0);
     }
 
     #[test]

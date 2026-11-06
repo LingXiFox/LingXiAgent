@@ -46,6 +46,11 @@ pub struct ServiceConfig {
     pub assets: Arc<AssetStore>,
     /// Optional controlled workspace for file and process tools.
     pub workspace: Option<Arc<crate::workspace::Workspace>>,
+    /// Host-owned project catalog used to resolve opaque workspace handles.
+    pub workspaces: Option<Arc<crate::project::WorkspaceCatalog>>,
+    /// Conversation history keyed by agent node id. The host loads it from the
+    /// task session before a run; it is never reconstructed from the frontend.
+    pub histories: Arc<BTreeMap<String, Vec<ChatMessage>>>,
 }
 
 impl std::fmt::Debug for ServiceConfig {
@@ -85,6 +90,8 @@ pub struct RunServices {
     lsp_servers: Mutex<BTreeMap<String, crate::lsp::LspConfig>>,
     usage: Mutex<HashMap<String, UsageRecord>>,
     response_sessions: Mutex<HashMap<String, ResponseSession>>,
+    workspaces: Option<Arc<crate::project::WorkspaceCatalog>>,
+    histories: Arc<BTreeMap<String, Vec<ChatMessage>>>,
 }
 
 impl RunServices {
@@ -110,6 +117,8 @@ impl RunServices {
             lsp_servers: Mutex::new(BTreeMap::new()),
             usage: Mutex::new(HashMap::new()),
             response_sessions: Mutex::new(HashMap::new()),
+            workspaces: config.workspaces.clone(),
+            histories: Arc::clone(&config.histories),
         }
     }
 
@@ -125,6 +134,45 @@ impl RunServices {
 
     pub fn workspace(&self) -> Option<&Arc<crate::workspace::Workspace>> {
         self.builtins.workspace()
+    }
+
+    /// Resolves an opaque handle from a project_workspace node. A stale or
+    /// forged handle is an error; it never falls back to the process cwd.
+    pub fn workspace_for_handle(
+        &self,
+        handle: &str,
+    ) -> Result<Arc<crate::workspace::Workspace>, NodeError> {
+        if handle.trim().is_empty() {
+            return self.workspace().cloned().ok_or_else(|| {
+                NodeError::new(
+                    error_codes::WORKSPACE_NOT_FOUND,
+                    "no project workspace is bound to this run",
+                )
+            });
+        }
+        self.workspaces
+            .as_ref()
+            .and_then(|catalog| catalog.workspace(handle))
+            .ok_or_else(|| {
+                NodeError::new(
+                    error_codes::WORKSPACE_NOT_FOUND,
+                    format!("workspace handle {handle:?} is not registered for this project"),
+                )
+            })
+    }
+
+    pub fn workspace_catalog(&self) -> Option<&Arc<crate::project::WorkspaceCatalog>> {
+        self.workspaces.as_ref()
+    }
+
+    pub fn workspace_handle(&self, handle: &str) -> Option<crate::project::WorkspaceHandle> {
+        self.workspaces
+            .as_ref()
+            .and_then(|catalog| catalog.handle(handle))
+    }
+
+    pub fn history(&self, node_id: &str) -> Vec<ChatMessage> {
+        self.histories.get(node_id).cloned().unwrap_or_default()
     }
 
     pub fn skills(&self) -> Option<&SkillLibrary> {

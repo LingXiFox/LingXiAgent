@@ -5,11 +5,11 @@
 ## 1. 产品与架构约束
 
 - **产品定位**：ComfyUI 式、可插拔、可交互的节点工作流平台。工作流由用户自由组合节点，不内置固定 Agent Loop。
-- **UI 保持极简**：中央可拖拽/缩放/连线画布；左侧节点库；右上角运行与终止；底部可收起的实时日志。配置优先放在节点内部。一等 Agent 的运行观察与干预使用独立的顶层 Agent 工作台视图（总览 + 每 Agent 标签），这是 Phase 1.6 明确授权的例外；仍不要擅自增加常驻聊天区、右侧属性栏或仪表盘。
+- **UI 保持极简**：节点编辑器保持中央画布、左侧节点库、右上角运行与终止、底部可收起的实时日志，配置优先放在节点内部。Phase 1.7 明确授权普通用户以项目工作台为主视图：可折叠的左侧项目/会话/文件树，中央 Agent 对话时间线，底部常驻输入框，以及默认收起的右侧文件/diff/Git/规则/运行配置辅助面板；高级用户在同一项目中切换到节点编辑器。不要增加常驻仪表盘、与 Agent 执行无关的装饰面板或第二套工作流编辑器。
 - **技术栈**：Rust workspace + Tauri 2 + React/TypeScript + `@xyflow/react`。`crates/lingxi-spec` 定义文档与节点契约；`crates/lingxi-runtime` 负责校验和执行；`apps/desktop/src-tauri` 仅为桌面适配层；`apps/desktop/src` 只负责编辑和展示。
 - **依赖方向**：`lingxi-spec` ← `lingxi-runtime` ← Tauri 宿主。核心库不得依赖 Tauri、React 或 macOS 专属 API。前端不得实现另一套工作流调度器；拖拽、缩放等高频操作不得逐帧调用 Rust IPC。
 - **跨平台是硬要求**：面向 macOS / Windows / Linux。平台差异封装在独立适配层，不要把某一系统的专属 API 渗透到核心。CI 编译通过不等于实机运行验收通过。
-- **演进而非伪装完成**：当前 Phase 1.6 支持无环 DAG、受控循环、组合子图、SQLite 运行恢复、一等 `core.agent`、独立 AgentRunner、版本化协作协议与消息总线、双视图 Agent 工作台、安全暂停/配置修订/纠偏指令、TaskSession 恢复，以及 OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立 Reasoning、模型能力检查和图片/音频/视频/文档资产链路；Agent 并发调度、checkpoint 结构迁移、动态插件、共享资源总线、原生视频输入与内置语音识别尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
+- **演进而非伪装完成**：当前 Phase 1.7 支持无环 DAG、受控循环、组合子图、SQLite 运行恢复、一等 `core.agent`、独立 AgentRunner、版本化协作协议与消息总线、双视图 Agent 工作台、安全暂停/配置修订/纠偏指令、TaskSession 恢复，以及项目注册表、`core.project_workspace` 的不透明 WorkspaceHandle、项目会话/多 run 连续性、Ask/Workspace/Yolo 三档 Rust 侧权限、版本化文件与 git 受控访问、工作台与节点编辑器双向定位；同时保留 OpenAI Chat / OpenAI Responses / Anthropic Messages 三条真实协议、独立 Reasoning、模型能力检查和图片/音频/视频/文档资产链路。Agent 并发调度、checkpoint 结构迁移、动态插件、共享资源总线、原生视频输入与内置语音识别尚未实现。新增功能必须给出真实的契约、测试和验收结果，不能用 UI 假交互冒充后端能力。
 
 ## 2. 节点、循环与资源安全
 

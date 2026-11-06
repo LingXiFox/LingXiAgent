@@ -8,7 +8,17 @@ import type {
   AgentConfigSnapshot,
   AgentEvent,
   ConfigChange,
+  ConversationMessage,
+  ConversationRecord,
+  FileEntry,
+  FileMatch,
+  FileSnapshot,
+  GitCommit,
+  GitEntry,
   NodeSpec,
+  PermissionAuditRecord,
+  ProjectOpenResponse,
+  ProjectRecord,
   RunDetail,
   SkillSummary,
   RunEvent,
@@ -582,6 +592,7 @@ const rawSpecs: NodeSpec[] = [
       { name: "userPrompt", label: "User Prompt", dataType: "text", required: false, group: "Instructions" },
       { name: "task", label: "Task", dataType: "json", required: false, group: "Collaboration" },
       { name: "messages", label: "Messages", dataType: "json", required: false, group: "Collaboration" },
+      { name: "workspace", label: "Project Workspace", dataType: "text", required: false, group: "Control" },
       { name: "start", label: "Start", dataType: "any", required: false, control: true, group: "Control" },
       { name: "budget", label: "Budget", dataType: "json", required: false, group: "Control" },
     ],
@@ -600,8 +611,43 @@ const rawSpecs: NodeSpec[] = [
       { name: "instruction", label: "Instruction", kind: "text_area", defaultValue: "", required: false, options: [] },
       { name: "maxIterations", label: "Max Iterations", kind: "number", defaultValue: 12, required: false, options: [] },
       { name: "maxToolCalls", label: "Max Tool Calls", kind: "number", defaultValue: 48, required: false, options: [] },
+      {
+        name: "permissionMode",
+        label: "Permission Mode",
+        kind: "select",
+        defaultValue: "ask",
+        required: false,
+        options: [
+          { value: "ask", label: "Ask" },
+          { value: "workspace", label: "Workspace" },
+          { value: "yolo", label: "YOLO" },
+        ],
+      },
     ],
     capabilities: ["network"],
+  },
+  {
+    kind: "core.project_workspace",
+    title: "项目工作区",
+    category: "Workspace",
+    description: "Binds a real project folder to an opaque workspace handle.",
+    inputs: [
+      { name: "projectId", label: "Project Id", dataType: "text", required: false },
+      { name: "cwd", label: "Relative CWD", dataType: "text", required: false },
+      { name: "policy", label: "Access Policy", dataType: "json", required: false },
+    ],
+    outputs: [
+      { name: "workspace", label: "Workspace", dataType: "text", required: false },
+      { name: "project", label: "Project", dataType: "json", required: false },
+      { name: "metadata", label: "Metadata", dataType: "json", required: false },
+      { name: "ready", label: "Ready", dataType: "any", required: false, control: true },
+    ],
+    params: [
+      { name: "projectId", label: "Project Id", kind: "text", defaultValue: "", required: true, options: [] },
+      { name: "cwd", label: "Relative CWD", kind: "text", defaultValue: "", required: false, options: [] },
+      { name: "showIgnored", label: "Show Ignored", kind: "boolean", defaultValue: false, required: false, options: [] },
+    ],
+    capabilities: ["filesystem"],
   },
   {
     kind: "core.composite",
@@ -949,6 +995,179 @@ export function createMockTransport(): Transport {
     return file.bundle;
   };
 
+  // Browser-only project fixture. The real desktop app always resolves the
+  // folder through Rust and enforces workspace boundaries there.
+  const mockProject: ProjectRecord = {
+    projectId: "proj-mock-demo",
+    name: "lingxi-demo",
+    root: "/mock/lingxi-demo",
+    createdAtMs: Date.now(),
+    updatedAtMs: Date.now(),
+    lastOpenedAtMs: Date.now(),
+  };
+  const mockFiles = new Map<string, string>([
+    ["README.md", "# LingXi Demo\n\nA tiny project used by browser previews.\n"],
+    ["AGENTS.md", "Keep changes focused and run the tests before reporting success.\n"],
+    ["package.json", '{\n  "name": "lingxi-demo",\n  "private": true\n}\n'],
+    ["src/main.ts", 'export function greet(name: string) {\n  return "hello " + name;\n}\n'],
+    ["src/lib/util.ts", "export const answer = 42;\n"],
+  ]);
+  const mockVersions = new Map<string, string>();
+  const versionOf = (content: string) => {
+    let hash = 2166136261;
+    for (let index = 0; index < content.length; index += 1) {
+      hash ^= content.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  };
+  const snapshot = (path: string): FileSnapshot => {
+    const content = mockFiles.get(path);
+    if (content === undefined) throw new Error("workspace.file_not_found: " + path);
+    const version = mockVersions.get(path) ?? versionOf(content);
+    mockVersions.set(path, version);
+    return { path, version, content, bytes: content.length };
+  };
+  const mockTree = (path: string): FileEntry[] => {
+    const prefix = path ? path.replace(/\/$/, "") + "/" : "";
+    const names = new Map<string, FileEntry>();
+    for (const file of mockFiles.keys()) {
+      if (!file.startsWith(prefix)) continue;
+      const rest = file.slice(prefix.length);
+      const slash = rest.indexOf("/");
+      const name = slash === -1 ? rest : rest.slice(0, slash);
+      const childPath = prefix + name;
+      if (names.has(childPath)) continue;
+      if (slash === -1) {
+        names.set(childPath, {
+          path: childPath,
+          name,
+          kind: "file",
+          size: (mockFiles.get(childPath) ?? "").length,
+          version: mockVersions.get(childPath) ?? versionOf(mockFiles.get(childPath) ?? ""),
+        });
+      } else {
+        names.set(childPath, { path: childPath, name, kind: "dir", size: 0, version: null });
+      }
+    }
+    return [...names.values()].sort((left, right) =>
+      left.kind === right.kind ? left.name.localeCompare(right.name) : left.kind === "dir" ? -1 : 1,
+    );
+  };
+  // The browser preview has no Rust database, so mirror the durable session
+  // store in localStorage. This keeps refresh/reload tests honest about the
+  // UI restoring a saved conversation instead of keeping state only in React.
+  const MOCK_SESSION_KEY = "lingxi.mock.sessions.v1";
+  const loadMockConversationState = (): {
+    conversations: ConversationRecord[];
+    messages: Record<string, ConversationMessage[]>;
+  } => {
+    if (typeof window === "undefined") return { conversations: [], messages: {} };
+    try {
+      const raw = window.localStorage.getItem(MOCK_SESSION_KEY);
+      if (!raw) return { conversations: [], messages: {} };
+      const parsed = JSON.parse(raw) as {
+        conversations?: ConversationRecord[];
+        messages?: Record<string, ConversationMessage[]>;
+      };
+      return {
+        conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
+        messages: parsed.messages ?? {},
+      };
+    } catch {
+      return { conversations: [], messages: {} };
+    }
+  };
+  const storedConversations = loadMockConversationState();
+  const conversations = new Map<string, ConversationRecord>(
+    storedConversations.conversations.map((record) => [record.conversationId, record]),
+  );
+  const conversationMessages = new Map<string, ConversationMessage[]>(
+    Object.entries(storedConversations.messages),
+  );
+  const persistMockSessions = () => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(
+        MOCK_SESSION_KEY,
+        JSON.stringify({
+          conversations: [...conversations.values()],
+          messages: Object.fromEntries(conversationMessages),
+        }),
+      );
+    } catch {
+      // A locked-down webview can refuse storage; the preview still works in memory.
+    }
+  };
+  let conversationCounter = conversations.size;
+
+  const mockWorkflow = (projectId: string, mode: string): WorkflowDoc => {
+    const suffix = (conversationCounter + 1).toString(36);
+    const projectNode = "project-" + suffix;
+    const agentNode = "agent-" + suffix;
+    const logNode = "log-" + suffix;
+    return {
+      schemaVersion: "1.1",
+      id: "wf-mock-" + suffix,
+      name: "新建 Agent 会话",
+      description: "",
+      nodes: [
+        {
+          id: projectNode,
+          kind: "core.project_workspace",
+          position: { x: 40, y: 160 },
+          params: { projectId, cwd: "" },
+          enabled: true,
+        },
+        {
+          id: agentNode,
+          kind: "core.agent",
+          position: { x: 360, y: 120 },
+          params: {
+            model: "gpt-4o-mini",
+            reasoning: "auto",
+            permissionMode: mode,
+            instruction: "",
+            recipient: "user",
+          },
+          enabled: true,
+        },
+        {
+          id: logNode,
+          kind: "core.log",
+          position: { x: 720, y: 180 },
+          params: { prefix: "agent: " },
+          enabled: true,
+        },
+      ],
+      edges: [
+        { id: projectNode + ":workspace->" + agentNode + ":workspace", source: projectNode, sourcePort: "workspace", target: agentNode, targetPort: "workspace", kind: "data" },
+        { id: projectNode + ":ready->" + agentNode + ":start", source: projectNode, sourcePort: "ready", target: agentNode, targetPort: "start", kind: "control" },
+        { id: agentNode + ":userResponse->" + logNode + ":value", source: agentNode, sourcePort: "userResponse", target: logNode, targetPort: "value", kind: "data" },
+        { id: agentNode + ":completed->" + logNode + ":run", source: agentNode, sourcePort: "completed", target: logNode, targetPort: "run", kind: "control" },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      metadata: { projectId },
+    };
+  };
+
+  const newConversation = (title: string, workflow?: WorkflowDoc): ConversationRecord => {
+    conversationCounter += 1;
+    const now = Date.now();
+    const record: ConversationRecord = {
+      conversationId: "conv-mock-" + conversationCounter,
+      projectId: mockProject.projectId,
+      title,
+      workflow: workflow ?? mockWorkflow(mockProject.projectId, "ask"),
+      createdAtMs: now,
+      updatedAtMs: now,
+    };
+    conversations.set(record.conversationId, record);
+    conversationMessages.set(record.conversationId, []);
+    persistMockSessions();
+    return record;
+  };
+
   return {
     async listNodeSpecs() {
       return specs;
@@ -958,7 +1177,7 @@ export function createMockTransport(): Transport {
       return validate(workflow);
     },
 
-    async runWorkflow(workflow): Promise<RunStartResponse> {
+    async runWorkflow(workflow, options): Promise<RunStartResponse> {
       // Templates are cloned with fresh subgraph ids, so recognise the agent
       // preview by its shape rather than by the definition id.
       const agent = workflow.nodes.find((node) => {
@@ -989,6 +1208,40 @@ export function createMockTransport(): Transport {
         return { started: false, runId: null, report };
       }
       const runId = "mock-" + ++counter;
+      if (options?.conversationId && options.userMessage) {
+        const history = conversationMessages.get(options.conversationId) ?? [];
+        history.push({
+          messageId: "user-" + runId,
+          conversationId: options.conversationId,
+          runId,
+          agentNodeId: null,
+          agentInstanceId: null,
+          role: "user",
+          content: options.userMessage,
+          createdAtMs: Date.now(),
+        });
+        conversationMessages.set(options.conversationId, history);
+        persistMockSessions();
+      }
+      if (options?.conversationId) {
+        const conversationId = options.conversationId;
+        window.setTimeout(() => {
+          const history = conversationMessages.get(conversationId) ?? [];
+          history.push({
+            messageId: runId + ":activation-1",
+            conversationId,
+            runId,
+            agentNodeId: agentNodes[0]?.id ?? null,
+            agentInstanceId: null,
+            role: "assistant",
+            content:
+              "我读取了项目目录。主要结构：`src/main.ts` 是入口，`src/lib/util.ts` 提供工具函数，`package.json` 描述项目。浏览器预览中的执行是模拟的，桌面版会用 Rust 工具读取真实文件。",
+            createdAtMs: Date.now(),
+          });
+          conversationMessages.set(conversationId, history);
+          persistMockSessions();
+        }, 400);
+      }
       const runEvents: RunEvent[] = [];
       let seq = 0;
       const emitRun = (event: RunEventInput) => {
@@ -1787,6 +2040,140 @@ export function createMockTransport(): Transport {
 
     async agentTemplate() {
       return mockAgentTemplate();
+    },
+
+    async pickProjectFolder() {
+      return mockProject.root;
+    },
+
+    async projectList(): Promise<ProjectRecord[]> {
+      return [mockProject];
+    },
+
+    async projectOpen(): Promise<ProjectOpenResponse> {
+      return { project: mockProject, workspaceHandle: "ws-mock-demo", tree: mockTree(""), git: true };
+    },
+
+    async projectRemove() {
+      return true;
+    },
+
+    async projectTree(_projectId, path, _showIgnored): Promise<FileEntry[]> {
+      return mockTree(path ?? "");
+    },
+
+    async projectRead(_projectId, path): Promise<FileSnapshot> {
+      return snapshot(path);
+    },
+
+    async projectWrite(_projectId, path, content, expectedVersion): Promise<FileSnapshot> {
+      const current = mockFiles.get(path);
+      const currentVersion = current === undefined ? "absent" : mockVersions.get(path) ?? versionOf(current);
+      if (expectedVersion && expectedVersion !== currentVersion) {
+        throw new Error("workspace.version_conflict: " + path);
+      }
+      mockFiles.set(path, content);
+      const version = versionOf(content + ":" + Date.now());
+      mockVersions.set(path, version);
+      return { path, version, content, bytes: content.length };
+    },
+
+    async projectDelete(_projectId, path) {
+      mockFiles.delete(path);
+      mockVersions.delete(path);
+      return true;
+    },
+
+    async projectSearch(_projectId, query, path, limit): Promise<FileMatch[]> {
+      const prefix = path ? path.replace(/\/$/, "") + "/" : "";
+      const matches: FileMatch[] = [];
+      for (const [file, content] of mockFiles) {
+        if (!file.startsWith(prefix)) continue;
+        content.split("\n").forEach((text, index) => {
+          if (text.toLowerCase().includes(query.toLowerCase()) && matches.length < (limit ?? 50)) {
+            matches.push({ path: file, line: index + 1, text });
+          }
+        });
+      }
+      return matches;
+    },
+
+    async projectGitStatus(): Promise<GitEntry[]> {
+      return [{ path: "src/main.ts", status: "M" }];
+    },
+
+    async projectGitDiff(_projectId, path): Promise<string> {
+      return "diff --git a/" + (path ?? "src/main.ts") + "\n+// local change\n";
+    },
+
+    async projectGitLog(): Promise<GitCommit[]> {
+      return [{ hash: "a1b2c3d", author: "LingXi", timestampMs: Date.now(), subject: "Initial demo project" }];
+    },
+
+    async projectRules() {
+      return [{ path: "AGENTS.md", content: mockFiles.get("AGENTS.md") ?? "" }];
+    },
+
+    async projectReveal() {
+      return true;
+    },
+
+    async conversationList(projectId): Promise<ConversationRecord[]> {
+      return [...conversations.values()].filter((entry) => !projectId || entry.projectId === projectId);
+    },
+
+    async conversationCreate(projectId, title, workflow): Promise<ConversationRecord> {
+      void projectId;
+      return newConversation(title ?? "新会话", workflow);
+    },
+
+    async conversationCreateTeam(projectId, title): Promise<ConversationRecord> {
+      void projectId;
+      return newConversation(title ?? "公司团队");
+    },
+
+    async conversationGet(conversationId): Promise<ConversationRecord | null> {
+      return conversations.get(conversationId) ?? null;
+    },
+
+    async conversationSaveWorkflow(conversationId, workflow, title): Promise<ConversationRecord> {
+      const record = conversations.get(conversationId);
+      if (!record) throw new Error("conversation not found");
+      const next = { ...record, workflow, title: title ?? record.title, updatedAtMs: Date.now() };
+      conversations.set(conversationId, next);
+      persistMockSessions();
+      return next;
+    },
+
+    async conversationMessages(conversationId): Promise<ConversationMessage[]> {
+      // Copy the live array; returning it directly lets callers hold a reference
+      // that later grows in place, which React cannot detect.
+      return [...(conversationMessages.get(conversationId) ?? [])];
+    },
+
+    async permissionAudit(): Promise<PermissionAuditRecord[]> {
+      return [];
+    },
+
+    async appendConversationMessage(conversationId, runId, agentNodeId, content) {
+      const history = conversationMessages.get(conversationId) ?? [];
+      history.push({
+        messageId: "user-" + Date.now(),
+        conversationId,
+        runId,
+        agentNodeId,
+        agentInstanceId: null,
+        role: "user",
+        content,
+        createdAtMs: Date.now(),
+      });
+      conversationMessages.set(conversationId, history);
+      persistMockSessions();
+      return true;
+    },
+
+    async setPermissionMode() {
+      return true;
     },
 
     async onPersistenceError() {

@@ -50,6 +50,7 @@ pub fn register(registry: &mut NodeRegistry) {
     crate::agent_node::register(registry);
     crate::media::register(registry);
     crate::lsp_node::register(registry);
+    crate::project_node::register(registry);
 }
 
 pub fn text_input_spec() -> NodeSpec {
@@ -258,10 +259,12 @@ impl NodeExecutor for Approval {
             )
             .await?;
         match decision {
-            InteractionDecision::Approved => Ok(NodeOutput::new().with(
-                "payload",
-                ctx.input("payload").cloned().unwrap_or(Value::Null),
-            )),
+            InteractionDecision::Approved | InteractionDecision::ApprovedOnce => {
+                Ok(NodeOutput::new().with(
+                    "payload",
+                    ctx.input("payload").cloned().unwrap_or(Value::Null),
+                ))
+            }
             InteractionDecision::Rejected => Err(NodeError::new(
                 error_codes::INTERACTION_DENIED,
                 "approval was rejected",

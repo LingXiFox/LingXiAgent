@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use lingxi_runtime::{EventSink, InteractionDecision, RunControl, RunEvent};
+use lingxi_runtime::event::AgentEvent;
+use lingxi_runtime::{
+    ChatMessage, EventSink, InteractionDecision, PermissionMode, PermissionPolicy, RunControl,
+    RunEvent,
+};
 use lingxi_spec::{NodeSpec, ValidationReport, Workflow};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::redact::{redact_event, redact_task_session};
@@ -22,6 +27,8 @@ struct TauriSink {
     app: AppHandle,
     db: Arc<RunDatabase>,
     control: Arc<RunControl>,
+    permissions: Arc<lingxi_runtime::PermissionManager>,
+    conversation_id: Option<String>,
     failed: AtomicBool,
 }
 
@@ -83,6 +90,59 @@ impl EventSink for TauriSink {
                 }
             }
         }
+        if let RunEvent::Agent {
+            event: agent_event, ..
+        } = &event
+        {
+            if let AgentEvent::ActivationFinished {
+                agent_instance_id,
+                activation_id,
+                user_response: Some(response),
+                ..
+            } = agent_event.as_ref()
+            {
+                if let Some(conversation_id) = &self.conversation_id {
+                    let node_id = self.control.agents().and_then(|bus| {
+                        bus.session()
+                            .agents
+                            .get(agent_instance_id)
+                            .map(|agent| agent.node_id.clone())
+                    });
+                    let message_id = format!("{}:{activation_id}", event.run_id());
+                    if let Err(error) = self.db.add_conversation_message(
+                        conversation_id,
+                        &message_id,
+                        Some(event.run_id()),
+                        node_id.as_deref(),
+                        Some(agent_instance_id),
+                        "assistant",
+                        response,
+                    ) {
+                        eprintln!("conversation message persistence failed: {error}");
+                    }
+                }
+            }
+        }
+        // Persist the authorization trail with the run. The audit table is
+        // unique per decision, so replaying the in-memory log is idempotent.
+        if matches!(
+            &event,
+            RunEvent::Agent { .. } | RunEvent::RunFinished { .. }
+        ) {
+            for entry in self.permissions.audit_for(event.run_id()) {
+                if let Err(error) = self.db.record_permission_audit(
+                    &entry.run_id,
+                    &entry.node_id,
+                    entry.mode.as_str(),
+                    &entry.class,
+                    &entry.target,
+                    &entry.decision,
+                    &entry.detail,
+                ) {
+                    eprintln!("permission audit persistence failed: {error}");
+                }
+            }
+        }
         let _ = self.app.emit(RUN_EVENT, &event);
     }
 }
@@ -129,10 +189,23 @@ pub fn validate_workflow(workflow: Workflow, state: State<'_, AppState>) -> Vali
 
 #[tauri::command]
 pub async fn run_workflow(
-    workflow: Workflow,
+    mut workflow: Workflow,
+    conversation_id: Option<String>,
+    user_message: Option<String>,
+    permission_mode: Option<String>,
+    agent_node_id: Option<String>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<RunStartResponse, String> {
+    // The composer message belongs to this run snapshot only. It is injected
+    // into the chosen Agent node's instruction without rewriting the saved
+    // conversation draft, and prior turns arrive through per-agent history.
+    let addressed_agent = match user_message.as_deref() {
+        Some(message) if !message.trim().is_empty() => {
+            inject_user_message(&mut workflow, agent_node_id.as_deref(), message)
+        }
+        _ => agent_node_id.or_else(|| first_agent_node_id(&workflow)),
+    };
     let report = state.engine.validate(&workflow);
     if !report.ok {
         return Ok(RunStartResponse {
@@ -142,12 +215,76 @@ pub async fn run_workflow(
         });
     }
 
+    let conversation = match &conversation_id {
+        Some(id) => Some(
+            state
+                .db
+                .conversation(id)?
+                .ok_or_else(|| format!("conversation {id} does not exist"))?,
+        ),
+        None => None,
+    };
+    let project_id = conversation
+        .as_ref()
+        .map(|record| record.project_id.clone());
+    let mode = match permission_mode.as_deref() {
+        Some(value) => PermissionMode::parse(value)
+            .ok_or_else(|| format!("unknown permission mode {value:?}"))?,
+        None => workflow_permission_mode(&workflow),
+    };
+    let engine = match &conversation {
+        Some(record) => {
+            let handle = state.ensure_project_workspace(&record.project_id)?;
+            let workspace = state
+                .workspaces
+                .workspace(&handle.handle_id)
+                .ok_or_else(|| "project workspace disappeared".to_string())?;
+            let project = state
+                .db
+                .project(&record.project_id)?
+                .ok_or_else(|| format!("project {} does not exist", record.project_id))?;
+            let project_ref = lingxi_runtime::ProjectRef {
+                project_id: project.project_id,
+                name: project.name,
+            };
+            let histories = conversation_history(&state.db, &record.conversation_id, &workflow)?;
+            state.engine_for(Some(workspace), Some(project_ref), histories)?
+        }
+        // A workflow without a conversation is the standalone editor path. It
+        // keeps the app's default agent workspace; only project-bound runs need
+        // a run-scoped catalog with exactly one project.
+        None => state.engine.clone(),
+    };
+
     let run_id = uuid::Uuid::new_v4().to_string();
     let control = RunControl::new();
     state
         .db
         .create_run(&run_id, &workflow, now_ms())
         .map_err(|error| format!("cannot persist run start: {error}"))?;
+    if let Some(record) = &conversation {
+        state
+            .db
+            .link_conversation_run(&record.conversation_id, &run_id)?;
+    }
+    let mut policy = PermissionPolicy::new(&run_id, mode);
+    policy.project_id = project_id.clone();
+    policy.session_id = conversation_id.clone();
+    policy.revision = 1;
+    state.permissions.set_policy(policy);
+    if let (Some(record), Some(message)) = (&conversation, user_message.as_deref()) {
+        if !message.trim().is_empty() {
+            state.db.add_conversation_message(
+                &record.conversation_id,
+                &format!("user-{}", uuid::Uuid::new_v4()),
+                Some(&run_id),
+                addressed_agent.as_deref(),
+                None,
+                "user",
+                message,
+            )?;
+        }
+    }
 
     if let Err(error) = state
         .runs
@@ -161,13 +298,14 @@ pub async fn run_workflow(
         return Err(error);
     }
 
-    let engine = state.engine.clone();
     let runs = state.runs.clone();
     let db = state.db.clone();
     let sink = TauriSink {
         app,
         db: db.clone(),
         control: control.clone(),
+        permissions: state.permissions.clone(),
+        conversation_id: conversation_id.clone(),
         failed: AtomicBool::new(false),
     };
     let run_for_task = run_id.clone();
@@ -189,6 +327,126 @@ pub async fn run_workflow(
         run_id: Some(run_id),
         report,
     })
+}
+
+fn find_node_mut<'a>(
+    workflow: &'a mut Workflow,
+    node_id: &str,
+) -> Option<&'a mut lingxi_spec::WorkflowNode> {
+    if let Some(index) = workflow.nodes.iter().position(|node| node.id == node_id) {
+        return workflow.nodes.get_mut(index);
+    }
+    for definition in workflow.subgraphs.values_mut() {
+        if let Some(node) = find_node_mut(&mut definition.workflow, node_id) {
+            return Some(node);
+        }
+    }
+    None
+}
+
+fn first_agent_mut(workflow: &mut Workflow) -> Option<&mut lingxi_spec::WorkflowNode> {
+    if let Some(index) = workflow
+        .nodes
+        .iter()
+        .position(|node| node.kind == lingxi_runtime::agent_node::AGENT_KIND)
+    {
+        return workflow.nodes.get_mut(index);
+    }
+    for definition in workflow.subgraphs.values_mut() {
+        if let Some(node) = first_agent_mut(&mut definition.workflow) {
+            return Some(node);
+        }
+    }
+    None
+}
+
+fn first_agent_node_id(workflow: &Workflow) -> Option<String> {
+    if let Some(node) = workflow
+        .nodes
+        .iter()
+        .find(|node| node.kind == lingxi_runtime::agent_node::AGENT_KIND)
+    {
+        return Some(node.id.clone());
+    }
+    workflow
+        .subgraphs
+        .values()
+        .find_map(|definition| first_agent_node_id(&definition.workflow))
+}
+
+/// Returns the addressed Agent node id after updating the run snapshot.
+fn inject_user_message(
+    workflow: &mut Workflow,
+    agent_node_id: Option<&str>,
+    message: &str,
+) -> Option<String> {
+    let requested = match agent_node_id {
+        Some(id) => find_node_mut(workflow, id),
+        None => None,
+    };
+    let target = match requested {
+        Some(node) => node,
+        None => first_agent_mut(workflow)?,
+    };
+    let existing = target
+        .params
+        .get("instruction")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let instruction = if existing.is_empty() {
+        message.trim().to_string()
+    } else {
+        format!("{existing}\n\n{}", message.trim())
+    };
+    target
+        .params
+        .insert("instruction".to_string(), Value::String(instruction));
+    Some(target.id.clone())
+}
+
+fn workflow_permission_mode(workflow: &Workflow) -> PermissionMode {
+    workflow
+        .nodes
+        .iter()
+        .find(|node| node.kind == lingxi_runtime::agent_node::AGENT_KIND)
+        .and_then(|node| node.params.get("permissionMode"))
+        .and_then(|value| value.as_str())
+        .and_then(PermissionMode::parse)
+        .unwrap_or_default()
+}
+
+/// Builds per-agent conversation history from durable messages. User turns are
+/// shared; assistant turns belong to the agent that produced them. Agent-to-
+/// agent handoffs never come from this table; they travel over the AgentBus.
+fn conversation_history(
+    db: &RunDatabase,
+    conversation_id: &str,
+    workflow: &Workflow,
+) -> Result<std::collections::BTreeMap<String, Vec<ChatMessage>>, String> {
+    let messages = db.conversation_messages(conversation_id)?;
+    let mut histories = std::collections::BTreeMap::new();
+    for node in workflow
+        .nodes
+        .iter()
+        .filter(|node| node.kind == lingxi_runtime::agent_node::AGENT_KIND)
+    {
+        let mut history = Vec::new();
+        for message in &messages {
+            match message.role.as_str() {
+                "user" => history.push(ChatMessage::user(message.content.clone())),
+                "assistant" if message.agent_node_id.as_deref() == Some(node.id.as_str()) => {
+                    history.push(ChatMessage::assistant(message.content.clone()));
+                }
+                _ => {}
+            }
+        }
+        if !history.is_empty() {
+            histories.insert(node.id.clone(), history);
+        }
+    }
+    Ok(histories)
 }
 
 #[tauri::command]

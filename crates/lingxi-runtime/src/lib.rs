@@ -27,6 +27,8 @@ pub mod lsp_node;
 pub mod mcp;
 pub mod media;
 pub mod permissions;
+pub mod project;
+pub mod project_node;
 pub mod provider;
 pub mod registry;
 pub mod responses;
@@ -51,7 +53,8 @@ pub use interaction::{
     PendingInteractions,
 };
 pub use mcp::{McpHttpConfig, McpManager, McpStdioConfig, McpTool};
-pub use permissions::{PermissionClass, PermissionManager};
+pub use permissions::{PermissionClass, PermissionManager, PermissionMode, PermissionPolicy};
+pub use project::{ProjectRef, WorkspaceCatalog, WorkspaceHandle};
 pub use provider::{
     ChatMessage, ChatProvider, ChatRequest, ChatResponse, MessageRole, OpenAiFactory,
     ProviderConfig, ProviderFactory, ProviderProtocol, TokenUsage, ToolCall,

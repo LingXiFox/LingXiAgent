@@ -20,8 +20,10 @@ use crate::content::ContentPart;
 use crate::context::NodeContext;
 use crate::error::{error_codes, NodeError};
 use crate::event::AgentEvent;
+use crate::permissions::PermissionMode;
 use crate::provider::{ProviderConfig, ProviderProtocol};
 use crate::registry::{NodeExecutor, NodeOutput};
+use crate::workspace::Workspace;
 
 pub const AGENT_KIND: &str = "core.agent";
 
@@ -54,6 +56,7 @@ fn agent_spec() -> NodeSpec {
         .input(port("messages", "Agent Messages", DataType::Json, COLLABORATION))
         .input(port("artifacts", "Artifacts", DataType::Json, COLLABORATION))
         .input(port("media", "Media", DataType::Json, COLLABORATION))
+        .input(port("workspace", "Project Workspace", DataType::Text, CONTROL))
         .input(PortSpec::new("start", "Start", DataType::Any).control().group(CONTROL))
         .input(port("budget", "Budget", DataType::Json, CONTROL))
         .input(port("policy", "Execution Policy", DataType::Json, CONTROL))
@@ -106,6 +109,17 @@ fn agent_spec() -> NodeSpec {
         ).help("Workspace instructions. Lower priority than system and role prompts."))
         .param(ParamSpec::text_area("instruction", "Default User Prompt", ""))
         .param(ParamSpec::text("recipient", "Result Recipient", "broadcast"))
+        .param(ParamSpec::select(
+            "permissionMode",
+            "Permission Mode",
+            "ask",
+            vec![
+                ParamOption::new("ask", "Ask every sensitive action"),
+                ParamOption::new("workspace", "Workspace: trust project files and builds"),
+                ParamOption::new("yolo", "YOLO: auto-approve routine project work"),
+            ],
+        )
+        .help("An Agent may tighten the run policy but never widen it."))
         .param(ParamSpec::number("maxIterations", "Max Iterations", 12.0))
         .param(ParamSpec::number("maxToolCalls", "Max Tool Calls", 48.0))
         .param(ParamSpec::number("maxTotalTokens", "Max Total Tokens", 0.0))
@@ -140,7 +154,13 @@ impl NodeExecutor for AgentNode {
             .label
             .clone()
             .unwrap_or_else(|| "Agent".to_string());
-        let config = build_config(ctx)?;
+        let workspace = resolve_workspace(ctx)?;
+        let mode =
+            PermissionMode::parse(&text_param(ctx, "permissionMode", "ask")).unwrap_or_default();
+        ctx.services
+            .permissions
+            .set_agent_mode(ctx.run_id, &ctx.node.id, mode);
+        let config = build_config(ctx, workspace.as_ref())?;
         let first_registration = !bus.session().agents.contains_key(&instance_id);
         if first_registration {
             let instance = AgentInstance::new(
@@ -184,7 +204,7 @@ impl NodeExecutor for AgentNode {
                 config_revision: config.revision,
             },
         );
-        let input = build_input(ctx, &bus, &instance_id, &config)?;
+        let input = build_input(ctx, &bus, &instance_id, &config, workspace)?;
         let task_id = input.task_id.clone();
         let recipient = input
             .recipient
@@ -298,7 +318,46 @@ fn ensure_bus(ctx: &NodeContext<'_>, label: &str) -> Arc<AgentBus> {
         .attach_agents(AgentBus::new(TaskSession::new(ctx.run_id, "", label)))
 }
 
-fn build_config(ctx: &NodeContext<'_>) -> Result<AgentConfigSnapshot, NodeError> {
+/// The controlled workspace an Agent is bound to for this activation. The
+/// handle is opaque; only the host catalog can turn it into a real directory.
+struct WorkspaceBinding {
+    workspace: Arc<Workspace>,
+    relative_cwd: String,
+}
+
+fn resolve_workspace(ctx: &NodeContext<'_>) -> Result<Option<WorkspaceBinding>, NodeError> {
+    let handle = input_text(ctx, "workspace").or_else(|| {
+        let value = text_param(ctx, "workspace", "");
+        (!value.trim().is_empty()).then_some(value)
+    });
+    match handle {
+        Some(handle) => {
+            let workspace = ctx.services.workspace_for_handle(&handle)?;
+            let relative_cwd = ctx
+                .services
+                .workspace_handle(&handle)
+                .map(|handle| handle.relative_cwd)
+                .unwrap_or_default();
+            Ok(Some(WorkspaceBinding {
+                workspace,
+                relative_cwd,
+            }))
+        }
+        None => Ok(ctx
+            .services
+            .workspace()
+            .cloned()
+            .map(|workspace| WorkspaceBinding {
+                workspace,
+                relative_cwd: String::new(),
+            })),
+    }
+}
+
+fn build_config(
+    ctx: &NodeContext<'_>,
+    workspace: Option<&WorkspaceBinding>,
+) -> Result<AgentConfigSnapshot, NodeError> {
     let mut system =
         input_text(ctx, "systemPrompt").unwrap_or_else(|| text_param(ctx, "systemPrompt", ""));
     if let Some(agents) = input_text(ctx, "agentsMd").or_else(|| {
@@ -307,6 +366,16 @@ fn build_config(ctx: &NodeContext<'_>) -> Result<AgentConfigSnapshot, NodeError>
     }) {
         system.push_str("\n\nWorkspace instructions (AGENTS.md):\n");
         system.push_str(&agents);
+    }
+    // Project rules are scoped to the operation directory: root AGENTS.md plus
+    // each parent up to the Agent's cwd, not every AGENTS.md in the repository.
+    if let Some(binding) = workspace {
+        for document in binding.workspace.agents_md(&binding.relative_cwd) {
+            system.push_str(&format!(
+                "\n\nProject instructions ({}):\n{}",
+                document.path, document.content
+            ));
+        }
     }
     let mut config = AgentConfigSnapshot {
         model: input_text(ctx, "model").unwrap_or_else(|| text_param(ctx, "model", "gpt-4o-mini")),
@@ -418,6 +487,7 @@ fn build_input(
     bus: &Arc<AgentBus>,
     instance_id: &str,
     config: &AgentConfigSnapshot,
+    workspace: Option<WorkspaceBinding>,
 ) -> Result<AgentInput, NodeError> {
     let task = ctx.input("task").cloned().unwrap_or(Value::Null);
     // A downstream Agent may receive an AgentMessageEnvelope over a data edge.
@@ -577,6 +647,18 @@ fn build_input(
                 .and_then(|value| serde_json::from_value::<Vec<ArtifactRef>>(value.clone()).ok())
         })
         .unwrap_or_default();
+    if let Some(binding) = &workspace {
+        let cwd = if binding.relative_cwd.is_empty() {
+            ".".to_string()
+        } else {
+            binding.relative_cwd.clone()
+        };
+        context = Some(format!(
+            "{}\nProject workspace: {} (relative cwd {cwd}). All file tool paths are relative to this directory.",
+            context.unwrap_or_default(),
+            binding.workspace.root().display()
+        ));
+    }
     if !artifacts.is_empty() {
         let listing = artifacts
             .iter()
@@ -619,6 +701,14 @@ fn build_input(
         recipient,
         media,
         lsp,
+        workspace: workspace
+            .as_ref()
+            .map(|binding| Arc::clone(&binding.workspace)),
+        relative_cwd: workspace
+            .as_ref()
+            .map(|binding| binding.relative_cwd.clone())
+            .unwrap_or_default(),
+        history: ctx.services.history(&ctx.node.id),
     })
 }
 fn provider_handle(ctx: &NodeContext<'_>) -> Result<String, NodeError> {

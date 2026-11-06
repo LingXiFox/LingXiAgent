@@ -4,6 +4,19 @@ import type {
   AssetKind,
   AssetRef,
   ConfigChange,
+  ConversationMessage,
+  ConversationRecord,
+  FileEntry,
+  FileMatch,
+  FileSnapshot,
+  GitCommit,
+  GitEntry,
+  InstructionDocument,
+  PermissionAuditRecord,
+  PermissionMode,
+  ProjectOpenResponse,
+  ProjectRecord,
+  RunOptions,
   HostInteraction,
   ModelCapabilities,
   NodeSpec,
@@ -27,7 +40,7 @@ import type {
 export interface Transport {
   listNodeSpecs(): Promise<NodeSpec[]>;
   validateWorkflow(workflow: WorkflowDoc): Promise<ValidationReport>;
-  runWorkflow(workflow: WorkflowDoc): Promise<RunStartResponse>;
+  runWorkflow(workflow: WorkflowDoc, options?: RunOptions): Promise<RunStartResponse>;
   stopWorkflow(runId: string): Promise<boolean>;
   pauseWorkflow(runId: string): Promise<boolean>;
   resumeWorkflow(runId: string): Promise<boolean>;
@@ -86,6 +99,47 @@ export interface Transport {
   respondHostInteraction(requestId: string, approved: boolean): Promise<boolean>;
   skillList(): Promise<SkillSummary[]>;
   agentTemplate(): Promise<TemplateBundle>;
+  pickProjectFolder(): Promise<string | null>;
+  projectList(): Promise<ProjectRecord[]>;
+  projectOpen(root: string): Promise<ProjectOpenResponse>;
+  projectRemove(projectId: string): Promise<boolean>;
+  projectTree(projectId: string, path?: string, showIgnored?: boolean): Promise<FileEntry[]>;
+  projectRead(projectId: string, path: string): Promise<FileSnapshot>;
+  projectWrite(
+    projectId: string,
+    path: string,
+    content: string,
+    expectedVersion?: string | null,
+  ): Promise<FileSnapshot>;
+  projectDelete(projectId: string, path: string, expectedVersion?: string | null): Promise<boolean>;
+  projectSearch(projectId: string, query: string, path?: string, limit?: number): Promise<FileMatch[]>;
+  projectGitStatus(projectId: string): Promise<GitEntry[]>;
+  projectGitDiff(projectId: string, path?: string): Promise<string>;
+  projectGitLog(projectId: string, limit?: number): Promise<GitCommit[]>;
+  projectRules(projectId: string, path?: string): Promise<InstructionDocument[]>;
+  projectReveal(projectId: string, path?: string): Promise<boolean>;
+  conversationList(projectId?: string, limit?: number): Promise<ConversationRecord[]>;
+  conversationCreate(
+    projectId: string,
+    title?: string,
+    workflow?: WorkflowDoc,
+  ): Promise<ConversationRecord>;
+  conversationCreateTeam(projectId: string, title?: string): Promise<ConversationRecord>;
+  conversationGet(conversationId: string): Promise<ConversationRecord | null>;
+  conversationSaveWorkflow(
+    conversationId: string,
+    workflow: WorkflowDoc,
+    title?: string,
+  ): Promise<ConversationRecord>;
+  conversationMessages(conversationId: string): Promise<ConversationMessage[]>;
+  appendConversationMessage(
+    conversationId: string,
+    runId: string | null,
+    agentNodeId: string | null,
+    content: string,
+  ): Promise<boolean>;
+  permissionAudit(runId?: string, limit?: number): Promise<PermissionAuditRecord[]>;
+  setPermissionMode(runId: string, mode: PermissionMode): Promise<boolean>;
   onRunEvent(handler: (event: RunEvent) => void): Promise<() => void>;
   onPersistenceError(handler: (error: PersistenceError) => void): Promise<() => void>;
   onHostInteraction(handler: (request: HostInteraction) => void): Promise<() => void>;

@@ -18,6 +18,11 @@ pub const READ_FILE: &str = "read_file";
 pub const WRITE_FILE: &str = "write_file";
 pub const LIST_FILES: &str = "list_files";
 pub const RUN_COMMAND: &str = "run_command";
+pub const DELETE_FILE: &str = "delete_file";
+pub const SEARCH_FILES: &str = "search_files";
+pub const GIT_STATUS: &str = "git_status";
+pub const GIT_DIFF: &str = "git_diff";
+pub const GIT_LOG: &str = "git_log";
 
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
@@ -28,6 +33,11 @@ pub fn names() -> Vec<String> {
         WRITE_FILE.to_string(),
         LIST_FILES.to_string(),
         RUN_COMMAND.to_string(),
+        DELETE_FILE.to_string(),
+        SEARCH_FILES.to_string(),
+        GIT_STATUS.to_string(),
+        GIT_DIFF.to_string(),
+        GIT_LOG.to_string(),
     ]
 }
 
@@ -64,6 +74,71 @@ pub fn definitions() -> Vec<ToolDefinition> {
             timeout_ms: 10_000,
         },
         ToolDefinition {
+            name: DELETE_FILE.to_string(),
+            description: "Delete a file inside the task workspace. expectedVersion, when supplied, must match the current file version. Directories must be empty and are never removed recursively.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "minLength": 1},
+                    "expectedVersion": {"type": "string"}
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }),
+            capability: "filesystem".to_string(),
+            source: "workspace".to_string(),
+            timeout_ms: 10_000,
+        },
+        ToolDefinition {
+            name: SEARCH_FILES.to_string(),
+            description: "Search file contents inside the task workspace. Skips dependency and build directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "minLength": 1},
+                    "path": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200}
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+            capability: "filesystem".to_string(),
+            source: "workspace".to_string(),
+            timeout_ms: 30_000,
+        },
+        ToolDefinition {
+            name: GIT_STATUS.to_string(),
+            description: "Show git status for the project workspace.".to_string(),
+            parameters: json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            capability: "filesystem".to_string(),
+            source: "workspace".to_string(),
+            timeout_ms: 15_000,
+        },
+        ToolDefinition {
+            name: GIT_DIFF.to_string(),
+            description: "Show the git diff for the project or one file.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": false
+            }),
+            capability: "filesystem".to_string(),
+            source: "workspace".to_string(),
+            timeout_ms: 15_000,
+        },
+        ToolDefinition {
+            name: GIT_LOG.to_string(),
+            description: "Show recent git commits for the project workspace.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 50}},
+                "additionalProperties": false
+            }),
+            capability: "filesystem".to_string(),
+            source: "workspace".to_string(),
+            timeout_ms: 15_000,
+        },
+        ToolDefinition {
             name: LIST_FILES.to_string(),
             description: "List files and directories inside the task workspace.".to_string(),
             parameters: json!({
@@ -96,7 +171,18 @@ pub fn definitions() -> Vec<ToolDefinition> {
 }
 
 pub fn is_workspace_tool(name: &str) -> bool {
-    matches!(name, READ_FILE | WRITE_FILE | LIST_FILES | RUN_COMMAND)
+    matches!(
+        name,
+        READ_FILE
+            | WRITE_FILE
+            | LIST_FILES
+            | RUN_COMMAND
+            | DELETE_FILE
+            | SEARCH_FILES
+            | GIT_STATUS
+            | GIT_DIFF
+            | GIT_LOG
+    )
 }
 
 pub fn capability(name: &str) -> &'static str {
@@ -151,6 +237,34 @@ pub async fn execute(
                 .to_string();
             let entries = workspace.list(&path)?;
             Ok(json!({ "entries": entries }))
+        }
+        DELETE_FILE => {
+            let path = required_string(&arguments, "path")?;
+            let expected = arguments
+                .get("expectedVersion")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty());
+            workspace.delete(&path, expected)?;
+            Ok(json!({ "path": path, "deleted": true }))
+        }
+        SEARCH_FILES => {
+            let query = required_string(&arguments, "query")?;
+            let path = arguments.get("path").and_then(Value::as_str).unwrap_or("");
+            let limit = arguments
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100) as usize;
+            let matches = workspace.search(path, &query, limit)?;
+            Ok(json!({ "matches": matches, "count": matches.len() }))
+        }
+        GIT_STATUS => Ok(json!({ "entries": workspace.git_status()? })),
+        GIT_DIFF => {
+            let path = arguments.get("path").and_then(Value::as_str);
+            Ok(json!({ "diff": workspace.git_diff(path)? }))
+        }
+        GIT_LOG => {
+            let limit = arguments.get("limit").and_then(Value::as_u64).unwrap_or(20) as usize;
+            Ok(json!({ "commits": workspace.git_log(limit)? }))
         }
         RUN_COMMAND => {
             let command = required_string(&arguments, "command")?;

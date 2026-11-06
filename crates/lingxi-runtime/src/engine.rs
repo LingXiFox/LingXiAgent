@@ -80,6 +80,8 @@ impl Engine {
                     std::env::temp_dir().join("lingxi-assets"),
                 )),
                 workspace: None,
+                workspaces: None,
+                histories: Arc::new(std::collections::BTreeMap::new()),
             },
         }
     }

@@ -10,6 +10,7 @@ use crate::error::NodeError;
 #[serde(rename_all = "snake_case")]
 pub enum InteractionDecision {
     Approved,
+    ApprovedOnce,
     Rejected,
 }
 

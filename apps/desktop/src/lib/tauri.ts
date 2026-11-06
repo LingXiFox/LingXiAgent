@@ -6,7 +6,18 @@ import type {
   AgentConfigRevision,
   AssetRef,
   ConfigChange,
+  ConversationMessage,
+  ConversationRecord,
+  FileEntry,
+  FileMatch,
+  FileSnapshot,
+  GitCommit,
+  GitEntry,
   HostInteraction,
+  InstructionDocument,
+  PermissionAuditRecord,
+  ProjectOpenResponse,
+  ProjectRecord,
   ModelCapabilities,
   NodeSpec,
   PersistenceError,
@@ -36,8 +47,14 @@ export const tauriTransport: Transport = {
   listNodeSpecs: () => invoke<NodeSpec[]>("list_node_specs"),
   validateWorkflow: (workflow) =>
     invoke<ValidationReport>("validate_workflow", { workflow }),
-  runWorkflow: (workflow) =>
-    invoke<RunStartResponse>("run_workflow", { workflow }),
+  runWorkflow: (workflow, options) =>
+    invoke<RunStartResponse>("run_workflow", {
+      workflow,
+      conversationId: options?.conversationId ?? null,
+      userMessage: options?.userMessage ?? null,
+      permissionMode: options?.permissionMode ?? null,
+      agentNodeId: options?.agentNodeId ?? null,
+    }),
   stopWorkflow: (runId) => invoke<boolean>("stop_workflow", { runId }),
   pauseWorkflow: (runId) => invoke<boolean>("pause_workflow", { runId }),
   resumeWorkflow: (runId) => invoke<boolean>("resume_workflow", { runId }),
@@ -102,6 +119,94 @@ export const tauriTransport: Transport = {
     invoke<boolean>("respond_host_interaction", { requestId, approved }),
   skillList: () => invoke<SkillSummary[]>("skill_list"),
   agentTemplate: () => invoke<TemplateBundle>("agent_template"),
+  pickProjectFolder: async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    const selected = await open({ directory: true, multiple: false, title: "选择项目文件夹" });
+    return typeof selected === "string" ? selected : null;
+  },
+  projectList: () => invoke<ProjectRecord[]>("project_list"),
+  projectOpen: (root) => invoke<ProjectOpenResponse>("project_open", { root }),
+  projectRemove: (projectId) => invoke<boolean>("project_remove", { projectId }),
+  projectTree: (projectId, path, showIgnored) =>
+    invoke<FileEntry[]>("project_tree", {
+      projectId,
+      path: path ?? null,
+      showIgnored: showIgnored ?? false,
+    }),
+  projectRead: (projectId, path) => invoke<FileSnapshot>("project_read", { projectId, path }),
+  projectWrite: (projectId, path, content, expectedVersion) =>
+    invoke<FileSnapshot>("project_write", {
+      projectId,
+      path,
+      content,
+      expectedVersion: expectedVersion ?? null,
+    }),
+  projectDelete: (projectId, path, expectedVersion) =>
+    invoke<boolean>("project_delete", {
+      projectId,
+      path,
+      expectedVersion: expectedVersion ?? null,
+    }),
+  projectSearch: (projectId, query, path, limit) =>
+    invoke<FileMatch[]>("project_search", {
+      projectId,
+      query,
+      path: path ?? null,
+      limit: limit ?? null,
+    }),
+  projectGitStatus: (projectId) => invoke<GitEntry[]>("project_git_status", { projectId }),
+  projectGitDiff: (projectId, path) =>
+    invoke<string>("project_git_diff", { projectId, path: path ?? null }),
+  projectGitLog: (projectId, limit) =>
+    invoke<GitCommit[]>("project_git_log", { projectId, limit: limit ?? null }),
+  projectRules: async (projectId, path) =>
+    (
+      await invoke<{ documents: InstructionDocument[] }>("project_rules", {
+        projectId,
+        path: path ?? null,
+      })
+    ).documents,
+  projectReveal: (projectId, path) =>
+    invoke<boolean>("project_reveal", { projectId, path: path ?? null }),
+  conversationList: (projectId, limit) =>
+    invoke<ConversationRecord[]>("conversation_list", {
+      projectId: projectId ?? null,
+      limit: limit ?? null,
+    }),
+  conversationCreate: (projectId, title, workflow) =>
+    invoke<ConversationRecord>("conversation_create", {
+      projectId,
+      title: title ?? null,
+      workflow: workflow ?? null,
+    }),
+  conversationCreateTeam: (projectId, title) =>
+    invoke<ConversationRecord>("conversation_create_team", {
+      projectId,
+      title: title ?? null,
+    }),
+  conversationGet: (conversationId) =>
+    invoke<ConversationRecord | null>("conversation_get", { conversationId }),
+  conversationSaveWorkflow: (conversationId, workflow, title) =>
+    invoke<ConversationRecord>("conversation_save_workflow", {
+      conversationId,
+      workflow,
+      title: title ?? null,
+    }),
+  conversationMessages: (conversationId) =>
+    invoke<ConversationMessage[]>("conversation_messages", { conversationId }),
+  appendConversationMessage: (conversationId, runId, agentNodeId, content) =>
+    invoke<boolean>("conversation_append_user_message", {
+      conversationId,
+      runId,
+      agentNodeId,
+      content,
+    }),
+  setPermissionMode: (runId, mode) => invoke<boolean>("set_permission_mode", { runId, mode }),
+  permissionAudit: (runId, limit) =>
+    invoke<PermissionAuditRecord[]>("permission_audit", {
+      runId: runId ?? null,
+      limit: limit ?? null,
+    }),
   onRunEvent: async (handler) =>
     listen<RunEvent>(RUN_EVENT_NAME, (event) => handler(event.payload)),
   onPersistenceError: async (handler) =>

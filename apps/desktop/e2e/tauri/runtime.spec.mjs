@@ -194,7 +194,16 @@ function dagWorkflow() {
 
 describe("LingXiAgent native Tauri E2E", () => {
   before(async () => {
-    await $('[data-testid="canvas"]').waitForDisplayed({ timeout: 120000 });
+    // WKWebView localStorage survives a fresh LINGXI_DATA_DIR, so a previous
+    // run may leave the app on the workbench tab. Start every suite on canvas.
+    const canvas = await $('[data-testid="canvas"]');
+    if (!(await canvas.isDisplayed())) {
+      const canvasTab = await $('[data-testid="view-canvas"]');
+      if (await canvasTab.isExisting()) {
+        await canvasTab.click();
+      }
+    }
+    await canvas.waitForDisplayed({ timeout: 120000 });
     await waitForLog("node catalog ready", 60000);
   });
 

@@ -268,6 +268,8 @@ pub fn engine_with_workspace(
             skills_root,
             assets,
             workspace,
+            workspaces: None,
+            histories: Arc::new(std::collections::BTreeMap::new()),
         },
     )
 }

@@ -11,6 +11,7 @@ import type {
   AssetRef,
   ModelCapabilities,
   ParamSpec,
+  ProjectOpenResponse,
   Support,
 } from "../lib/types";
 
@@ -32,6 +33,7 @@ interface ParamFieldProps {
   readOnly?: boolean;
   onChange: (nodeId: string, name: string, value: unknown) => void;
   onAssetImported?: (asset: AssetRef) => void;
+  onProjectOpened?: (opened: ProjectOpenResponse) => void;
 }
 
 function currentValue(param: ParamSpec, params: Record<string, unknown>): unknown {
@@ -232,6 +234,96 @@ function AssetField({
   );
 }
 
+function ProjectField({
+  nodeId,
+  value,
+  readOnly,
+  onChange,
+  onProjectOpened,
+}: {
+  nodeId: string;
+  value: unknown;
+  readOnly?: boolean;
+  onChange: (nodeId: string, name: string, value: unknown) => void;
+  onProjectOpened?: (opened: ProjectOpenResponse) => void;
+}) {
+  const { tx } = useI18n();
+  const projectId = typeof value === "string" ? value : "";
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId) {
+      setName("");
+      return;
+    }
+    void api
+      .projectList()
+      .then((projects) => {
+        if (!cancelled) {
+          setName(projects.find((project) => project.projectId === projectId)?.name ?? projectId);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setName(projectId);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  const pick = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const root = await api.pickProjectFolder();
+      if (!root) return;
+      const opened = await api.projectOpen(root);
+      onChange(nodeId, "projectId", opened.project.projectId);
+      onProjectOpened?.(opened);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="field">
+      <span className="field__label">
+        {tx("项目文件夹", "Project folder")}
+      </span>
+      <div className="field__row">
+        <input
+          className="field__control"
+          data-testid={"param-" + nodeId + "-projectId"}
+          readOnly
+          value={projectId ? name || projectId : ""}
+          placeholder={tx("尚未绑定项目", "No project bound")}
+        />
+        <button
+          type="button"
+          className="btn btn--ghost btn--compact nodrag"
+          data-testid={"pick-project-" + nodeId}
+          disabled={readOnly || busy}
+          onClick={() => void pick()}
+        >
+          {tx("选择项目文件夹", "Choose folder")}
+        </button>
+      </div>
+      <span className="field__hint">
+        {tx(
+          "工作流只保存 ProjectRef；绝对路径保留在本机注册表。",
+          "The workflow stores a ProjectRef; absolute paths stay in the local registry.",
+        )}
+      </span>
+      {error ? <p className="field__error">{error}</p> : null}
+    </div>
+  );
+}
+
 function ParamField({
   nodeId,
   nodeKind,
@@ -242,11 +334,24 @@ function ParamField({
   readOnly,
   onChange,
   onAssetImported,
+  onProjectOpened,
 }: ParamFieldProps) {
   const { tx, paramLabel, optionLabel } = useI18n();
   const value = currentValue(param, params);
   const inputId = nodeId + "-" + param.name;
   const label = paramLabel(param.name, param.label);
+
+  if (nodeKind === "core.project_workspace" && param.name === "projectId") {
+    return (
+      <ProjectField
+        nodeId={nodeId}
+        value={value}
+        readOnly={readOnly}
+        onChange={onChange}
+        onProjectOpened={onProjectOpened}
+      />
+    );
+  }
 
   if (param.kind === "asset") {
     return (
@@ -655,6 +760,7 @@ export function LingXiNode({ id, data, selected }: NodeProps<LingXiNodeModel>) {
               readOnly={data.readOnly}
               onChange={data.onParamChange}
               onAssetImported={data.onAssetImported}
+              onProjectOpened={data.onProjectOpened}
             />
           ))}
         </div>

@@ -1,6 +1,7 @@
 mod commands;
 mod fsutil;
 mod policy;
+mod projects;
 mod redact;
 mod runs;
 mod single_instance;
@@ -12,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use lingxi_runtime::{
     CapabilityPolicy, CredentialResolver, Engine, InteractionBroker, NodeRegistry,
-    PendingInteractions, RunControl, ServiceConfig,
+    PendingInteractions, RunControl, ServiceConfig, WorkspaceCatalog,
 };
 use tauri::Manager;
 
@@ -31,6 +32,11 @@ pub struct AppState {
     pub db: Arc<RunDatabase>,
     pub permissions: Arc<lingxi_runtime::permissions::PermissionManager>,
     pub assets: Arc<lingxi_runtime::AssetStore>,
+    /// In-memory registry of projects opened in this process. Workflows carry
+    /// opaque workspace handles, never project paths.
+    pub workspaces: Arc<WorkspaceCatalog>,
+    base_policy: Arc<dyn CapabilityPolicy>,
+    base_broker: Arc<dyn InteractionBroker>,
     // Held for the lifetime of the app; dropping it releases the OS lock.
     _instance_lock: InstanceLock,
 }
@@ -66,10 +72,11 @@ impl AppState {
                 let path = data_dir.join("skills");
                 path.is_dir().then_some(path)
             });
+        let workspaces = Arc::new(WorkspaceCatalog::new());
         let engine = Arc::new(Engine::with_services(
             registry.clone(),
-            policy,
-            broker,
+            policy.clone(),
+            broker.clone(),
             ServiceConfig {
                 permissions: permissions.clone(),
                 credentials: credentials.clone(),
@@ -79,6 +86,8 @@ impl AppState {
                     lingxi_runtime::Workspace::open(data_dir.join("agent-workspace"))
                         .map_err(|error| format!("cannot open agent workspace: {error}"))?,
                 )),
+                workspaces: Some(workspaces.clone()),
+                histories: Arc::new(std::collections::BTreeMap::new()),
             },
         ));
         Ok(Self {
@@ -93,8 +102,65 @@ impl AppState {
             db,
             permissions,
             assets,
+            workspaces,
+            base_policy: policy,
+            base_broker: broker,
             _instance_lock: instance_lock,
         })
+    }
+
+    /// Builds a run-scoped Engine. The project workspace and conversation
+    /// history are chosen per run; they are never global mutable state.
+    pub fn engine_for(
+        &self,
+        workspace: Option<Arc<lingxi_runtime::Workspace>>,
+        project: Option<lingxi_runtime::ProjectRef>,
+        histories: std::collections::BTreeMap<String, Vec<lingxi_runtime::provider::ChatMessage>>,
+    ) -> Result<Arc<Engine>, String> {
+        // A run receives a catalog containing exactly its selected project.
+        // Sharing the host catalog would let a workflow resolve a handle that
+        // belongs to a different project that happens to be open in the app.
+        let catalog = Arc::new(WorkspaceCatalog::new());
+        if let (Some(workspace), Some(project)) = (&workspace, &project) {
+            catalog
+                .register_workspace(project.clone(), workspace.clone(), "")
+                .map_err(|error| format!("cannot bind project workspace: {error}"))?;
+        }
+        Ok(Arc::new(Engine::with_services(
+            self.registry.clone(),
+            self.base_policy.clone(),
+            self.base_broker.clone(),
+            ServiceConfig {
+                permissions: self.permissions.clone(),
+                credentials: self.credentials.clone(),
+                skills_root: self.skills_root.clone(),
+                assets: self.assets.clone(),
+                workspace,
+                workspaces: Some(catalog),
+                histories: Arc::new(histories),
+            },
+        )))
+    }
+
+    /// Re-opens a persisted project directory and returns its opaque handle.
+    pub fn ensure_project_workspace(
+        &self,
+        project_id: &str,
+    ) -> Result<lingxi_runtime::WorkspaceHandle, String> {
+        let project = self
+            .db
+            .project(project_id)?
+            .ok_or_else(|| format!("project {project_id} is not registered"))?;
+        self.workspaces
+            .register(
+                lingxi_runtime::ProjectRef {
+                    project_id: project.project_id,
+                    name: project.name,
+                },
+                &project.root,
+                "",
+            )
+            .map_err(|error| format!("cannot open project workspace: {error}"))
     }
 }
 
@@ -176,6 +242,28 @@ pub fn run() {
             commands::asset_preview,
             commands::skill_list,
             commands::agent_template,
+            projects::project_open,
+            projects::project_list,
+            projects::project_remove,
+            projects::project_tree,
+            projects::project_read,
+            projects::project_write,
+            projects::project_delete,
+            projects::project_search,
+            projects::project_git_status,
+            projects::project_git_diff,
+            projects::project_git_log,
+            projects::project_rules,
+            projects::project_reveal,
+            projects::conversation_list,
+            projects::conversation_create,
+            projects::conversation_create_team,
+            projects::conversation_get,
+            projects::conversation_save_workflow,
+            projects::conversation_messages,
+            projects::permission_audit,
+            projects::conversation_append_user_message,
+            projects::set_permission_mode,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

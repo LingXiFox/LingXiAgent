@@ -36,6 +36,7 @@ test.describe("LingXiAgent phase 1.6 workbench", () => {
     await runCompany(page);
 
     await expect(page.getByTestId("agent-tab-overview")).toBeVisible();
+    await page.getByTestId("agent-tab-overview").click();
     await expect(page.getByTestId("agent-overview")).toBeVisible();
     await expect(page.getByTestId("agent-overview")).toContainText("3 个 Agent");
     await expect(page.getByTestId("agent-tab-coder")).toContainText("程序员");
@@ -43,6 +44,7 @@ test.describe("LingXiAgent phase 1.6 workbench", () => {
 
     await page.getByTestId("agent-tab-coder").click();
     await expect(page.getByTestId("agent-stream")).toContainText("程序员");
+    await page.getByTestId("agent-config-toggle").click();
     await expect(page.getByTestId("agent-config")).toBeVisible();
     await expect(page.getByTestId("agent-messages")).toBeVisible();
     await waitForCompletion(page);
@@ -63,6 +65,7 @@ test.describe("LingXiAgent phase 1.6 workbench", () => {
     await expect(page.getByTestId("agent-tab-pm")).toContainText("执行中");
     await page.getByTestId("agent-pause").click();
     await expect(page.getByTestId("agent-tab-pm")).toContainText("已暂停");
+    await page.getByTestId("agent-config-toggle").click();
     const config = page.getByTestId("agent-config");
     await config.getByLabel("模型").fill("mock-pm-v2");
     await config.getByLabel("角色提示词").fill("Keep the PRD structured and testable.");

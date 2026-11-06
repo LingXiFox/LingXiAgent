@@ -1,6 +1,6 @@
 import type { Node } from "@xyflow/react";
 
-import type { AssetRef, NodeSpec, ProviderProtocol } from "./types";
+import type { AssetRef, NodeSpec, ProjectOpenResponse, ProviderProtocol } from "./types";
 
 export type NodeRunState = "running" | "completed" | "failed" | "skipped" | "cancelled";
 
@@ -25,6 +25,8 @@ export interface LingXiNodeData extends Record<string, unknown> {
   modelName?: string;
   capabilitiesOverride?: unknown;
   onAssetImported?: (asset: AssetRef) => void;
+  /** Binds a project picked from inside a project workspace node. */
+  onProjectOpened?: (opened: ProjectOpenResponse) => void;
   /** Composite instance metadata; undefined for ordinary nodes. */
   subgraphId?: string;
   innerNodeCount?: number;

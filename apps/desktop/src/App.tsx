@@ -7,7 +7,7 @@ import {
   useNodesState,
 } from "@xyflow/react";
 
-import { AgentWorkbench } from "./components/AgentWorkbench";
+import { ProjectWorkbench } from "./components/ProjectWorkbench";
 import "./styles-workbench.css";
 import { Canvas } from "./components/Canvas";
 import { CanvasBar } from "./components/CanvasBar";
@@ -51,9 +51,14 @@ import type {
   AgentConfigSnapshot,
   AgentInstance,
   AssetRef,
+  ConversationMessage,
+  ConversationRecord,
   HostInteraction,
   NodeSpec,
+  PermissionMode,
   PositionDoc,
+  ProjectOpenResponse,
+  ProjectRecord,
   ProviderProtocol,
   RunEvent,
   RunStatus,
@@ -213,6 +218,7 @@ function buildNode(
   protocol?: ProviderProtocol,
   modelName?: string,
   capabilitiesOverride?: unknown,
+  onProjectOpened?: (opened: ProjectOpenResponse) => void,
 ): LingXiNode {
   return {
     id,
@@ -231,6 +237,7 @@ function buildNode(
       protocol,
       modelName,
       capabilitiesOverride,
+      onProjectOpened,
       onParamChange,
       onToggleEnabled,
     },
@@ -395,6 +402,52 @@ function flowEdges(document: WorkflowDoc): Edge[] {
   }));
 }
 
+function workflowLayers(document: WorkflowDoc): WorkflowDoc[] {
+  const layers = [document];
+  for (const definition of Object.values(document.subgraphs ?? {})) {
+    if (definition?.workflow) layers.push(definition.workflow);
+  }
+  return layers;
+}
+
+function findAgentNode(document: WorkflowDoc, nodeId: string): WorkflowNodeDoc | null {
+  for (const layer of workflowLayers(document)) {
+    const node = layer.nodes.find((entry) => entry.id === nodeId && entry.kind === "core.agent");
+    if (node) return node;
+  }
+  return null;
+}
+
+function firstAgentNode(document: WorkflowDoc): WorkflowNodeDoc | null {
+  for (const layer of workflowLayers(document)) {
+    const node = layer.nodes.find((entry) => entry.kind === "core.agent" && entry.enabled !== false);
+    if (node) return node;
+  }
+  return null;
+}
+
+/** Quick workbench edits must mutate the same node document the canvas shows. */
+function patchAgentNode(
+  document: WorkflowDoc,
+  nodeId: string,
+  params: Record<string, unknown>,
+): WorkflowDoc {
+  const next = structuredClone(document);
+  for (const layer of workflowLayers(next)) {
+    const node = layer.nodes.find((entry) => entry.id === nodeId);
+    if (node) {
+      node.params = { ...(node.params ?? {}), ...params };
+      return next;
+    }
+  }
+  return next;
+}
+
+function agentParam(node: WorkflowNodeDoc | null, key: string, fallback: string): string {
+  const value = node?.params?.[key];
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
 export default function App() {
   const [specs, setSpecs] = useState<NodeSpec[]>([]);
   const [nodes, setNodes, onNodesChange] = useNodesState<LingXiNode>([]);
@@ -452,6 +505,19 @@ export default function App() {
   const [session, setSession] = useState<TaskSession | null>(null);
   const [agentEvents, setAgentEvents] = useState<RunEvent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ProjectRecord[]>([]);
+  const [project, setProject] = useState<ProjectRecord | null>(null);
+  const [conversations, setConversations] = useState<ConversationRecord[]>([]);
+  const [conversation, setConversation] = useState<ConversationRecord | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<ConversationMessage[]>([]);
+  const [permissionMode, setPermissionModeState] = useState<PermissionMode>("ask");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [reasoning, setReasoning] = useState("auto");
+  const projectRef = useRef<ProjectRecord | null>(null);
+  const projectOpenedRef = useRef<(opened: ProjectOpenResponse) => void>(() => {});
+  const conversationRef = useRef<ConversationRecord | null>(null);
+  const permissionModeRef = useRef<PermissionMode>("ask");
+  const [quickEditError, setQuickEditError] = useState<string | null>(null);
   const selectAgent = useCallback((instanceId: string | null) => {
     setSelectedAgent(instanceId);
     try {
@@ -462,6 +528,22 @@ export default function App() {
     }
   }, []);
   const [focus, setFocus] = useState<{ nodeId: string; nonce: number } | null>(null);
+  useEffect(() => {
+    if (!project?.projectId) return;
+    try {
+      window.localStorage.setItem("lingxi.project", project.projectId);
+    } catch {
+      // The current view still works when storage is unavailable.
+    }
+  }, [project?.projectId]);
+  useEffect(() => {
+    if (!conversation?.conversationId) return;
+    try {
+      window.localStorage.setItem("lingxi.conversation", conversation.conversationId);
+    } catch {
+      // The current view still works when storage is unavailable.
+    }
+  }, [conversation?.conversationId]);
   // Terminal events can arrive before runWorkflow resolves; remember them so the
   // late `setStatus("running")` does not overwrite the real outcome.
   const finishedRunsRef = useRef(new Map<string, RunStatus>());
@@ -510,6 +592,9 @@ export default function App() {
   layerPathRef.current = layerPath;
   instancePathRef.current = instancePath;
   activeViewportRef.current = activeViewport;
+  projectRef.current = project;
+  conversationRef.current = conversation;
+  permissionModeRef.current = permissionMode;
 
   const pushLog = useCallback((level: LogLevel, text: string, at = Date.now()) => {
     setLogs((previous) => {
@@ -642,6 +727,10 @@ export default function App() {
         undefined,
         assetsRef.current,
         handleAssetImported,
+        undefined,
+        undefined,
+        undefined,
+        (opened) => projectOpenedRef.current(opened),
       );
       setNodes((current) => {
         const next = [...current, node];
@@ -740,6 +829,7 @@ export default function App() {
           link.protocol,
           link.modelName,
           link.capabilitiesOverride,
+          (opened) => projectOpenedRef.current(opened),
         );
       });
       if (missing.length > 0) {
@@ -858,6 +948,235 @@ export default function App() {
     },
     [buildFlowNodes, setEdges, setNodes],
   );
+
+  const syncConfigFromDocument = useCallback((document: WorkflowDoc, agentNodeId?: string | null) => {
+    const node = agentNodeId ? findAgentNode(document, agentNodeId) : firstAgentNode(document);
+    const mode = agentParam(node, "permissionMode", "ask");
+    setPermissionModeState(mode === "workspace" || mode === "yolo" ? mode : "ask");
+    setModel(agentParam(node, "model", "gpt-4o-mini"));
+    setReasoning(agentParam(node, "reasoning", "auto"));
+  }, []);
+
+  const reloadConversationMessages = useCallback(async (conversationId: string) => {
+    try {
+      const messages = await api.conversationMessages(conversationId);
+      if (conversationRef.current?.conversationId === conversationId) {
+        // The transport may hand back a live array (the browser mock does).
+        // Copy it so React sees a new identity instead of a silent in-place mutation.
+        setConversationMessages([...messages]);
+      }
+    } catch (error) {
+      pushLog("error", "cannot load conversation: " + String(error));
+    }
+  }, [pushLog]);
+
+  const loadConversation = useCallback(
+    (record: ConversationRecord) => {
+      if (statusRef.current === "running") {
+        flash("运行中不能切换会话；先暂停或终止当前运行");
+        return;
+      }
+      applyDoc(record.workflow);
+      setConversation(record);
+      syncConfigFromDocument(record.workflow);
+      void reloadConversationMessages(record.conversationId);
+    },
+    [applyDoc, flash, reloadConversationMessages, syncConfigFromDocument],
+  );
+
+  const refreshConversationList = useCallback(async (projectId: string) => {
+    const list = await api.conversationList(projectId);
+    setConversations(list);
+    return list;
+  }, []);
+
+  // Picking a folder inside a project workspace node binds this canvas to that
+  // project without replacing the graph. A different project gets a fresh
+  // conversation whose draft is the current document, so the workbench and the
+  // canvas keep showing the same composition.
+  const handleProjectOpened = useCallback(
+    async (opened: ProjectOpenResponse) => {
+      if (statusRef.current === "running") {
+        flash("运行中不能切换项目；先暂停或终止当前运行");
+        return;
+      }
+      setProject(opened.project);
+      projectRef.current = opened.project;
+      void api.projectList().then(setProjects).catch(() => undefined);
+      try {
+        if (conversationRef.current?.projectId === opened.project.projectId) {
+          setConversations(await api.conversationList(opened.project.projectId));
+          pushLog("info", "bound project " + opened.project.name);
+          return;
+        }
+        const record = await api.conversationCreate(
+          opened.project.projectId,
+          "新会话",
+          buildDoc(),
+        );
+        setConversation(record);
+        conversationRef.current = record;
+        setConversationMessages([]);
+        setConversations((current) => [record, ...current]);
+        syncConfigFromDocument(record.workflow);
+        pushLog("info", "bound project " + opened.project.name + " · created session");
+      } catch (error) {
+        flash("项目绑定失败：" + String(error));
+      }
+    },
+    [buildDoc, flash, pushLog, syncConfigFromDocument],
+  );
+  projectOpenedRef.current = (opened) => {
+    void handleProjectOpened(opened);
+  };
+
+  const openProjectRecord = useCallback(
+    async (record: ProjectRecord) => {
+      if (statusRef.current === "running") {
+        flash("运行中不能切换项目；先暂停或终止当前运行");
+        return;
+      }
+      try {
+        const opened = await api.projectOpen(record.root);
+        setProject(opened.project);
+        projectRef.current = opened.project;
+        setProjects(await api.projectList());
+        const list = await refreshConversationList(opened.project.projectId);
+        const next = list[0] ?? (await api.conversationCreate(opened.project.projectId, "新会话"));
+        if (!list.some((item) => item.conversationId === next.conversationId)) {
+          setConversations([next, ...list]);
+        }
+        loadConversation(next);
+        setView("workbench");
+        pushLog("success", "opened project " + opened.project.name);
+      } catch (error) {
+        flash("打开项目失败：" + String(error));
+      }
+    },
+    [flash, loadConversation, pushLog, refreshConversationList, setView],
+  );
+
+  const openProjectFolder = useCallback(async () => {
+    try {
+      const root = await api.pickProjectFolder();
+      if (!root) return;
+      const opened = await api.projectOpen(root);
+      setProject(opened.project);
+      projectRef.current = opened.project;
+      setProjects(await api.projectList());
+      const list = await refreshConversationList(opened.project.projectId);
+      const next = list[0] ?? (await api.conversationCreate(opened.project.projectId, "新会话"));
+      if (!list.some((item) => item.conversationId === next.conversationId)) {
+        setConversations([next, ...list]);
+      }
+      loadConversation(next);
+      setView("workbench");
+      pushLog("success", "opened project " + opened.project.name);
+    } catch (error) {
+      flash("打开项目失败：" + String(error));
+    }
+  }, [flash, loadConversation, pushLog, refreshConversationList, setView]);
+
+  const newConversation = useCallback(
+    async (team: boolean) => {
+      const activeProject = projectRef.current;
+      if (!activeProject) {
+        flash("先打开一个项目文件夹");
+        return;
+      }
+      if (statusRef.current === "running") {
+        flash("运行中不能新建会话");
+        return;
+      }
+      try {
+        const record = team
+          ? await api.conversationCreateTeam(activeProject.projectId)
+          : await api.conversationCreate(activeProject.projectId, "新会话");
+        setConversations((current) => [record, ...current]);
+        loadConversation(record);
+        pushLog("info", team ? "created team session" : "created session " + record.conversationId);
+      } catch (error) {
+        flash("新建会话失败：" + String(error));
+      }
+    },
+    [flash, loadConversation, pushLog],
+  );
+
+  const selectConversation = useCallback(
+    async (conversationId: string) => {
+      const record =
+        conversations.find((item) => item.conversationId === conversationId) ??
+        (await api.conversationGet(conversationId));
+      if (record) loadConversation(record);
+    },
+    [conversations, loadConversation],
+  );
+
+  const saveConversationDraft = useCallback(async (document?: WorkflowDoc) => {
+    const current = conversationRef.current;
+    if (!current) return null;
+    try {
+      const saved = await api.conversationSaveWorkflow(
+        current.conversationId,
+        document ?? buildDoc(),
+        current.title,
+      );
+      setConversation(saved);
+      conversationRef.current = saved;
+      setConversations((list) =>
+        list.map((item) => (item.conversationId === saved.conversationId ? saved : item)),
+      );
+      return saved;
+    } catch (error) {
+      pushLog("error", "cannot save session draft: " + String(error));
+      return null;
+    }
+  }, [buildDoc, pushLog]);
+
+  const updateQuickConfig = useCallback(
+    async (params: Record<string, unknown>) => {
+      // Flush the live canvas layer into the document before patching, otherwise a
+      // quick config change can overwrite edits made since the last buildDoc().
+      const document = buildDoc();
+      const selectedNodeId = selectedAgent ? session?.agents[selectedAgent]?.nodeId : null;
+      const node = selectedNodeId ? findAgentNode(document, selectedNodeId) : firstAgentNode(document);
+      if (!node) {
+        setQuickEditError("当前工作流没有可配置的 Agent 节点");
+        return;
+      }
+      const next = patchAgentNode(document, node.id, params);
+      adoptLayer(next, layerPathRef.current);
+      const mode = typeof params.permissionMode === "string" ? params.permissionMode : null;
+      if (mode === "ask" || mode === "workspace" || mode === "yolo") {
+        setPermissionModeState(mode);
+        permissionModeRef.current = mode;
+        if (runIdRef.current) {
+          try {
+            await api.setPermissionMode(runIdRef.current, mode);
+          } catch (error) {
+            setQuickEditError("权限模式未能应用到当前运行：" + String(error));
+          }
+        }
+      }
+      if (typeof params.model === "string") setModel(params.model);
+      if (typeof params.reasoning === "string") setReasoning(params.reasoning);
+      await saveConversationDraft(next);
+      setQuickEditError(null);
+    },
+    [adoptLayer, buildDoc, saveConversationDraft, selectedAgent, session],
+  );
+
+  useEffect(() => {
+    if (!conversation) return;
+    void reloadConversationMessages(conversation.conversationId);
+  }, [conversation?.conversationId, reloadConversationMessages, status]);
+
+  useEffect(() => {
+    void api
+      .projectList()
+      .then((list) => setProjects(list))
+      .catch(() => undefined);
+  }, []);
 
   const applyEvent = useCallback(
     (event: RunEvent) => {
@@ -1182,6 +1501,49 @@ export default function App() {
             if (stored && recovered.agents[stored]) setSelectedAgent(stored);
           }
         }
+
+        // Restore the project and session pointers separately from the run
+        // snapshot. A running workflow must keep its snapshot while its owning
+        // project/session is reattached for the sidebar and conversation timeline.
+        let storedProject: string | null = null;
+        let storedConversation: string | null = null;
+        try {
+          storedProject = window.localStorage.getItem("lingxi.project");
+          storedConversation = window.localStorage.getItem("lingxi.conversation");
+        } catch {
+          storedProject = null;
+        }
+        const recent = await api.projectList();
+        if (cancelled) return;
+        setProjects(recent);
+        let projectRecord = recent.find((entry) => entry.projectId === storedProject);
+        if (!projectRecord && storedConversation) {
+          const owning = await api.conversationGet(storedConversation);
+          if (owning) {
+            projectRecord = recent.find((entry) => entry.projectId === owning.projectId);
+          }
+        }
+        if (projectRecord) {
+          const opened = await api.projectOpen(projectRecord.root);
+          if (cancelled) return;
+          setProject(opened.project);
+          const list = await api.conversationList(opened.project.projectId);
+          if (cancelled) return;
+          setConversations(list);
+          const conversationRecord = storedConversation
+            ? list.find((entry) => entry.conversationId === storedConversation)
+            : undefined;
+          if (conversationRecord) {
+            const record =
+              (await api.conversationGet(conversationRecord.conversationId)) ?? conversationRecord;
+            if (cancelled) return;
+            setConversation(record);
+            syncConfigFromDocument(record.workflow);
+            setConversationMessages(await api.conversationMessages(record.conversationId));
+            // Do not replace a recovered run snapshot with the saved draft.
+            if (!snapshot) applyDoc(record.workflow);
+          }
+        }
       } catch (error) {
         pushLog("error", "run recovery failed: " + String(error));
       } finally {
@@ -1196,7 +1558,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [applyDoc, bridgeReady, catalogReady, drainEvents, enqueueEvent, pushLog]);
+  }, [applyDoc, bridgeReady, catalogReady, drainEvents, enqueueEvent, pushLog, syncConfigFromDocument]);
 
   const resetCanvas = useCallback(() => {
     const workflow = newWorkflow("未命名工作流");
@@ -1581,7 +1943,11 @@ export default function App() {
     }
   }, [buildDoc, pushLog]);
 
-  const handleRun = useCallback(async () => {
+  const handleRun = useCallback(async (options?: {
+    userMessage?: string;
+    permissionMode?: PermissionMode;
+    agentNodeId?: string | null;
+  }) => {
     if (recoveringRef.current || statusRef.current === "running") return;
     if (nodesRef.current.length === 0) {
       flash("画布还是空的");
@@ -1591,7 +1957,20 @@ export default function App() {
     setPending(null);
     setPersistenceError(null);
     try {
-      const response = await api.runWorkflow(buildDoc());
+      const document = buildDoc();
+      const activeConversation = conversationRef.current;
+      if (activeConversation) await saveConversationDraft(document);
+      const response = await api.runWorkflow(
+        document,
+        activeConversation
+          ? {
+              conversationId: activeConversation.conversationId,
+              userMessage: options?.userMessage ?? null,
+              permissionMode: options?.permissionMode ?? permissionModeRef.current,
+              agentNodeId: options?.agentNodeId ?? null,
+            }
+          : undefined,
+      );
       setReport(response.report);
       setProblemsOpen(!response.report.ok);
       if (!response.started || !response.runId) {
@@ -1613,7 +1992,48 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [buildDoc, flash, pushLog, refreshSession, setView]);
+  }, [buildDoc, flash, pushLog, refreshSession, saveConversationDraft, setView]);
+
+  const sendMessage = useCallback(
+    async (text: string, agentNodeId?: string | null) => {
+      const message = text.trim();
+      if (!message) return;
+      if (statusRef.current === "running") {
+        const runId = runIdRef.current;
+        const instance = selectedAgent;
+        if (!runId || !instance) {
+          flash("运行中请先选择一个 Agent 再发送指令");
+          return;
+        }
+        try {
+          await api.sendAgentDirective(runId, instance, message);
+          const active = conversationRef.current;
+          if (active) {
+            await api.appendConversationMessage(
+              active.conversationId,
+              runId,
+              agentNodeId ?? session?.agents[instance]?.nodeId ?? null,
+              message,
+            );
+            await reloadConversationMessages(active.conversationId);
+          }
+          pushLog("info", "directive sent to " + (session?.agents[instance]?.label ?? instance));
+        } catch (error) {
+          flash("指令发送失败：" + String(error));
+        }
+        return;
+      }
+      await handleRun({ userMessage: message, agentNodeId: agentNodeId ?? null });
+    },
+    [
+      flash,
+      handleRun,
+      pushLog,
+      reloadConversationMessages,
+      selectedAgent,
+      session,
+    ],
+  );
 
   const handleStop = useCallback(async () => {
     const runId = runIdRef.current;
@@ -1893,12 +2313,33 @@ export default function App() {
           ) : null}
         </div>
         {view === "workbench" ? (
-          <AgentWorkbench
+          <ProjectWorkbench
             session={session}
             events={agentEvents}
             status={status}
             selected={selectedAgent}
+            projects={projects}
+            project={project}
+            conversations={conversations}
+            conversation={conversation}
+            messages={conversationMessages}
+            permissionMode={permissionMode}
+            model={model}
+            reasoning={reasoning}
+            quickEditError={quickEditError}
             onSelect={selectAgent}
+            onOpenProject={openProjectFolder}
+            onSelectProject={openProjectRecord}
+            onNewConversation={async () => {
+              await newConversation(false);
+            }}
+            onNewTeam={async () => {
+              await newConversation(true);
+            }}
+            onSelectConversation={selectConversation}
+            onSend={sendMessage}
+            onStop={handleStop}
+            onQuickConfig={updateQuickConfig}
             onPauseAgent={(id) => void pauseAgent(id)}
             onResumeAgent={(id) => void resumeAgent(id)}
             onCancelAgent={(id) => void cancelAgent(id)}

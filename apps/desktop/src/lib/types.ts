@@ -201,6 +201,104 @@ export interface RunStartResponse {
   report: ValidationReport;
 }
 
+/** Rust-enforced permission mode. The UI may only select a mode; it never
+ *  decides whether an individual capability is allowed. */
+export type PermissionMode = "ask" | "workspace" | "yolo";
+
+export interface RunOptions {
+  conversationId?: string | null;
+  userMessage?: string | null;
+  permissionMode?: PermissionMode | null;
+  agentNodeId?: string | null;
+}
+
+export interface ProjectRecord {
+  projectId: string;
+  name: string;
+  /** Local registry only. Workflows carry opaque workspace handles. */
+  root: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+  lastOpenedAtMs: number;
+}
+
+export interface ProjectOpenResponse {
+  project: ProjectRecord;
+  workspaceHandle: string;
+  tree: FileEntry[];
+  git: boolean;
+}
+
+export interface ConversationRecord {
+  conversationId: string;
+  projectId: string;
+  title: string;
+  workflow: WorkflowDoc;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface ConversationMessage {
+  messageId: string;
+  conversationId: string;
+  runId?: string | null;
+  agentNodeId?: string | null;
+  agentInstanceId?: string | null;
+  role: "user" | "assistant" | string;
+  content: string;
+  createdAtMs: number;
+}
+
+export interface FileEntry {
+  path: string;
+  name: string;
+  kind: "file" | "dir" | string;
+  size: number;
+  version?: string | null;
+}
+
+export interface FileSnapshot {
+  path: string;
+  version: string;
+  content: string;
+  bytes: number;
+}
+
+export interface FileMatch {
+  path: string;
+  line: number;
+  text: string;
+}
+
+export interface GitEntry {
+  path: string;
+  status: string;
+}
+
+export interface GitCommit {
+  hash: string;
+  author: string;
+  timestampMs: number;
+  subject: string;
+}
+
+export interface InstructionDocument {
+  path: string;
+  content: string;
+}
+
+export interface PermissionAuditRecord {
+  id: number;
+  runId: string;
+  nodeId: string;
+  mode: string;
+  capability: string;
+  target: string;
+  decision: string;
+  detail: string;
+  atMs: number;
+}
+
 export type RunStatus = "completed" | "failed" | "cancelled" | "interrupted";
 
 export type StoredRunStatus = "running" | RunStatus;

@@ -41,6 +41,12 @@ pub struct AgentInput {
     pub recipient: Option<String>,
     pub media: Vec<ContentPart>,
     pub lsp: Vec<crate::lsp::LspConfig>,
+    /// Project workspace bound to this Agent. File, process and LSP tools all
+    /// use this same root; a missing workspace disables those tools.
+    pub workspace: Option<Arc<crate::workspace::Workspace>>,
+    pub relative_cwd: String,
+    /// Prior conversation turns for this Agent node in the current task session.
+    pub history: Vec<ChatMessage>,
 }
 
 #[derive(Debug, Clone)]
@@ -348,7 +354,7 @@ pub async fn run_agent(
             );
             let tool_started = Instant::now();
             let result = if matches!(call.name.as_str(), "lsp_diagnostics" | "lsp_symbols") {
-                match (lsp_client.as_mut(), ctx.services.workspace()) {
+                match (lsp_client.as_mut(), input.workspace.as_ref()) {
                     (Some(client), Some(workspace)) => {
                         tokio::select! {
                             result = execute_lsp(client, workspace, &call.name, &call.arguments) => result,
@@ -367,7 +373,12 @@ pub async fn run_agent(
             } else {
                 ctx.services
                     .builtin_tools()
-                    .execute(&call.name, call.arguments.clone(), ctx.control)
+                    .execute_with_workspace(
+                        &call.name,
+                        call.arguments.clone(),
+                        ctx.control,
+                        input.workspace.clone(),
+                    )
                     .await
             };
             let duration_ms = tool_started.elapsed().as_millis() as u64;
@@ -426,7 +437,11 @@ fn initial_messages(input: &AgentInput) -> Vec<ChatMessage> {
         user.push_str("\n\n");
     }
     user.push_str(&input.instruction);
-    vec![ChatMessage::user(user)]
+    // The task session owns history; the frontend never replays it. Prior turns
+    // are ordinary chat messages so the model sees the same conversation.
+    let mut messages = input.history.clone();
+    messages.push(ChatMessage::user(user));
+    messages
 }
 
 fn system_message(
@@ -580,7 +595,7 @@ async fn authorize_tool(
         _ => PermissionClass::Tool,
     };
     let target = match call.name.as_str() {
-        "read_file" | "write_file" | "list_files" => call
+        "read_file" | "write_file" | "list_files" | "delete_file" | "search_files" => call
             .arguments
             .get("path")
             .and_then(Value::as_str)
@@ -594,6 +609,17 @@ async fn authorize_tool(
             .to_string(),
         other => other.to_string(),
     };
+    let read_only = matches!(
+        call.name.as_str(),
+        "read_file"
+            | "list_files"
+            | "search_files"
+            | "git_status"
+            | "git_diff"
+            | "git_log"
+            | "lsp_diagnostics"
+            | "lsp_symbols"
+    );
     let already_approved = ctx
         .services
         .permissions
@@ -613,12 +639,13 @@ async fn authorize_tool(
     let result = ctx
         .services
         .permissions
-        .authorize(
+        .authorize_with(
             ctx,
             class,
             &target,
             &format!("agent tool {:?}", call.name),
             true,
+            read_only,
         )
         .await;
     if !already_approved && !ctx.control.is_cancelled() {

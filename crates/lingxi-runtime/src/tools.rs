@@ -2,6 +2,7 @@
 //! Executors never use a shell or `eval`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -118,13 +119,26 @@ impl BuiltinTools {
         arguments: Value,
         cancel: &RunControl,
     ) -> Result<Value, NodeError> {
+        self.execute_with_workspace(name, arguments, cancel, None)
+            .await
+    }
+
+    /// Executes with an Agent-specific workspace. The per-agent binding comes
+    /// from a `WorkspaceHandle`, never from a path chosen by the model.
+    pub async fn execute_with_workspace(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancel: &RunControl,
+        workspace_override: Option<Arc<crate::workspace::Workspace>>,
+    ) -> Result<Value, NodeError> {
         if let Some(tool) = self.tools.get(name) {
             let definition = tool.definition();
             validate_arguments(&definition.parameters, &arguments)?;
             return tool.execute(arguments, cancel).await;
         }
         if crate::workspace_tools::is_workspace_tool(name) {
-            if let Some(workspace) = &self.workspace {
+            if let Some(workspace) = workspace_override.as_ref().or(self.workspace.as_ref()) {
                 if let Some(definition) = self.definitions(&[name.to_string()]).into_iter().next() {
                     validate_arguments(&definition.parameters, &arguments)?;
                 }
