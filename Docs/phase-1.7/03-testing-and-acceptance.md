@@ -153,10 +153,10 @@ Phase 1.7 原生用例：
 | 平台 | 编译 / 静态检查 / 单测 | 真实桌面运行 |
 | --- | --- | --- |
 | macOS | 本地通过 | **通过**（原生 22 项 + 真实工作台走查） |
-| Windows | 本次提交 CI 待验证 | **未验收** |
-| Linux | 本次提交 CI 待验证 | **未验收** |
+| Windows | **通过**（[CI run 42228046437](https://github.com/LingXiFox/LingXiAgent/actions/runs/42228046437)：编译、clippy、160 项单测） | **未验收** |
+| Linux | **通过**（[CI run 42228046437](https://github.com/LingXiFox/LingXiAgent/actions/runs/42228046437)：编译、clippy、fmt、160 项单测） | **未验收** |
 
-CI 在 macOS、Ubuntu 24.04、Windows 上执行 clippy 与 `cargo test --workspace`，其中 Ubuntu 额外执行 `cargo fmt --all -- --check`；前端 job 执行构建、三组单元测试与 34 项 Playwright（固定 Chromium）。CI 编译通过不等同于 Windows/Linux 实机运行验收，平台相关 keyring、WebView、路径与进程行为仍需实机复核。本次提交的 CI run 链接在推送后补记。
+CI 在 macOS、Ubuntu 24.04、Windows 上执行 clippy 与 `cargo test --workspace`，其中 Ubuntu 额外执行 `cargo fmt --all -- --check`；前端 job 执行构建、三组单元测试与 34 项 Playwright（固定 Chromium）。CI 编译通过不等同于 Windows/Linux 实机运行验收，平台相关 keyring、WebView、路径与进程行为仍需实机复核。本次提交的 CI run（[42228046437](https://github.com/LingXiFox/LingXiAgent/actions/runs/42228046437)）四个 job 全部通过。
 
 ## 5. 已知问题与边界
 
@@ -197,4 +197,4 @@ pnpm -C apps/desktop test:e2e:tauri
 | Playwright 浏览器 E2E | **34 passed**（5 回归 + 14 Phase 1.5 + 6 Phase 1.6 + 9 Phase 1.7） |
 | 原生 Tauri WDIO | **22 passed**（Phase 1.5 3 + Phase 1.6 8 + Phase 1.7 7 + runtime 4） |
 | 真实工作台走查 | **通过（人工）**，见 2.5 |
-| GitHub Actions CI | 本次提交推送后补记 |
+| GitHub Actions CI | **通过**（[run 42228046437](https://github.com/LingXiFox/LingXiAgent/actions/runs/42228046437)：macOS / Ubuntu / Windows Rust job + 前端 job） |
